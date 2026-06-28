@@ -1,0 +1,8 @@
+.firecrawl/
+.playwright-mcp/
+node_modules/
+*.log
+
+# Local inspection artifacts
+alexandria-*
+facebook-marketplace-*

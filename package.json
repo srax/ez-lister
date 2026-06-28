@@ -1,0 +1,15 @@
+{
+  "name": "ezlist",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chrome extension and local backend for turning dealership VDP pages into Facebook Marketplace vehicle drafts.",
+  "type": "commonjs",
+  "scripts": {
+    "dev:backend": "node backend/server.js",
+    "check": "node --check backend/*.js extension/*.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

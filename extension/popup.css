@@ -1,0 +1,99 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 340px;
+  margin: 0;
+  color: #1f2328;
+  background: #fff;
+  font: 13px/1.45 system-ui, -apple-system, Segoe UI, sans-serif;
+}
+
+main {
+  padding: 14px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 20px;
+  line-height: 1.1;
+}
+
+h2 {
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+#health {
+  color: #57606a;
+  font-size: 12px;
+  text-align: right;
+}
+
+.card {
+  border: 1px solid #d8dee4;
+  border-radius: 8px;
+  padding: 12px;
+  background: #f6f8fa;
+  margin-bottom: 12px;
+}
+
+.meta {
+  color: #57606a;
+  margin-top: 4px;
+}
+
+.actions {
+  display: grid;
+  gap: 8px;
+}
+
+button {
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font: 700 13px/1 system-ui, sans-serif;
+  padding: 10px;
+}
+
+#listCurrent {
+  background: #1877f2;
+  color: white;
+}
+
+#facebook {
+  background: #f6f8fa;
+  border-color: #d8dee4;
+  color: #24292f;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+#status {
+  min-height: 18px;
+  margin-top: 10px;
+  color: #57606a;
+}
