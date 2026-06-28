@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="boltFill" x1="34" y1="14" x2="94" y2="114" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffe76a" />
+      <stop offset="0.5" stop-color="#ffc928" />
+      <stop offset="1" stop-color="#ff9f0a" />
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#6b4a00" flood-opacity="0.22" />
+    </filter>
+  </defs>
+  <path
+    d="M76 14 30 73h32l-10 41 47-58H67l9-42Z"
+    fill="url(#boltFill)"
+    filter="url(#softShadow)"
+  />
+</svg>

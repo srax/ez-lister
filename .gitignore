@@ -6,3 +6,7 @@ node_modules/
 # Local inspection artifacts
 alexandria-*
 facebook-marketplace-*
+chrome-webstore-*
+
+# Build output (regenerate with: cd extension && zip -rq ../dist/ez-lister-extension-v0.1.0.zip .)
+dist/*.zip

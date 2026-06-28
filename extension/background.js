@@ -3,6 +3,10 @@
 const BACKEND_URL = 'http://127.0.0.1:3737';
 const MARKETPLACE_VEHICLE_CREATE_URL = 'https://www.facebook.com/marketplace/create/vehicle';
 
+// A single pre-warmed FB "create vehicle" tab so the heavy page load happens before the user clicks List.
+let prewarmTabId = null;
+chrome.tabs.onRemoved.addListener((id) => { if (id === prewarmTabId) prewarmTabId = null; });
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.set({ ezlistBackendUrl: BACKEND_URL });
 });
@@ -12,24 +16,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   switch (message.type) {
     case 'EZLIST_GET_DRAFT':
-      chrome.storage.local.get(['ezlistDraft', 'ezlistLastExtractedAt'], sendResponse);
+      chrome.storage.local.get(['ezlistDraft', 'ezlistLastExtractedAt', 'ezlistAutoFill'], sendResponse);
       return true;
 
     case 'EZLIST_SAVE_DRAFT':
       chrome.storage.local.set({
         ezlistDraft: message.draft,
+        ezlistAutoFill: !!message.autoFill,
         ezlistLastExtractedAt: new Date().toISOString()
       }, () => sendResponse({ ok: true }));
       return true;
 
-    case 'EZLIST_OPEN_FACEBOOK':
-      chrome.tabs.create({ url: MARKETPLACE_VEHICLE_CREATE_URL }, (tab) => sendResponse({ ok: true, tabId: tab && tab.id }));
+    case 'EZLIST_PREWARM':
+      prewarm().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
+    case 'EZLIST_OPEN_FACEBOOK':
+      openOrReuseFacebook().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+
+    case 'EZLIST_PREFETCH_IMAGES':
+      startFetch(message).catch(() => {}); // warm the cache; result awaited later by FETCH_IMAGES
+      sendResponse({ ok: true });
+      return false;
+
     case 'EZLIST_FETCH_IMAGES':
-      fetchImages(message)
+      startFetch(message)
         .then(sendResponse)
-        .catch((error) => sendResponse({ ok: false, error: error.message }));
+        .catch((error) => { imageCache.delete(cacheKey(message)); sendResponse({ ok: false, error: error.message }); });
       return true;
 
     // Optional Firecrawl fallback path for dealers without structured data.
@@ -48,12 +62,59 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+// ---- pre-warm / reuse the FB create tab ----
+async function prewarm() {
+  if (prewarmTabId != null) {
+    try { await chrome.tabs.get(prewarmTabId); return { ok: true, already: true }; }
+    catch { prewarmTabId = null; }
+  }
+  await chrome.storage.local.set({ ezlistAutoFill: false }); // don't auto-fill a stale draft on prewarm load
+  const tab = await chrome.tabs.create({ url: MARKETPLACE_VEHICLE_CREATE_URL, active: false });
+  prewarmTabId = tab.id;
+  return { ok: true, tabId: tab.id };
+}
+
+async function openOrReuseFacebook() {
+  if (prewarmTabId != null) {
+    try {
+      const tab = await chrome.tabs.get(prewarmTabId);
+      if (tab && /\/marketplace\/create\/vehicle/.test(tab.url || tab.pendingUrl || '')) {
+        await chrome.tabs.update(prewarmTabId, { active: true });
+        if (tab.windowId != null) chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+        chrome.tabs.sendMessage(prewarmTabId, { type: 'EZLIST_DRAFT_UPDATED' }).catch(() => {});
+        const id = prewarmTabId;
+        prewarmTabId = null; // consumed
+        return { ok: true, tabId: id, reused: true };
+      }
+    } catch { /* fall through to new tab */ }
+    prewarmTabId = null;
+  }
+  const tab = await chrome.tabs.create({ url: MARKETPLACE_VEHICLE_CREATE_URL, active: true });
+  return { ok: true, tabId: tab.id, reused: false };
+}
+
+// ---- image fetching, with a short-lived prefetch cache so downloads overlap the FB page load ----
+const imageCache = new Map(); // key -> Promise<{ ok, images, count }>
+const IMG_CACHE_MAX = 4;
+
+function cacheKey(msg) {
+  if (Array.isArray(msg.urls) && msg.urls.length) return `urls:${msg.urls.length}:${msg.urls[0]}`;
+  return `base:${msg.baseUrl || ''}`;
+}
+
+function startFetch(msg) {
+  const key = cacheKey(msg);
+  if (!imageCache.has(key)) {
+    imageCache.set(key, fetchImages(msg));
+    while (imageCache.size > IMG_CACHE_MAX) imageCache.delete(imageCache.keys().next().value);
+  }
+  return imageCache.get(key);
+}
+
 // Fetch vehicle photos in the worker: bypasses the Facebook page CSP/CORS that block in-page fetches.
-// Accepts an explicit `urls` list, or a `baseUrl` to enumerate `${baseUrl}{n}.jpg`.
-// Fetches with bounded concurrency, validates each image, tolerates gaps, and stops a
-// gallery enumeration once a whole batch comes back empty.
+// Bounded concurrency, validates each image, tolerates gaps, and stops a gallery once a batch is empty.
 const IMG_CONCURRENCY = 6;
-const IMG_MIN_BYTES = 3000; // skip spacer/placeholder images
+const IMG_MIN_BYTES = 3000;
 
 async function fetchImages({ urls, baseUrl, max = 20, width = 1080 }) {
   const enumerated = !(Array.isArray(urls) && urls.length);
@@ -74,7 +135,6 @@ async function fetchImages({ urls, baseUrl, max = 20, width = 1080 }) {
       fetchOneImage(t.url).then((img) => ({ n: t.n, ...img }), () => ({ n: t.n, ok: false }))));
     const hits = settled.filter((r) => r.ok);
     good.push(...hits);
-    // Enumerated gallery: a fully-empty batch after we already have photos means the gallery ended.
     if (enumerated && hits.length === 0 && good.length > 0) break;
   }
 

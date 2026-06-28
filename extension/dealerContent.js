@@ -132,15 +132,28 @@
   }
 
   // ---- button + click flow ----
+  // Pre-warm the FB create tab on first hover (intent signal) so its heavy load overlaps the user's click.
+  let prewarmed = false;
+  function maybePrewarm() {
+    if (prewarmed) return;
+    prewarmed = true;
+    chrome.runtime.sendMessage({ type: 'EZLIST_PREWARM' }).catch(() => {});
+  }
+
   async function onList(scope, btn, sourceUrl) {
     const original = btn.textContent;
     btn.textContent = '…'; btn.disabled = true;
     try {
       const draft = extractVehicle(scope, sourceUrl);
       if (!draft.vin) throw new Error('no VIN found on this card');
-      await chrome.runtime.sendMessage({ type: 'EZLIST_SAVE_DRAFT', draft });
+      await chrome.runtime.sendMessage({ type: 'EZLIST_SAVE_DRAFT', draft, autoFill: true });
+      // Overlap: start downloading photos now, in parallel with the FB tab opening + form fill.
+      if (draft.photoBaseUrl) {
+        chrome.runtime.sendMessage({ type: 'EZLIST_PREFETCH_IMAGES', baseUrl: draft.photoBaseUrl }).catch(() => {});
+      }
       await chrome.runtime.sendMessage({ type: 'EZLIST_OPEN_FACEBOOK' });
       btn.textContent = '✓ Opened FB';
+      prewarmed = false; // allow warming a fresh tab for the next car
     } catch (e) {
       btn.textContent = 'Error';
       console.error('[ezlist] list failed:', e);
@@ -171,6 +184,7 @@
     btn.className = 'ezlist-list-btn';
     btn.textContent = '⚡ List';
     btn.style.cssText = BTN_STYLE;
+    btn.addEventListener('mouseenter', maybePrewarm);
     btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); onList(card, btn, vdp); });
     card.appendChild(btn);
   }
@@ -184,6 +198,7 @@
     btn.className = 'ezlist-vdp-btn';
     btn.textContent = '⚡ List on Marketplace';
     btn.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:2147483647;background:#1877f2;color:#fff;border:0;border-radius:8px;padding:12px 16px;font:700 14px/1 system-ui,-apple-system,Segoe UI,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.25)';
+    btn.addEventListener('mouseenter', maybePrewarm);
     btn.addEventListener('click', () => onList(el, btn, location.href));
     document.body.appendChild(btn);
   }

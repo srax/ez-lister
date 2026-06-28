@@ -16,6 +16,17 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const norm = (s) => (s || '').toString().trim().toLowerCase();
 
+  // Poll a predicate; resolve with its first truthy value, or its last value on timeout.
+  const waitUntil = async (fn, timeout = 2500, interval = 30) => {
+    const t0 = Date.now();
+    for (;;) {
+      const v = fn();
+      if (v) return v;
+      if (Date.now() - t0 >= timeout) return v;
+      await sleep(interval);
+    }
+  };
+
   const realClick = (el) => {
     el.scrollIntoView({ block: 'center', inline: 'center' });
     const o = { bubbles: true, cancelable: true, view: window };
@@ -92,7 +103,7 @@
     if (!input) return { name, ok: false, msg: 'no input in field' };
     input.focus();
     setNativeValue(input, String(value));
-    await sleep(150);
+    await sleep(50); // let FB's controlled-input reformat (e.g. price -> $54,970) settle
     const digits = (s) => String(s).replace(/\D/g, '');
     const ok = norm(input.value) === norm(value) || (!!digits(value) && digits(input.value) === digits(value));
     return { name, ok, msg: ok ? `"${input.value}"` : `got "${input.value}"` };
@@ -103,17 +114,15 @@
     const label = getLabel(name);
     if (!label) return { name, ok: false, msg: 'field not found' };
     realClick(label);
-    await sleep(500);
-    let opts = readOptions();
-    let hit = matchOption(opts, value);
+    // wait for the option portal to render, then match
+    await waitUntil(() => readOptions().length > 0, 3000);
+    let hit = matchOption(readOptions(), value);
     if (!hit) {
-      // searchable dropdown (e.g. Make): type to filter, then re-read
+      // searchable dropdown (e.g. Make): type to filter, then wait for a match to appear
       const focused = document.activeElement;
       if (focused && focused.tagName === 'INPUT') {
         setNativeValue(focused, String(value));
-        await sleep(600);
-        opts = readOptions();
-        hit = matchOption(opts, value);
+        hit = await waitUntil(() => matchOption(readOptions(), value), 2500);
       }
     }
     if (!hit) {
@@ -121,7 +130,8 @@
       return { name, ok: false, msg: `no option matched "${value}"` };
     }
     realClick(hit.el);
-    await sleep(450);
+    // wait for the listbox to close (selection committed) before the next field opens its own
+    await waitUntil(() => readOptions().length === 0, 1500);
     return { name, ok: true, msg: `picked "${hit.txt}"` };
   }
 
@@ -186,7 +196,10 @@
     await step(selectDropdown('Year', draft.year));
     await step(selectDropdown('Make', draft.make));
     await step(fillTextField('Model', draft.model));
-    await step(fillTextField('Mileage', draft.mileage));
+    // Facebook rejects mileage < 300; leave it blank for the user rather than blocking the form.
+    await step((typeof draft.mileage === 'number' && draft.mileage < 300)
+      ? Promise.resolve({ name: 'Mileage', ok: false, msg: `left blank — FB requires ≥300 mi (dealer shows ${draft.mileage})` })
+      : fillTextField('Mileage', draft.mileage));
     await step(fillTextField('Price', draft.price));
     await step(selectDropdown('Body style', mapBody(draft.bodyType)));
     await step(selectDropdown('Exterior colour', mapColor(draft.exteriorColor)));
@@ -213,9 +226,12 @@
     input.focus();
     setNativeValue(input, '');
     setNativeValue(input, String(value));
-    await sleep(1200);
-    const opt = readOptions()[0];
-    if (opt) { realClick(opt.el); await sleep(400); return { name: 'Location', ok: true, msg: `picked "${opt.txt}"` }; }
+    const opt = await waitUntil(() => readOptions()[0], 2500);
+    if (opt) {
+      realClick(opt.el);
+      await waitUntil(() => readOptions().length === 0, 1200);
+      return { name: 'Location', ok: true, msg: `picked "${opt.txt}"` };
+    }
     return { name: 'Location', ok: false, msg: 'no suggestion (left default)' };
   }
 
@@ -231,13 +247,15 @@
     }
     const input = document.querySelector('input[type="file"][accept*="image"]');
     if (!input) return { name: 'Photos', ok: false, msg: 'no file input' };
+    const before = currentPhotoCount() || 0;
+    const remaining = 20 - before; // FB caps vehicle listings at 20 photos
+    if (remaining <= 0) return { name: 'Photos', ok: true, msg: `already has ${before}` };
     const dt = new DataTransfer();
-    for (const img of resp.images) {
+    for (const img of resp.images.slice(0, remaining)) {
       const file = dataUrlToFile(img.dataUrl, img.name);
       if (file) dt.items.add(file);
     }
     if (!dt.files.length) return { name: 'Photos', ok: false, msg: 'no files built' };
-    const before = currentPhotoCount() || 0;
     input.files = dt.files;
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -324,21 +342,12 @@
   $('.open').addEventListener('click', () => { location.href = 'https://www.facebook.com/marketplace/create/vehicle'; });
 
   let draft = null;
+  let filling = false;
   const isCreatePage = () => /\/marketplace\/create/i.test(location.pathname);
 
-  (async function loadDraft() {
-    const resp = await chrome.runtime.sendMessage({ type: 'EZLIST_GET_DRAFT' });
-    draft = resp && resp.ezlistDraft;
-    if (!draft) { statusEl.textContent = 'No draft found. Click "List" on a car at the dealership first.'; return; }
-    summaryEl.textContent = `${[draft.year, draft.make, draft.model].filter(Boolean).join(' ')}${draft.price ? ` — $${Number(draft.price).toLocaleString('en-US')}` : ''}`;
-    statusEl.textContent = isCreatePage()
-      ? 'Draft ready. Click "Fill listing", review every field, then press Publish yourself.'
-      : 'Draft ready. Open the vehicle form to fill it.';
-    fillBtn.disabled = !isCreatePage();
-  })();
-
-  fillBtn.addEventListener('click', async () => {
-    if (!draft) return;
+  async function runFill() {
+    if (!draft || filling) return;
+    filling = true;
     fillBtn.disabled = true;
     reportEl.hidden = false; reportEl.innerHTML = '';
     statusEl.textContent = 'Filling…';
@@ -352,7 +361,32 @@
     } catch (e) {
       statusEl.textContent = `Error: ${e.message}`;
     } finally {
+      filling = false;
       fillBtn.disabled = false;
     }
-  });
+  }
+
+  async function refresh() {
+    const resp = await chrome.runtime.sendMessage({ type: 'EZLIST_GET_DRAFT' });
+    draft = resp && resp.ezlistDraft;
+    if (!draft) { statusEl.textContent = 'No draft found. Click "⚡ List" on a car at the dealership first.'; return; }
+    summaryEl.textContent = `${[draft.year, draft.make, draft.model].filter(Boolean).join(' ')}${draft.price ? ` — $${Number(draft.price).toLocaleString('en-US')}` : ''}`;
+    fillBtn.disabled = !isCreatePage();
+    if (isCreatePage() && resp.ezlistAutoFill && !filling) {
+      // Triggered by clicking "List" at the dealership — fill automatically; user just reviews + Publishes.
+      chrome.storage.local.set({ ezlistAutoFill: false }); // one-shot; manual reloads won't re-fire
+      statusEl.textContent = 'Auto-filling…';
+      await waitForLabel('Vehicle type', 20000);
+      runFill();
+    } else {
+      statusEl.textContent = isCreatePage()
+        ? 'Draft ready. Click "Fill listing", review every field, then press Publish yourself.'
+        : 'Draft ready. Open the vehicle form to fill it.';
+    }
+  }
+
+  fillBtn.addEventListener('click', runFill);
+  // Pre-warmed tab: background pings us once the draft is set by a List click.
+  chrome.runtime.onMessage.addListener((msg) => { if (msg && msg.type === 'EZLIST_DRAFT_UPDATED') refresh(); });
+  refresh();
 })();
