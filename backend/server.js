@@ -1,10 +1,49 @@
 'use strict';
 
 const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
+
+// Load backend/.env (KEY=VALUE) without a dependency, before anything reads process.env.
+// (Node 20.6+ also supports `node --env-file=.env`.)
+(function loadEnv() {
+  try {
+    const envPath = path.join(__dirname, '.env');
+    if (!fs.existsSync(envPath)) return;
+    for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
+      const m = line.match(/^\s*([A-Za-z0-9_]+)\s*=\s*(.*?)\s*$/);
+      if (!m || line.trim().startsWith('#')) continue;
+      let val = m[2];
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) val = val.slice(1, -1);
+      if (!(m[1] in process.env)) process.env[m[1]] = val;
+    }
+  } catch { /* ignore */ }
+})();
+
 const { normalizeListing } = require('./normalize');
 const { scrapeWithFirecrawl } = require('./firecrawl');
+const ai = require('./ai');
 
 const PORT = Number(process.env.PORT || 3737);
+
+// Optional shared-secret gate (set CARXPERT_TOKEN to require it; left open for local dev).
+function gateOk(req) {
+  const required = process.env.CARXPERT_TOKEN;
+  if (!required) return true;
+  return req.headers['x-carxpert-token'] === required;
+}
+
+// Crude in-memory rate limit to protect our OpenAI key during testing.
+const RATE = { windowMs: 60000, max: Number(process.env.RATE_MAX || 40), hits: new Map() };
+function rateLimited(req) {
+  const ip = req.socket.remoteAddress || 'local';
+  const now = Date.now();
+  const rec = RATE.hits.get(ip) || { count: 0, reset: now + RATE.windowMs };
+  if (now > rec.reset) { rec.count = 0; rec.reset = now + RATE.windowMs; }
+  rec.count += 1;
+  RATE.hits.set(ip, rec);
+  return rec.count > RATE.max;
+}
 
 const server = http.createServer(async (req, res) => {
   setCors(res);
@@ -18,7 +57,31 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (req.method === 'GET' && requestUrl.pathname === '/health') {
-      sendJson(res, 200, { ok: true, service: 'ezlist-backend' });
+      sendJson(res, 200, {
+        ok: true,
+        service: 'carxpert-backend',
+        ai: Boolean(process.env.OPENAI_API_KEY),
+        models: { describe: ai.DESCRIBE_MODEL, translate: ai.TRANSLATE_MODEL, translateStrong: ai.TRANSLATE_MODEL_STRONG }
+      });
+      return;
+    }
+
+    // ---- AI: our key, our cost (users never supply a key) ----
+    if (req.method === 'POST' && requestUrl.pathname === '/api/ai/describe') {
+      if (!gateOk(req)) { sendJson(res, 401, { ok: false, error: 'unauthorized' }); return; }
+      if (rateLimited(req)) { sendJson(res, 429, { ok: false, error: 'rate limited — slow down' }); return; }
+      const body = await readJson(req);
+      const description = await ai.describe(body.vehicle || {}, body.options || {});
+      sendJson(res, 200, { ok: true, description });
+      return;
+    }
+
+    if (req.method === 'POST' && requestUrl.pathname === '/api/ai/translate') {
+      if (!gateOk(req)) { sendJson(res, 401, { ok: false, error: 'unauthorized' }); return; }
+      if (rateLimited(req)) { sendJson(res, 429, { ok: false, error: 'rate limited — slow down' }); return; }
+      const body = await readJson(req);
+      const translated = await ai.translate(body.text || '', body.targetLang || 'en');
+      sendJson(res, 200, { ok: true, translated });
       return;
     }
 
@@ -67,18 +130,20 @@ const server = http.createServer(async (req, res) => {
 
     sendJson(res, 404, { ok: false, error: 'Not found' });
   } catch (error) {
-    sendJson(res, 500, { ok: false, error: error.message });
+    sendJson(res, error.status || 500, { ok: false, error: error.message });
   }
 });
 
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`ezlist backend listening on http://127.0.0.1:${PORT}`);
+  console.log(`Carxpert backend listening on http://127.0.0.1:${PORT}`);
+  console.log(`  AI key: ${process.env.OPENAI_API_KEY ? 'set' : 'MISSING — add OPENAI_API_KEY to backend/.env'}`);
+  console.log(`  models: describe=${ai.DESCRIBE_MODEL} translate=${ai.TRANSLATE_MODEL} (strong=${ai.TRANSLATE_MODEL_STRONG})`);
 });
 
 function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-carxpert-token');
 }
 
 function sendJson(res, status, body) {

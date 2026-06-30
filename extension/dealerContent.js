@@ -140,8 +140,40 @@
     chrome.runtime.sendMessage({ type: 'EZLIST_PREWARM' }).catch(() => {});
   }
 
+  // ---- listed-state (green "✓ Added") ----
+  // A card turns green only once its VIN is confirmed *published* on Facebook — the FB
+  // content script writes ezlistListedVins on a real publish (never on an abandoned form).
+  // Until then it stays "⚡ List". Clicking a green button still re-runs the flow to re-list.
+  let listedKeys = {};
+  chrome.storage.local.get(['ezlistListedVins'])
+    .then((s) => { listedKeys = s.ezlistListedVins || {}; repaintAll(); })
+    .catch(() => {});
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.ezlistListedVins) {
+      listedKeys = changes.ezlistListedVins.newValue || {};
+      repaintAll();
+    }
+  });
+  function cardKey(card, vdpUrl) {
+    const vin = (card.getAttribute('data-vin') || '').toUpperCase();
+    if (vin) return vin;
+    const stock = card.getAttribute('data-stocknum') || card.getAttribute('data-stocknumber') || '';
+    return stock || vdpUrl || '';
+  }
+  function paint(btn) {
+    if (btn.dataset.busy) return; // mid-click transient text — don't clobber
+    const listed = !!(btn.dataset.ezkey && listedKeys[btn.dataset.ezkey]);
+    const vdp = btn.classList.contains('ezlist-vdp-btn');
+    btn.style.background = listed ? '#178a3f' : '#1877f2';
+    btn.textContent = listed ? (vdp ? '✓ Added — re-list' : '✓ Added') : (vdp ? '⚡ List on Marketplace' : '⚡ List');
+    btn.title = listed ? 'Listed on Marketplace — click to re-list with changes' : 'List this vehicle on Facebook Marketplace';
+  }
+  function repaintAll() {
+    document.querySelectorAll('.ezlist-list-btn, .ezlist-vdp-btn').forEach(paint);
+  }
+
   async function onList(scope, btn, sourceUrl) {
-    const original = btn.textContent;
+    btn.dataset.busy = '1';
     btn.textContent = '…'; btn.disabled = true;
     try {
       const draft = extractVehicle(scope, sourceUrl);
@@ -158,7 +190,8 @@
       btn.textContent = 'Error';
       console.error('[ezlist] list failed:', e);
     } finally {
-      setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
+      // Restore the correct steady state (green if since published, else "⚡ List").
+      setTimeout(() => { delete btn.dataset.busy; btn.disabled = false; paint(btn); }, 2500);
     }
   }
 
@@ -167,10 +200,10 @@
   // never poking over the site chrome — when its card scrolls underneath them.
   const BTN_STYLE = [
     'position:absolute', 'top:8px', 'right:8px', 'z-index:50',
-    'background:#1877f2', 'color:#fff', 'border:0', 'border-radius:6px',
+    'color:#fff', 'border:0', 'border-radius:6px',
     'padding:6px 10px', 'font:700 12px/1 system-ui,-apple-system,Segoe UI,sans-serif',
     'cursor:pointer', 'box-shadow:0 2px 8px rgba(0,0,0,.25)'
-  ].join(';');
+  ].join(';'); // background colour is set by paint() per listed-state
 
   function addCardButton(card) {
     if (!card.getAttribute('data-vin')) return;
@@ -182,8 +215,9 @@
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'ezlist-list-btn';
-    btn.textContent = '⚡ List';
     btn.style.cssText = BTN_STYLE;
+    btn.dataset.ezkey = cardKey(card, vdp);
+    paint(btn);
     btn.addEventListener('mouseenter', maybePrewarm);
     btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); onList(card, btn, vdp); });
     card.appendChild(btn);
@@ -196,8 +230,9 @@
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'ezlist-vdp-btn';
-    btn.textContent = '⚡ List on Marketplace';
-    btn.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:2147483647;background:#1877f2;color:#fff;border:0;border-radius:8px;padding:12px 16px;font:700 14px/1 system-ui,-apple-system,Segoe UI,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.25)';
+    btn.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:2147483647;color:#fff;border:0;border-radius:8px;padding:12px 16px;font:700 14px/1 system-ui,-apple-system,Segoe UI,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.25)';
+    btn.dataset.ezkey = (el.getAttribute('data-vin') || '').toUpperCase() || vinFromUrl().toUpperCase() || location.href;
+    paint(btn);
     btn.addEventListener('mouseenter', maybePrewarm);
     btn.addEventListener('click', () => onList(el, btn, location.href));
     document.body.appendChild(btn);

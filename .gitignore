@@ -3,6 +3,11 @@
 node_modules/
 *.log
 
+# Secrets — never commit
+.env
+**/.env
+.env.local
+
 # Local inspection artifacts
 alexandria-*
 facebook-marketplace-*

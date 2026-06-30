@@ -7,9 +7,30 @@ const MARKETPLACE_VEHICLE_CREATE_URL = 'https://www.facebook.com/marketplace/cre
 let prewarmTabId = null;
 chrome.tabs.onRemoved.addListener((id) => { if (id === prewarmTabId) prewarmTabId = null; });
 
+// Clicking the toolbar icon opens the docked side panel (Chrome 114+).
+function enableSidePanelOnActionClick() {
+  if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
+    chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+  }
+}
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.set({ ezlistBackendUrl: BACKEND_URL });
+  enableSidePanelOnActionClick();
 });
+chrome.runtime.onStartup.addListener(enableSidePanelOnActionClick);
+enableSidePanelOnActionClick();
+
+// Fallback: if setPanelBehavior didn't take (e.g. the service worker didn't run its
+// init on a fresh load), the toolbar click still fires onClicked — open the panel
+// explicitly. When the native behavior IS set, onClicked doesn't fire, so this never
+// double-opens. Clicking always wakes the SW, so this listener is guaranteed to register.
+if (chrome.action && chrome.action.onClicked) {
+  chrome.action.onClicked.addListener((tab) => {
+    if (tab && tab.windowId != null && chrome.sidePanel && chrome.sidePanel.open) {
+      chrome.sidePanel.open({ windowId: tab.windowId }).catch(() => {});
+    }
+  });
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.type) return false;
@@ -35,6 +56,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       openOrReuseFacebook().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
+    // Side panel asked to (re)fill the form with the current stored draft.
+    case 'EZLIST_FILL_NOW':
+      fillFacebook().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+
     case 'EZLIST_PREFETCH_IMAGES':
       startFetch(message).catch(() => {}); // warm the cache; result awaited later by FETCH_IMAGES
       sendResponse({ ok: true });
@@ -44,6 +70,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       startFetch(message)
         .then(sendResponse)
         .catch((error) => { imageCache.delete(cacheKey(message)); sendResponse({ ok: false, error: error.message }); });
+      return true;
+
+    // AI (our backend holds the OpenAI key — users never supply one).
+    case 'EZLIST_AI_DESCRIBE':
+      aiDescribe(message.vehicle, message.options)
+        .then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+
+    case 'EZLIST_AI_TRANSLATE':
+      aiTranslate(message.text, message.targetLang)
+        .then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
     // Optional Firecrawl fallback path for dealers without structured data.
@@ -91,6 +128,17 @@ async function openOrReuseFacebook() {
   }
   const tab = await chrome.tabs.create({ url: MARKETPLACE_VEHICLE_CREATE_URL, active: true });
   return { ok: true, tabId: tab.id, reused: false };
+}
+
+// Ensure a create/vehicle tab is open and tell it to fill with the latest stored draft.
+// A freshly-created tab fills itself on load (via the ezlistAutoFill flag the panel set);
+// an already-open tab needs the explicit nudge.
+async function fillFacebook() {
+  const res = await openOrReuseFacebook();
+  if (!res || !res.tabId) return { ok: false, error: 'no Facebook tab' };
+  try { await chrome.tabs.sendMessage(res.tabId, { type: 'EZLIST_FILL' }); }
+  catch { /* tab still loading — it will auto-fill once the content script boots */ }
+  return { ok: true, tabId: res.tabId, reused: res.reused };
 }
 
 // ---- image fetching, with a short-lived prefetch cache so downloads overlap the FB page load ----
@@ -165,6 +213,33 @@ async function blobToDataUrl(blob) {
     binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
   }
   return `data:${blob.type || 'image/jpeg'};base64,${btoa(binary)}`;
+}
+
+// ---- AI calls (routed through our backend; the key lives there, not in the extension) ----
+async function postBackend(pathname, payload) {
+  const backendUrl = await getBackendUrl();
+  const token = (await chrome.storage.local.get(['ezlistBackendToken'])).ezlistBackendToken;
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['x-carxpert-token'] = token;
+  let resp;
+  try {
+    resp = await fetch(`${backendUrl}${pathname}`, { method: 'POST', headers, body: JSON.stringify(payload) });
+  } catch (e) {
+    throw new Error('Backend not reachable — is it running? (npm run dev:backend)');
+  }
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data.ok) throw new Error(data.error || `Backend returned ${resp.status}`);
+  return data;
+}
+
+async function aiDescribe(vehicle, options) {
+  const data = await postBackend('/api/ai/describe', { vehicle: vehicle || {}, options: options || {} });
+  return { ok: true, description: data.description };
+}
+
+async function aiTranslate(text, targetLang) {
+  const data = await postBackend('/api/ai/translate', { text: text || '', targetLang: targetLang || 'en' });
+  return { ok: true, translated: data.translated };
 }
 
 async function extractViaBackend(payload) {

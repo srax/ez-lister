@@ -1,14 +1,18 @@
 {
   "manifest_version": 3,
-  "name": "ezlist",
-  "version": "0.1.0",
-  "description": "Create Facebook Marketplace vehicle drafts from dealership listing pages.",
+  "name": "Carxpert",
+  "version": "0.2.0",
+  "description": "List dealership inventory to Facebook Marketplace in one click.",
+  "minimum_chrome_version": "114",
   "permissions": [
-    "storage"
+    "storage",
+    "sidePanel"
   ],
   "host_permissions": [
     "https://www.alexandriatoyota.com/*",
-    "https://*.facebook.com/*"
+    "https://*.facebook.com/*",
+    "http://127.0.0.1:3737/*",
+    "http://localhost:3737/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -20,14 +24,16 @@
     "128": "assets/icon-128.png"
   },
   "action": {
-    "default_title": "ezlist",
-    "default_popup": "popup.html",
+    "default_title": "Carxpert — open panel",
     "default_icon": {
       "16": "assets/icon-16.png",
       "32": "assets/icon-32.png",
       "48": "assets/icon-48.png",
       "128": "assets/icon-128.png"
     }
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
   },
   "content_scripts": [
     {

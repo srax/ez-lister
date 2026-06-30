@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Carxpert</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <!-- Header -->
+  <header class="head">
+    <span class="logo" aria-hidden="true">
+      <img src="assets/cx-logo.png" alt="Carxpert">
+    </span>
+    <div class="brand">
+      <div class="brand-name">Carxpert</div>
+      <div class="brand-tag">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="#6f7257"><path d="M13 2L4.5 13.5H11l-1 8.5L19.5 10H13l0-8z"/></svg>
+        <span>Lightning-fast lister</span>
+      </div>
+    </div>
+    <button id="help" class="icon-btn" title="Help">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.3 9a2.7 2.7 0 0 1 5.2 1c0 1.8-2.7 2.4-2.7 2.4"/><line x1="12" y1="17" x2="12" y2="17"/></svg>
+    </button>
+    <button class="icon-btn" title="Settings (coming soon)" disabled>
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
+  </header>
+
+  <!-- Scrollable body -->
+  <main class="body vsl-scroll">
+
+    <!-- Current vehicle -->
+    <div id="vehicle" class="vehicle empty">
+      <div class="veh-empty">
+        <div class="veh-empty-title">No vehicle yet</div>
+        <div class="veh-empty-sub">Open your dealership inventory and click <b>⚡ List</b> on a car.</div>
+      </div>
+      <div class="veh-card">
+        <div class="veh-top">
+          <div class="veh-title"></div>
+          <span class="veh-listed" hidden>✓ Listed</span>
+        </div>
+        <div class="veh-meta"></div>
+        <div class="veh-vin"></div>
+      </div>
+    </div>
+
+    <!-- Listing setup -->
+    <div class="section-label">Listing setup</div>
+    <div class="grid2">
+      <div class="field">
+        <label>Where to post</label>
+        <div class="select-wrap">
+          <select id="platform" class="vsl-sel">
+            <option value="fb">FB Marketplace</option>
+            <option value="craigslist" disabled>Craigslist · soon</option>
+            <option value="offerup" disabled>OfferUp · soon</option>
+            <option value="cars" disabled>Cars.com · soon</option>
+          </select>
+          <svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9a9caa" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+      </div>
+      <div class="field">
+        <label>How to post</label>
+        <div class="select-wrap">
+          <select id="howto" class="vsl-sel">
+            <option value="review">Fill &amp; review</option>
+            <option value="direct" disabled>Post directly · soon</option>
+            <option value="schedule" disabled>Schedule · soon</option>
+          </select>
+          <svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9a9caa" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+      </div>
+      <div class="field">
+        <label>Vehicle category</label>
+        <div class="select-wrap">
+          <select id="category" class="vsl-sel">
+            <option value="">Auto-detect</option>
+            <option>Sedan</option><option>SUV</option><option>Truck</option>
+            <option>Coupe</option><option>Van</option><option>Wagon</option><option>Other</option>
+          </select>
+          <svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9a9caa" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+      </div>
+      <div class="field">
+        <label>Emoji prefix</label>
+        <div class="select-wrap">
+          <select id="emoji" class="vsl-sel emoji-sel">
+            <option value="">None</option>
+            <option value="⚡">⚡  Lightning</option>
+            <option value="🚗">🚗  Car</option>
+            <option value="🔥">🔥  Fire</option>
+            <option value="⭐">⭐  Star</option>
+            <option value="✅">✅  Check</option>
+          </select>
+          <svg class="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9a9caa" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+      </div>
+    </div>
+
+    <!-- Distance unit -->
+    <div class="field unit-field">
+      <label>Distance unit</label>
+      <div class="seg" role="tablist">
+        <button id="unit-mi" class="seg-btn on" type="button">Miles</button>
+        <button id="unit-km" class="seg-btn" type="button">Kilometers</button>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Description -->
+    <div class="desc-head">
+      <label class="section-label">Listing description</label>
+      <span id="charcount" class="charcount">0 / 1000</span>
+    </div>
+    <textarea id="desc" class="vsl-in" maxlength="1000" placeholder="Write your listing description, or pick a car to auto-generate it…"></textarea>
+
+    <button id="ai-draft" class="ghost-btn">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.6L18.5 9 14 11l-2 4.6L10 11 5.5 9 10 7.6 12 3z"/></svg>
+      Draft with A.I.
+    </button>
+
+    <!-- Translate -->
+    <div class="translate-row">
+      <div class="select-wrap grow">
+        <svg class="globe" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9a9caa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z"/></svg>
+        <select id="lang" class="vsl-sel has-icon">
+          <option value="en">English</option>
+          <option value="es">Español (Spanish)</option>
+          <option value="fa">فارسی (Farsi)</option>
+          <option value="ur">اردو (Urdu)</option>
+        </select>
+        <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9a9caa" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+      <button id="translate" class="accent-btn sm">Translate</button>
+    </div>
+
+    <!-- Toggles -->
+    <div class="toggles">
+      <button class="toggle" id="t-ai" disabled>
+        <span class="track"><span class="knob"></span></span>
+        <span class="toggle-label">A.I. written description <span class="soon">soon</span></span>
+      </button>
+      <div class="hairline"></div>
+      <button class="toggle" id="t-dealer">
+        <span class="track"><span class="knob"></span></span>
+        <span class="toggle-label">Add dealership description</span>
+      </button>
+      <div class="hairline"></div>
+      <button class="toggle" id="t-mileage">
+        <span class="track"><span class="knob"></span></span>
+        <span class="toggle-label">Add mileage</span>
+      </button>
+    </div>
+
+    <!-- Queue (staged) -->
+    <button class="queue" id="queue" disabled>
+      <span class="queue-icon">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#1c1e12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+      </span>
+      <span class="queue-text">
+        <span class="queue-title">Vehicles in queue</span>
+        <span class="queue-sub">Batch listing · coming soon</span>
+      </span>
+      <span class="queue-count">0</span>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#a9abb8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+    </button>
+
+  </main>
+
+  <!-- Footer action -->
+  <footer class="foot">
+    <div id="status" class="status" role="status">Pick a car to get started.</div>
+    <div class="foot-actions">
+      <button id="fill" class="accent-btn primary" disabled>Fill listing</button>
+      <button id="openfb" class="ghost-btn compact">Open FB form</button>
+    </div>
+  </footer>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

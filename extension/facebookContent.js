@@ -65,7 +65,7 @@
     const t0 = Date.now();
     while (Date.now() - t0 < timeout) {
       if (getLabel(name)) return true;
-      await sleep(200);
+      await sleep(60);
     }
     return false;
   };
@@ -293,100 +293,88 @@
     } catch { return null; }
   }
 
-  // ---------- panel UI ----------
-  const host = document.createElement('div');
-  host.id = 'ezlist-facebook-host';
-  const shadow = host.attachShadow({ mode: 'open' });
-  shadow.innerHTML = `
-    <style>
-      :host { all: initial; color-scheme: light; }
-      .panel { position: fixed; right: 18px; bottom: 18px; z-index: 2147483647; width: min(380px, calc(100vw - 36px));
-        box-sizing: border-box; border: 1px solid #d8dee4; border-radius: 10px; background: #fff;
-        box-shadow: 0 18px 50px rgba(0,0,0,.22); color: #1f2328; font: 13px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
-      .head { display:flex; align-items:center; justify-content:space-between; padding:12px 14px; border-bottom:1px solid #eaeef2; }
-      .brand { font-weight:800; font-size:16px; }
-      .muted { color:#57606a; }
-      .body { padding:14px; }
-      .status { border-radius:6px; background:#f6f8fa; padding:10px; margin-bottom:10px; }
-      .summary { font-weight:650; margin-bottom:10px; }
-      .actions { display:flex; gap:8px; }
-      button { border-radius:6px; border:1px solid transparent; cursor:pointer; font:700 13px/1 system-ui, sans-serif; padding:10px 12px; }
-      .primary { background:#1877f2; color:#fff; }
-      .primary:disabled { opacity:.55; cursor:not-allowed; }
-      .secondary { background:#f6f8fa; border-color:#d8dee4; color:#24292f; }
-      .close { border:0; background:transparent; font:700 18px/1 system-ui; cursor:pointer; color:#57606a; }
-      ul { margin:10px 0 0; padding-left:18px; max-height:180px; overflow:auto; }
-      li { margin:2px 0; }
-    </style>
-    <section class="panel">
-      <div class="head"><div><div class="brand">ezlist</div><div class="muted">Vehicle draft filler</div></div>
-        <button class="close" aria-label="Close">×</button></div>
-      <div class="body">
-        <div class="summary"></div>
-        <div class="status">Checking for a saved draft…</div>
-        <div class="actions">
-          <button class="primary fill" disabled>Fill listing</button>
-          <button class="secondary open">Open vehicle form</button>
-        </div>
-        <ul class="report" hidden></ul>
-      </div>
-    </section>`;
-  document.documentElement.appendChild(host);
-
-  const $ = (s) => shadow.querySelector(s);
-  const statusEl = $('.status');
-  const summaryEl = $('.summary');
-  const reportEl = $('.report');
-  const fillBtn = $('.fill');
-  $('.close').addEventListener('click', () => host.remove());
-  $('.open').addEventListener('click', () => { location.href = 'https://www.facebook.com/marketplace/create/vehicle'; });
-
-  let draft = null;
+  // ---------- controller (no injected UI — the Carxpert side panel drives this) ----------
   let filling = false;
-  const isCreatePage = () => /\/marketplace\/create/i.test(location.pathname);
+  let lastFilledKey = '';   // VIN/stock/url of the draft we filled — attributed to it on a real publish
+  const isCreatePage = () => /\/marketplace\/create\/vehicle/i.test(location.pathname);
+  const draftKey = (d) => d ? ((d.vin || '').toUpperCase() || d.stock || d.sourceUrl || '') : '';
 
-  async function runFill() {
-    if (!draft || filling) return;
-    filling = true;
-    fillBtn.disabled = true;
-    reportEl.hidden = false; reportEl.innerHTML = '';
-    statusEl.textContent = 'Filling…';
-    const onStatus = (line) => {
-      statusEl.textContent = line;
-      const li = document.createElement('li'); li.textContent = line; reportEl.appendChild(li);
-    };
+  const postStatus = (text, error) =>
+    chrome.runtime.sendMessage({ type: 'EZLIST_FILL_STATUS', text, error: !!error }).catch(() => {});
+
+  async function getStored() {
+    return chrome.runtime.sendMessage({ type: 'EZLIST_GET_DRAFT' });
+  }
+
+  async function doFill() {
+    if (filling || !isCreatePage()) return;
+    filling = true; // claim synchronously so a near-simultaneous EZLIST_FILL + auto-fill can't double-run
     try {
-      await fillForm(draft, onStatus);
-      statusEl.textContent = 'Done. Review every field + photos, then press Publish.';
+      const resp = await getStored();
+      const draft = resp && resp.ezlistDraft;
+      if (!draft) { postStatus('No vehicle draft found.', true); return; }
+      lastFilledKey = draftKey(draft);
+      postStatus('Filling…');
+      await waitForLabel('Vehicle type', 20000);
+      await fillForm(draft, (line) => postStatus(line));
+      postStatus('Review every field & photos, then press Publish.');
     } catch (e) {
-      statusEl.textContent = `Error: ${e.message}`;
+      postStatus(`Error: ${e.message}`, true);
     } finally {
       filling = false;
-      fillBtn.disabled = false;
     }
   }
 
-  async function refresh() {
-    const resp = await chrome.runtime.sendMessage({ type: 'EZLIST_GET_DRAFT' });
-    draft = resp && resp.ezlistDraft;
-    if (!draft) { statusEl.textContent = 'No draft found. Click "⚡ List" on a car at the dealership first.'; return; }
-    summaryEl.textContent = `${[draft.year, draft.make, draft.model].filter(Boolean).join(' ')}${draft.price ? ` — $${Number(draft.price).toLocaleString('en-US')}` : ''}`;
-    fillBtn.disabled = !isCreatePage();
-    if (isCreatePage() && resp.ezlistAutoFill && !filling) {
-      // Triggered by clicking "List" at the dealership — fill automatically; user just reviews + Publishes.
+  // Auto-fill once when the draft was just set by a "List" click (one-shot flag).
+  async function maybeAutoFill() {
+    if (!isCreatePage()) return;
+    const resp = await getStored();
+    if (resp && resp.ezlistDraft && resp.ezlistAutoFill && !filling) {
       chrome.storage.local.set({ ezlistAutoFill: false }); // one-shot; manual reloads won't re-fire
-      statusEl.textContent = 'Auto-filling…';
-      await waitForLabel('Vehicle type', 20000);
-      runFill();
-    } else {
-      statusEl.textContent = isCreatePage()
-        ? 'Draft ready. Click "Fill listing", review every field, then press Publish yourself.'
-        : 'Draft ready. Open the vehicle form to fill it.';
+      doFill();
     }
   }
 
-  fillBtn.addEventListener('click', runFill);
-  // Pre-warmed tab: background pings us once the draft is set by a List click.
-  chrome.runtime.onMessage.addListener((msg) => { if (msg && msg.type === 'EZLIST_DRAFT_UPDATED') refresh(); });
-  refresh();
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (!msg) return;
+    if (msg.type === 'EZLIST_FILL') doFill();
+    else if (msg.type === 'EZLIST_DRAFT_UPDATED') maybeAutoFill();
+  });
+
+  // ---------- publish detection (Option A: green only on a real publish) ----------
+  // Conservative: we only mark a VIN "listed" when, AFTER we filled it, the page leaves
+  // /marketplace/create/vehicle for a created-listing or your-listings URL. An abandoned
+  // form never produces that transition, so we never mark green on a form the user bailed on.
+  async function markListed(key) {
+    if (!key) return;
+    const s = await chrome.storage.local.get(['ezlistListedVins']);
+    const listed = s.ezlistListedVins || {};
+    if (listed[key]) return;
+    listed[key] = { listedAt: new Date().toISOString() };
+    await chrome.storage.local.set({ ezlistListedVins: listed });
+    postStatus('✓ Listed on Marketplace.');
+  }
+
+  function installPublishDetection() {
+    let lastPath = location.pathname;
+    const check = () => {
+      const path = location.pathname;
+      if (path === lastPath) return;
+      const left = lastPath;
+      lastPath = path;
+      if (!lastFilledKey) return;
+      const published = /\/marketplace\/item\/\d+/.test(path) || /\/marketplace\/you(\/|$)/.test(path);
+      if (published && /\/marketplace\/create\/vehicle/.test(left)) {
+        markListed(lastFilledKey);
+        lastFilledKey = '';
+      }
+    };
+    // FB is a SPA; the content script can't hook the page's pushState across worlds,
+    // so poll the path (cheap) and also catch back/forward.
+    window.addEventListener('popstate', check);
+    setInterval(check, 1000);
+  }
+
+  maybeAutoFill();
+  installPublishDetection();
 })();

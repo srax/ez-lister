@@ -28,6 +28,7 @@ $chromeArgs = @(
   "--no-default-browser-check",
   "--disable-sync",
   "--disable-background-mode",
+  "--load-extension=`"$extensionPath`"",
   "--new-window",
   "chrome://extensions"
 )
