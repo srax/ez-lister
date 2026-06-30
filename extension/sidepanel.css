@@ -105,8 +105,8 @@ body{
 .ghost-btn.compact{ margin-top:0; flex:0 0 auto; padding:11px 14px; width:auto; white-space:nowrap; }
 
 /* "Draft with A.I." — elevated a notch above a plain ghost button */
-#ai-draft{ background:var(--accent-soft); border-color:var(--accent-border); color:var(--ink); font-weight:800; }
-#ai-draft:hover:not(:disabled){ background:var(--accent-soft); border-color:var(--accent); }
+#ai-draft{ background:var(--accent-soft); border-color:var(--accent-border); color:var(--ink); font-weight:800; transition:background .14s ease, border-color .14s ease, box-shadow .14s ease; }
+#ai-draft:hover:not(:disabled){ background:rgba(231,248,82,0.30); border-color:var(--accent); box-shadow:0 1px 5px -2px var(--accent-shadow); }
 #ai-draft svg{ stroke:var(--ink); }
 
 .accent-btn{ background:var(--accent); color:var(--ink); border:none; border-radius:11px; cursor:pointer;

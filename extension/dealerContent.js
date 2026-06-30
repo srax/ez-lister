@@ -180,12 +180,24 @@
     const stock = card.getAttribute('data-stocknum') || card.getAttribute('data-stocknumber') || '';
     return stock || vdpUrl || '';
   }
+  // Inline ink-coloured bolt (the panel's lightning mark); fill:currentColor so it inherits
+  // the button's text colour. Set via innerHTML (static markup, no user input).
+  const BOLT = (sz) => `<svg width="${sz}" height="${sz}" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="flex:0 0 auto"><path d="M13 2L4.5 13.5H11l-1 8.5L19.5 10H13l0-8z"/></svg>`;
   function paint(btn) {
     if (btn.dataset.busy) return; // mid-click transient text — don't clobber
     const listed = !!(btn.dataset.ezkey && listedKeys[btn.dataset.ezkey]);
     const vdp = btn.classList.contains('ezlist-vdp-btn');
-    btn.style.background = listed ? '#178a3f' : '#1877f2';
-    btn.textContent = listed ? (vdp ? '✓ Added — re-list' : '✓ Added') : (vdp ? '⚡ List on Marketplace' : '⚡ List');
+    if (listed) {
+      btn.style.background = '#178a3f';   // success green — reads clearly as "already listed"
+      btn.style.color = '#fff';
+      btn.style.boxShadow = vdp ? '0 7px 20px -6px rgba(23,138,63,.5)' : '0 2px 8px rgba(15,18,40,.2)';
+      btn.innerHTML = `<span>✓ ${vdp ? 'Added · re-list' : 'Added'}</span>`;
+    } else {
+      btn.style.background = '#e7f852';    // Carxpert lime
+      btn.style.color = '#1c1e12';         // ink — crisp on lime
+      btn.style.boxShadow = vdp ? '0 7px 20px -6px rgba(231,248,82,.9)' : '0 2px 9px -1px rgba(231,248,82,.85)';
+      btn.innerHTML = BOLT(vdp ? 14 : 12) + `<span>${vdp ? 'List on Marketplace' : 'List'}</span>`;
+    }
     btn.title = listed ? 'Listed on Marketplace — click to re-list with changes' : 'List this vehicle on Facebook Marketplace';
   }
   function repaintAll() {
@@ -220,10 +232,11 @@
   // never poking over the site chrome — when its card scrolls underneath them.
   const BTN_STYLE = [
     'position:absolute', 'top:8px', 'right:8px', 'z-index:50',
-    'color:#fff', 'border:0', 'border-radius:6px',
-    'padding:6px 10px', 'font:700 12px/1 system-ui,-apple-system,Segoe UI,sans-serif',
-    'cursor:pointer', 'box-shadow:0 2px 8px rgba(0,0,0,.25)'
-  ].join(';'); // background colour is set by paint() per listed-state
+    'display:inline-flex', 'align-items:center', 'gap:5px',
+    'border:0', 'border-radius:8px',
+    'padding:5px 9px', 'font:800 11.5px/1 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif',
+    'letter-spacing:.1px', 'white-space:nowrap', 'cursor:pointer'
+  ].join(';'); // background, text colour + shadow are set by paint() per listed-state
 
   function addCardButton(card) {
     if (!card.getAttribute('data-vin')) return;
@@ -250,7 +263,7 @@
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'ezlist-vdp-btn';
-    btn.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:2147483647;color:#fff;border:0;border-radius:8px;padding:12px 16px;font:700 14px/1 system-ui,-apple-system,Segoe UI,sans-serif;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.25)';
+    btn.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:2147483647;display:inline-flex;align-items:center;gap:6px;border:0;border-radius:11px;padding:10px 15px;font:800 13.5px/1 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;letter-spacing:.1px;white-space:nowrap;cursor:pointer'; // bg, colour + shadow set by paint()
     btn.dataset.ezkey = (el.getAttribute('data-vin') || '').toUpperCase() || vinFromUrl().toUpperCase() || location.href;
     paint(btn);
     btn.addEventListener('mouseenter', maybePrewarm);
