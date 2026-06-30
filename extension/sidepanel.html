@@ -40,17 +40,19 @@
         <div class="veh-empty-sub">Open your dealership inventory and click <b>⚡ List</b> on a car.</div>
       </div>
       <div class="veh-card">
-        <div class="veh-top">
-          <div class="veh-title"></div>
-          <span class="veh-listed" hidden>✓ Listed</span>
+        <div class="veh-info">
+          <div class="veh-top">
+            <div class="veh-title"></div>
+            <span class="veh-listed" hidden>✓ Listed</span>
+          </div>
+          <div class="veh-meta"></div>
+          <div class="veh-vin"></div>
         </div>
-        <div class="veh-meta"></div>
-        <div class="veh-vin"></div>
+        <img class="veh-photo" alt="" hidden>
       </div>
     </div>
 
     <!-- Listing setup -->
-    <div class="section-label">Listing setup</div>
     <div class="grid2">
       <div class="field">
         <label>Where to post</label>
@@ -116,7 +118,7 @@
     <!-- Description -->
     <div class="desc-head">
       <label class="section-label">Listing description</label>
-      <span id="charcount" class="charcount">0 / 1000</span>
+      <span id="charcount" class="charcount" hidden>0 / 1000</span>
     </div>
     <textarea id="desc" class="vsl-in" maxlength="1000" placeholder="Write your listing description, or pick a car to auto-generate it…"></textarea>
 

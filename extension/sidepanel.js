@@ -15,6 +15,7 @@ const ui = {
   vehMeta: document.querySelector('.veh-meta'),
   vehVin: document.querySelector('.veh-vin'),
   vehListed: document.querySelector('.veh-listed'),
+  vehPhoto: document.querySelector('.veh-photo'),
   platform: el('platform'), howto: el('howto'), category: el('category'), emoji: el('emoji'),
   unitMi: el('unit-mi'), unitKm: el('unit-km'),
   desc: el('desc'), charcount: el('charcount'),
@@ -70,10 +71,26 @@ function renderVehicle() {
   ui.vehMeta.innerHTML = `<span class="price">${esc(price)}</span>${esc(miles)}`;
   ui.vehVin.textContent = d.vin ? `VIN ${d.vin}` : (d.stock ? `Stock #${d.stock}` : '');
   ui.vehListed.hidden = !isListed(d);
+  setVehiclePhoto(d);
   ui.fill.disabled = state.filling;
   if (!state.filling) {
     setStatus(isListed(d) ? 'Already listed — fill again to re-list with changes.' : 'Ready. Tune the listing, then Fill.');
   }
+}
+
+// Show one vehicle photo on the right of the card. DealerOn inventory photos are
+// ${photoBaseUrl}<n>.jpg; try the hero shot, fall back through a couple, then hide.
+function setVehiclePhoto(d) {
+  const img = ui.vehPhoto;
+  if (!img) return;
+  const base = d && d.photoBaseUrl;
+  if (!base) { img.hidden = true; img.removeAttribute('src'); return; }
+  const candidates = [`${base}1.jpg`, `${base}0.jpg`, `${base}2.jpg`];
+  let i = 0;
+  img.hidden = true;
+  img.onload = () => { img.hidden = false; };
+  img.onerror = () => { i += 1; if (i < candidates.length) img.src = candidates[i]; else { img.hidden = true; img.removeAttribute('src'); } };
+  img.src = candidates[0];
 }
 
 function formatDistance(mi) {

@@ -58,6 +58,23 @@
     return { ext: ext.trim(), int: int.trim() };
   }
 
+  // This DealerOn theme carries mileage in data-* on inventory CARDS, but the VDP's vehicle
+  // element omits it — there it lives only in the rendered spec grid. Read the .info__value of
+  // the .info__details block labelled "Mileage", scoped to the vehicle element so a "similar
+  // vehicles" rail (other [data-vin] cards) can't leak its mileage in. Verified live: only the
+  // main vehicle element carries .info__details on a VDP.
+  function mileageFromGrid(el) {
+    if (!el || !el.querySelectorAll) return undefined;
+    for (const d of el.querySelectorAll('.info__details')) {
+      const label = d.querySelector('.info__label');
+      if (label && /mileage/i.test(label.textContent || '')) {
+        const val = d.querySelector('.info__value');
+        if (val) return num(val.getAttribute('title') || val.textContent);
+      }
+    }
+    return undefined;
+  }
+
   function photoBaseUrl(el, vin) {
     // 1) derive from an actual gallery/thumbnail image for this vehicle
     const imgs = [...el.querySelectorAll('img'), ...document.querySelectorAll('img')];
@@ -106,6 +123,9 @@
     const trim = attr(el, ['data-trim']);
     const model = attr(el, ['data-model', 'data-dotagging-item-model']);
     const vin = attr(el, ['data-vin']);
+    // Cards expose data-*-odometer; VDPs don't — fall back to the rendered spec grid there.
+    const odo = num(attr(el, ['data-dotagging-item-odometer', 'data-odometer', 'data-mileage']));
+    const mileage = odo === undefined ? mileageFromGrid(el) : odo;
     const v = {
       vehicleType: 'Car/van',
       vin,
@@ -115,7 +135,7 @@
       model: [model, trim].filter(Boolean).join(' ').trim(),
       trim,
       price: extractPrice(el),
-      mileage: num(attr(el, ['data-dotagging-item-odometer', 'data-odometer', 'data-mileage'])),
+      mileage,
       fuelType: attr(el, ['data-fueltype', 'data-dotagging-item-fuel-type']),
       bodyType: attr(el, ['data-dotagging-item-body-type', 'data-bodystyle', 'data-dotagging-item-type']),
       engine: attr(el, ['data-engine']),

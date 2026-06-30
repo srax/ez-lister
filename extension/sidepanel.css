@@ -48,7 +48,9 @@ body{
 .veh-empty{ border:1px dashed #dfe1ea; border-radius:14px; padding:18px 16px; text-align:center; background:#fbfbfd; }
 .veh-empty-title{ font-size:13.5px; font-weight:700; color:#5d6070; }
 .veh-empty-sub{ font-size:12.5px; color:#8a8d9b; margin-top:4px; line-height:1.45; }
-.veh-card{ border:1px solid var(--input-border); border-radius:14px; padding:13px 14px; background:#fff; box-shadow:0 1px 2px rgba(15,18,40,0.04); }
+.veh-card{ display:flex; align-items:center; gap:12px; border:1px solid var(--input-border); border-radius:14px; padding:13px 14px; background:#fff; box-shadow:0 1px 2px rgba(15,18,40,0.04); }
+.veh-info{ flex:1; min-width:0; }
+.veh-photo{ flex-shrink:0; width:92px; height:69px; object-fit:cover; border-radius:10px; background:#f0f1f4; box-shadow:0 1px 2px rgba(15,18,40,0.08); }
 .veh-top{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .veh-title{ font-size:15px; font-weight:800; color:#191b29; letter-spacing:-0.2px; }
 .veh-listed{ font-size:11px; font-weight:800; color:#178a3f; background:#e6f6ec; border:1px solid #bfe6cd; padding:2px 8px; border-radius:999px; white-space:nowrap; }
@@ -101,6 +103,11 @@ body{
 .ghost-btn:hover:not(:disabled){ border-color:#d6d8e0; background:#fafafc; }
 .ghost-btn:disabled{ opacity:.6; cursor:default; }
 .ghost-btn.compact{ margin-top:0; flex:0 0 auto; padding:11px 14px; width:auto; white-space:nowrap; }
+
+/* "Draft with A.I." — elevated a notch above a plain ghost button */
+#ai-draft{ background:var(--accent-soft); border-color:var(--accent-border); color:var(--ink); font-weight:800; }
+#ai-draft:hover:not(:disabled){ background:var(--accent-soft); border-color:var(--accent); }
+#ai-draft svg{ stroke:var(--ink); }
 
 .accent-btn{ background:var(--accent); color:var(--ink); border:none; border-radius:11px; cursor:pointer;
   font-family:inherit; font-weight:800; font-size:13px; padding:11px 16px; box-shadow:0 6px 16px -6px var(--accent-shadow); }
