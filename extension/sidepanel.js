@@ -23,17 +23,25 @@ const ui = {
   tDealer: el('t-dealer'), tMileage: el('t-mileage'),
   fill: el('fill'), openfb: el('openfb'), help: el('help'),
   status: el('status'),
+  statsBtn: el('stats-btn'), statsBack: el('stats-back'),
+  viewLister: el('view-lister'), viewStats: el('view-stats'),
+  statsRange: el('stats-range'), statsRangeLabel: el('stats-range-label'),
+  stActive: el('st-active'), stSold: el('st-sold'), stGross: el('st-gross'),
+  stDays: el('st-days'), stHeroRange: el('st-hero-range'),
+  stPlatforms: el('st-platforms'), stTrend: el('st-trend'), stListings: el('st-listings'),
 };
 
-const state = { draft: null, prefs: { ...DEFAULT_PREFS }, listed: {}, userEdited: false, filling: false };
+const state = { draft: null, prefs: { ...DEFAULT_PREFS }, listed: {}, listings: {}, userEdited: false, filling: false };
 
 init();
 
 async function init() {
-  const store = await chrome.storage.local.get(['ezlistDraft', 'ezlistPrefs', 'ezlistListedVins']);
+  const store = await chrome.storage.local.get(['ezlistDraft', 'ezlistPrefs', 'ezlistListedVins', 'ezlistListings']);
   state.draft = store.ezlistDraft || null;
   state.prefs = { ...DEFAULT_PREFS, ...(store.ezlistPrefs || {}) };
   state.listed = store.ezlistListedVins || {};
+  state.listings = store.ezlistListings || {};
+  await migrateListings();
   applyPrefsToUI();
   renderVehicle();
   recomposeDesc();
@@ -143,9 +151,184 @@ function setStatus(text, isError) {
   ui.status.classList.toggle('err', !!isError);
 }
 
+// ---------- stats view ----------
+// Switch between the lister and the Sales-overview screen (the design's two card faces).
+function showView(view) {
+  const stats = view === 'stats';
+  ui.viewLister.hidden = stats;
+  ui.viewStats.hidden = !stats;
+  if (stats) renderStats();
+}
+
+// Seed ezlistListings from older ezlistListedVins keys (users who published before the
+// richer schema existed). Non-destructive; runs once on load.
+async function migrateListings() {
+  let changed = false;
+  for (const [key, v] of Object.entries(state.listed || {})) {
+    if (!state.listings[key]) {
+      state.listings[key] = {
+        key,
+        vin: key.length === 17 ? key : undefined,
+        platform: 'fb',
+        status: 'active',
+        listedAt: (v && v.listedAt) || new Date().toISOString(),
+      };
+      changed = true;
+    }
+  }
+  if (changed) await chrome.storage.local.set({ ezlistListings: state.listings });
+}
+
+const listingsArray = () => Object.values(state.listings || {});
+
+function withinRange(iso, range) {
+  if (!iso) return false;
+  if (range === 'all') return true;
+  const days = range === '7' ? 7 : range === '90' ? 90 : 30;
+  return (Date.now() - new Date(iso).getTime()) <= days * 864e5;
+}
+
+// All figures below come from our own publish log + manual "Mark sold" events — no FB
+// scraping. Views/leads stay as samples until the FB-insights research lands.
+function computeStats(range) {
+  const all = listingsArray();
+  const activeCount = all.filter((l) => l.status === 'active').length;
+  const soldAll = all.filter((l) => l.status === 'sold');
+  const soldInRange = soldAll.filter((l) => withinRange(l.soldAt, range));
+  const gross = soldInRange.reduce((sum, l) => sum + (Number(l.soldPrice || l.price) || 0), 0);
+  const spans = soldAll
+    .filter((l) => l.soldAt && l.listedAt)
+    .map((l) => (new Date(l.soldAt) - new Date(l.listedAt)) / 864e5);
+  const avgDays = spans.length ? Math.round(spans.reduce((a, b) => a + b, 0) / spans.length) : null;
+  return { activeCount, soldCount: soldInRange.length, gross, avgDays };
+}
+
+// Listings created per month, last 6 months.
+function monthlyListed() {
+  const now = new Date();
+  const buckets = [];
+  for (let i = 5; i >= 0; i -= 1) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    buckets.push({ y: d.getFullYear(), m: d.getMonth(), label: d.toLocaleString('en-US', { month: 'short' }), val: 0 });
+  }
+  for (const l of listingsArray()) {
+    if (!l.listedAt) continue;
+    const d = new Date(l.listedAt);
+    const b = buckets.find((x) => x.y === d.getFullYear() && x.m === d.getMonth());
+    if (b) b.val += 1;
+  }
+  return buckets;
+}
+
+function renderStats() {
+  const range = ui.statsRange ? ui.statsRange.value : '30';
+  const s = computeStats(range);
+  if (ui.stActive) ui.stActive.textContent = String(s.activeCount);
+  if (ui.stSold) ui.stSold.textContent = String(s.soldCount);
+  if (ui.stGross) ui.stGross.textContent = '$' + s.gross.toLocaleString('en-US');
+  if (ui.stDays) ui.stDays.textContent = s.avgDays == null ? '—' : String(s.avgDays);
+  if (ui.stHeroRange) ui.stHeroRange.textContent = rangeShort(range);
+  renderTrend();
+  renderPlatforms();
+  renderListingList();
+}
+
+function renderTrend() {
+  if (!ui.stTrend) return;
+  const buckets = monthlyListed();
+  const max = Math.max(1, ...buckets.map((b) => b.val));
+  ui.stTrend.innerHTML = buckets.map((b, i) => {
+    const h = Math.round((b.val / max) * 74);
+    const on = i === buckets.length - 1 ? ' on' : '';
+    return `<div class="trend-col"><span class="trend-val">${b.val}</span>`
+      + `<div class="trend-bar${on}" style="height:${h}px"></div>`
+      + `<span class="trend-label">${b.label}</span></div>`;
+  }).join('');
+}
+
+function renderPlatforms() {
+  if (!ui.stPlatforms) return;
+  const all = listingsArray();
+  const fbLive = all.filter((l) => l.status === 'active').length;
+  const fbSold = all.filter((l) => l.status === 'sold').length;
+  const total = Math.max(1, fbLive + fbSold);
+  const pct = Math.round((fbLive / total) * 100);
+  ui.stPlatforms.innerHTML = [
+    `<div class="platform-row"><div class="platform-top"><span class="platform-name">FB Marketplace</span>`
+      + `<span class="platform-stat">${fbSold} sold · ${fbLive} live</span></div>`
+      + `<div class="platform-bar"><div class="platform-fill" style="width:${pct}%"></div></div></div>`,
+    platformSoon('Craigslist'),
+    platformSoon('OfferUp'),
+  ].join('');
+}
+
+function platformSoon(name) {
+  return `<div class="platform-row soon"><div class="platform-top"><span class="platform-name">${esc(name)}</span>`
+    + `<span class="platform-stat">soon</span></div>`
+    + `<div class="platform-bar"><div class="platform-fill" style="width:0%"></div></div></div>`;
+}
+
+function renderListingList() {
+  if (!ui.stListings) return;
+  const all = listingsArray().sort((a, b) => new Date(b.listedAt || 0) - new Date(a.listedAt || 0));
+  if (!all.length) {
+    ui.stListings.innerHTML = '<div class="listing-empty">No listings tracked yet. Cars you publish with Carxpert show up here.</div>';
+    return;
+  }
+  ui.stListings.innerHTML = all.map((l) => {
+    const title = esc(l.title || l.vin || l.key || 'Vehicle');
+    const price = l.price ? '$' + Number(l.price).toLocaleString('en-US') : '';
+    const sold = l.status === 'sold';
+    const pill = sold ? '<span class="lst-pill sold">Sold</span>' : '<span class="lst-pill live">Live</span>';
+    const sep = price ? ' · ' : '';
+    return `<div class="listing-row"><div class="listing-main">`
+      + `<div class="listing-title">${title}</div>`
+      + `<div class="listing-sub">${price}${sep}${pill}</div></div>`
+      + `<button class="lst-sold-btn${sold ? ' undo' : ''}" data-key="${esc(l.key)}">${sold ? 'Undo' : 'Mark sold'}</button></div>`;
+  }).join('');
+}
+
+// Manual sold signal — the reliable MVP source of truth for sale outcomes.
+function markSold(key) {
+  const l = state.listings[key];
+  if (!l) return;
+  if (l.status === 'sold') {
+    l.status = 'active';
+    delete l.soldAt;
+    delete l.soldPrice;
+  } else {
+    l.status = 'sold';
+    l.soldAt = new Date().toISOString();
+    l.soldPrice = l.price;
+  }
+  chrome.storage.local.set({ ezlistListings: state.listings });
+  renderStats();
+}
+
+function rangeShort(v) {
+  if (v === '7') return 'last 7 days';
+  if (v === '90') return 'last 90 days';
+  if (v === 'all') return 'all time';
+  return 'last 30 days';
+}
+
+function rangeLabel(v) {
+  if (v === '7') return 'Last 7 days';
+  if (v === '90') return 'Last 90 days';
+  if (v === 'all') return 'All time';
+  return 'Last 30 days';
+}
+
 // ---------- events ----------
 function wireEvents() {
   ui.help.addEventListener('click', () => chrome.tabs.create({ url: HELP_URL }));
+  ui.statsBtn.addEventListener('click', () => showView('stats'));
+  ui.statsBack.addEventListener('click', () => showView('lister'));
+  ui.statsRange.addEventListener('change', () => { ui.statsRangeLabel.textContent = rangeLabel(ui.statsRange.value); renderStats(); });
+  ui.stListings.addEventListener('click', (e) => {
+    const btn = e.target.closest('.lst-sold-btn');
+    if (btn && btn.dataset.key) markSold(btn.dataset.key);
+  });
   ui.openfb.addEventListener('click', () => chrome.runtime.sendMessage({ type: 'EZLIST_OPEN_FACEBOOK' }));
   ui.fill.addEventListener('click', onFill);
   ui.aiDraft.addEventListener('click', onAiDraft);
@@ -177,6 +360,10 @@ function onStorageChanged(changes, area) {
     state.listed = changes.ezlistListedVins.newValue || {};
     if (state.draft) ui.vehListed.hidden = !isListed(state.draft);
   }
+  if (changes.ezlistListings) {
+    state.listings = changes.ezlistListings.newValue || {};
+    if (ui.viewStats && !ui.viewStats.hidden) renderStats();
+  }
   if (changes.ezlistDraft) {
     const next = changes.ezlistDraft.newValue || null;
     const changedCar = keyForDraft(next) !== keyForDraft(state.draft);
@@ -200,9 +387,10 @@ async function onFill() {
     if (state.prefs.category) fillDraft.bodyType = state.prefs.category; // category override → mapped by FB filler
     await chrome.runtime.sendMessage({ type: 'EZLIST_SAVE_DRAFT', draft: fillDraft, autoFill: true });
     setStatus('Opening Facebook & filling…');
-    const res = await chrome.runtime.sendMessage({ type: 'EZLIST_FILL_NOW' });
+    const res = await chrome.runtime.sendMessage({ type: 'EZLIST_FILL_NOW', key: keyForDraft(fillDraft) });
     if (!res || !res.ok) throw new Error((res && res.error) || 'Could not reach the Facebook form.');
-    setStatus('Review every field & photos, then press Publish.');
+    // The FB content script streams per-field progress and the final result back
+    // via EZLIST_FILL_STATUS, so we don't claim completion prematurely here.
   } catch (e) {
     setStatus(e.message || 'Something went wrong.', true);
   } finally {

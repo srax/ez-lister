@@ -10,6 +10,8 @@
   <link rel="stylesheet" href="sidepanel.css">
 </head>
 <body>
+  <div id="view-lister" class="view">
+
   <!-- Header -->
   <header class="head">
     <span class="logo" aria-hidden="true">
@@ -22,6 +24,10 @@
         <span>Lightning-fast lister</span>
       </div>
     </div>
+    <button id="stats-btn" class="stats-btn" title="Sales stats">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#1c1e12" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="20" x2="6" y2="13"/><line x1="12" y1="20" x2="12" y2="8"/><line x1="18" y1="20" x2="18" y2="4"/></svg>
+      Stats
+    </button>
     <button id="help" class="icon-btn" title="Help">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.3 9a2.7 2.7 0 0 1 5.2 1c0 1.8-2.7 2.4-2.7 2.4"/><line x1="12" y1="17" x2="12" y2="17"/></svg>
     </button>
@@ -183,6 +189,127 @@
       <button id="openfb" class="ghost-btn compact">Open FB form</button>
     </div>
   </footer>
+  </div><!-- /#view-lister -->
+
+  <!-- Stats view (Sales overview) — back face of the design's flip card -->
+  <div id="view-stats" class="view" hidden>
+    <header class="head stats-head">
+      <button id="stats-back" class="icon-btn back-btn" title="Back to lister">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <div class="brand">
+        <div class="brand-name">Sales overview</div>
+        <div class="stats-sub" id="stats-range-label">Last 30 days</div>
+      </div>
+      <div class="select-wrap stats-range-wrap">
+        <select id="stats-range" class="vsl-sel">
+          <option value="30">30 days</option>
+          <option value="7">7 days</option>
+          <option value="90">90 days</option>
+          <option value="all">All time</option>
+        </select>
+        <svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#9a9caa" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+    </header>
+
+    <main class="body vsl-scroll stats-body">
+      <div class="stats-demo">Views &amp; leads are sample data — the rest is your live activity</div>
+
+      <!-- Hero: vehicles sold -->
+      <div class="stat-hero">
+        <div class="stat-hero-top">
+          <span class="stat-hero-label">Vehicles sold</span>
+        </div>
+        <div class="stat-hero-mid">
+          <span class="stat-hero-big" id="st-sold">0</span>
+          <span class="stat-hero-unit" id="st-hero-range">last 30 days</span>
+        </div>
+        <div class="stat-hero-foot">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1c1e12" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+          <span class="stat-hero-gross" id="st-gross">$0</span>
+          <span class="stat-hero-grosslabel">gross sales</span>
+        </div>
+      </div>
+
+      <!-- 2x2 metric tiles -->
+      <div class="stat-grid">
+        <div class="stat-tile">
+          <div class="stat-tile-head">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h18v4H3z"/><path d="M5 7v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V7"/><line x1="10" y1="11" x2="14" y2="11"/></svg>
+            <span>Active listings</span>
+          </div>
+          <div class="stat-tile-num" id="st-active">0</div>
+          <div class="stat-tile-sub">via Carxpert</div>
+        </div>
+        <div class="stat-tile preview">
+          <div class="stat-tile-head">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
+            <span>Total views</span>
+          </div>
+          <div class="stat-tile-num">12.4k</div>
+          <div class="stat-tile-sub">sample</div>
+        </div>
+        <div class="stat-tile preview">
+          <div class="stat-tile-head">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            <span>Leads / messages</span>
+          </div>
+          <div class="stat-tile-num">96</div>
+          <div class="stat-tile-sub">sample</div>
+        </div>
+        <div class="stat-tile">
+          <div class="stat-tile-head">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
+            <span>Avg days to sell</span>
+          </div>
+          <div class="stat-tile-num" id="st-days">—</div>
+          <div class="stat-tile-sub">from your sales</div>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- By platform -->
+      <div class="section-label">By platform</div>
+      <div class="platform-list" id="st-platforms">
+        <div class="platform-row">
+          <div class="platform-top"><span class="platform-name">FB Marketplace</span><span class="platform-stat">9 sold · 22 live</span></div>
+          <div class="platform-bar"><div class="platform-fill" style="width:62%"></div></div>
+        </div>
+        <div class="platform-row">
+          <div class="platform-top"><span class="platform-name">Craigslist</span><span class="platform-stat">5 sold · 8 live</span></div>
+          <div class="platform-bar"><div class="platform-fill" style="width:38%"></div></div>
+        </div>
+        <div class="platform-row">
+          <div class="platform-top"><span class="platform-name">OfferUp</span><span class="platform-stat">4 sold · 4 live</span></div>
+          <div class="platform-bar"><div class="platform-fill" style="width:28%"></div></div>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- Sales trend -->
+      <div class="stat-trend-head">
+        <span class="section-label nomargin">Listing activity</span>
+        <span class="stat-trend-range">6 months</span>
+      </div>
+      <div class="stat-trend" id="st-trend">
+        <div class="trend-col"><span class="trend-val">9</span><div class="trend-bar" style="height:37px"></div><span class="trend-label">Jan</span></div>
+        <div class="trend-col"><span class="trend-val">12</span><div class="trend-bar" style="height:49px"></div><span class="trend-label">Feb</span></div>
+        <div class="trend-col"><span class="trend-val">8</span><div class="trend-bar" style="height:33px"></div><span class="trend-label">Mar</span></div>
+        <div class="trend-col"><span class="trend-val">14</span><div class="trend-bar" style="height:57px"></div><span class="trend-label">Apr</span></div>
+        <div class="trend-col"><span class="trend-val">15</span><div class="trend-bar" style="height:62px"></div><span class="trend-label">May</span></div>
+        <div class="trend-col"><span class="trend-val">18</span><div class="trend-bar on" style="height:74px"></div><span class="trend-label">Jun</span></div>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- Your listings (tracked + mark-sold) -->
+      <div class="section-label">Your listings</div>
+      <div class="listing-list" id="st-listings"></div>
+
+    </main>
+  </div>
 
   <script src="sidepanel.js"></script>
 </body>

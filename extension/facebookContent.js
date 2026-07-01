@@ -95,6 +95,14 @@
     }
   };
 
+  // After the fill, leave the form looking finished, not mid-edit: dismiss any
+  // lingering suggestion portal (esp. the Location autocomplete) and drop the caret.
+  const settleUi = async () => {
+    await closeAnyDropdown();
+    const a = document.activeElement;
+    if (a && typeof a.blur === 'function') a.blur();
+  };
+
   async function fillTextField(name, value) {
     if (value === undefined || value === null || value === '') return { name, ok: false, msg: 'no value' };
     const label = getLabel(name);
@@ -215,6 +223,7 @@
     // 4) Photos (fetched by the background worker to bypass FB CSP/CORS)
     await step(uploadPhotos(draft, onStatus));
 
+    await settleUi();
     return log;
   }
 
@@ -306,18 +315,25 @@
     return chrome.runtime.sendMessage({ type: 'EZLIST_GET_DRAFT' });
   }
 
-  async function doFill() {
+  async function doFill(expectedKey) {
     if (filling || !isCreatePage()) return;
     filling = true; // claim synchronously so a near-simultaneous EZLIST_FILL + auto-fill can't double-run
     try {
       const resp = await getStored();
       const draft = resp && resp.ezlistDraft;
       if (!draft) { postStatus('No vehicle draft found.', true); return; }
+      // Guard the single global draft: if the stored car has changed since this fill
+      // was requested (rapid double-List), refuse rather than fill the wrong vehicle.
+      if (expectedKey && draftKey(draft) !== expectedKey) {
+        postStatus('Vehicle changed — reopen the car and Fill again.', true);
+        return;
+      }
       lastFilledKey = draftKey(draft);
       postStatus('Filling…');
       await waitForLabel('Vehicle type', 20000);
-      await fillForm(draft, (line) => postStatus(line));
-      postStatus('Review every field & photos, then press Publish.');
+      const log = await fillForm(draft, (line) => postStatus(line));
+      const missed = log.filter((r) => !r.ok).map((r) => r.name);
+      postStatus(missed.length ? `Filled ✓ · add manually: ${missed.join(', ')}` : 'Listing filled ✓');
     } catch (e) {
       postStatus(`Error: ${e.message}`, true);
     } finally {
@@ -337,7 +353,7 @@
 
   chrome.runtime.onMessage.addListener((msg) => {
     if (!msg) return;
-    if (msg.type === 'EZLIST_FILL') doFill();
+    if (msg.type === 'EZLIST_FILL') doFill(msg.key);
     else if (msg.type === 'EZLIST_DRAFT_UPDATED') maybeAutoFill();
   });
 
@@ -347,11 +363,35 @@
   // form never produces that transition, so we never mark green on a form the user bailed on.
   async function markListed(key) {
     if (!key) return;
-    const s = await chrome.storage.local.get(['ezlistListedVins']);
+    const s = await chrome.storage.local.get(['ezlistListedVins', 'ezlistListings', 'ezlistDraft']);
     const listed = s.ezlistListedVins || {};
-    if (listed[key]) return;
-    listed[key] = { listedAt: new Date().toISOString() };
-    await chrome.storage.local.set({ ezlistListedVins: listed });
+    const listings = s.ezlistListings || {};
+    const now = new Date().toISOString();
+    const alreadyGreen = !!listed[key];
+    const alreadyActive = listings[key] && listings[key].status === 'active';
+    if (alreadyGreen && alreadyActive) return;
+
+    // ezlistListedVins stays the source of truth for the dealer-page green button.
+    if (!alreadyGreen) listed[key] = { listedAt: now };
+
+    // ezlistListings is the richer, stats-facing record. Capture the vehicle fields
+    // from the draft we just filled (keys match unless the user switched cars mid-flow).
+    const d = (s.ezlistDraft && draftKey(s.ezlistDraft) === key) ? s.ezlistDraft : null;
+    const prev = listings[key] || {};
+    listings[key] = {
+      key,
+      vin: (d && d.vin) || prev.vin || (key.length === 17 ? key : undefined),
+      title: (d ? [d.year, d.make, d.model].filter(Boolean).join(' ') : prev.title) || undefined,
+      year: (d && d.year) || prev.year,
+      make: (d && d.make) || prev.make,
+      model: (d && d.model) || prev.model,
+      price: (d && Number(d.price)) || prev.price,
+      sourceUrl: (d && d.sourceUrl) || prev.sourceUrl,
+      platform: 'fb',
+      status: 'active',
+      listedAt: prev.listedAt || now,
+    };
+    await chrome.storage.local.set({ ezlistListedVins: listed, ezlistListings: listings });
     postStatus('✓ Listed on Marketplace.');
   }
 
