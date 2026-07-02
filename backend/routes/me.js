@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireUser } from '../mw.js';
 import { isEntitled } from '../entitlement/index.js';
+import { getUserDealership } from '../dealerships.js';
 
 const router = Router();
 
@@ -8,14 +9,17 @@ const router = Router();
 // the stub (never entitled), so lease is always null until the billing agent lands.
 router.get('/api/me', requireUser, async (req, res, next) => {
   try {
-    const ent = await isEntitled(req.user.id);
+    const [ent, dealership] = await Promise.all([
+      isEntitled(req.user.id),
+      getUserDealership(req.user.id)
+    ]);
     let lease = null;
-    // B: when ent.entitled and the user has a linked dealership, issueLease(user, dealership).
+    // B: when ent.entitled and a dealership is linked, issueLease(user, dealership).
     void ent;
 
     res.json({
       user: { id: req.user.id, email: req.user.email, name: req.user.name },
-      dealership: null,
+      dealership,
       subscription: null,
       lease
     });

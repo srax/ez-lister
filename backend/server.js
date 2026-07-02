@@ -7,6 +7,7 @@ import authRoutes from './routes/auth.js';
 import metaRoutes from './routes/meta.js';
 import aiRoutes from './routes/ai.js';
 import meRoutes from './routes/me.js';
+import dealershipRoutes from './routes/dealerships.js';
 
 const app = express();
 // Railway terminates TLS and forwards; trust the first proxy so req.ip is the real client.
@@ -48,6 +49,7 @@ app.use(express.json({ limit: '2mb' }));
 app.use(metaRoutes);
 app.use(aiRoutes);
 app.use(meRoutes);
+app.use(dealershipRoutes);
 
 // Dormant Firecrawl extraction + HTML fixtures: dev-only, NEVER mounted in production.
 if (process.env.NODE_ENV !== 'production') {
