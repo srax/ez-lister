@@ -46,6 +46,12 @@ app.use(authRoutes);
 // Better Auth handler reads the RAW request body, so mount it before express.json().
 app.all('/api/auth/*', toNodeHandler(auth));
 
+// ⚠️ BILLING AGENT (B): mount the Stripe webhook HERE — before express.json() — with
+// express.raw({ type: 'application/json' }) so signature verification gets the raw bytes.
+// e.g. app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), stripeWebhook);
+// (Anything mounted after the json() below receives an already-parsed body and will fail
+// stripe.webhooks.constructEvent — the classic integration bug the contract warns about.)
+
 // JSON body parser for everything else.
 app.use(express.json({ limit: '2mb' }));
 

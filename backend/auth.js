@@ -33,6 +33,9 @@ export const auth = betterAuth({
   ],
   // Store email + name only (Better Auth defaults). Google is the only provider in v1.
   socialProviders,
+  // BILLING AGENT (B): add the @better-auth/stripe plugin to this array (small, additive).
+  // Let it own the `subscription` table (generate its migration via the Better Auth CLI as
+  // backend/migrations/004_*.sql) and the customer⇄user linkage. See docs/plans/02 + 03.
   plugins: [bearer()]
 });
 
