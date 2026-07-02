@@ -1,9 +1,7 @@
-'use strict';
-
-const fs = require('node:fs/promises');
-const os = require('node:os');
-const path = require('node:path');
-const { spawn } = require('node:child_process');
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
 
 async function scrapeWithFirecrawl(url, options = {}) {
   if (!url || !/^https?:\/\//i.test(url)) {
@@ -138,6 +136,4 @@ function visit(value, callback, key = '') {
   }
 }
 
-module.exports = {
-  scrapeWithFirecrawl
-};
+export { scrapeWithFirecrawl };

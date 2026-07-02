@@ -1,5 +1,3 @@
-'use strict';
-
 // Carxpert AI: server-side OpenAI calls. The user's extension never holds the key —
 // it calls our backend, which calls OpenAI with OUR key.
 
@@ -111,4 +109,4 @@ async function translate(text, targetLang) {
   return chat({ model, system, user: text, temperature: 0.2, maxTokens: 800 });
 }
 
-module.exports = { describe, translate, LANGS, DESCRIBE_MODEL, TRANSLATE_MODEL, TRANSLATE_MODEL_STRONG };
+export { describe, translate, LANGS, DESCRIBE_MODEL, TRANSLATE_MODEL, TRANSLATE_MODEL_STRONG };

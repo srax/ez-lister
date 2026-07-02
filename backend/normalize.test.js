@@ -1,8 +1,6 @@
-'use strict';
-
-const test = require('node:test');
-const assert = require('node:assert/strict');
-const { normalizeListing } = require('./normalize');
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { normalizeListing } from './normalize.js';
 
 test('normalizes the captured Facebook reference structure', () => {
   const listing = normalizeListing({

@@ -5,11 +5,17 @@
   "description": "Chrome extension and local backend for turning dealership VDP pages into Facebook Marketplace vehicle drafts.",
   "type": "commonjs",
   "scripts": {
+    "start": "node backend/server.js",
     "dev:backend": "node backend/server.js",
-    "check": "node --check backend/*.js extension/*.js",
+    "check": "node scripts/check-syntax.js",
     "test": "node --test"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "better-auth": "^1.6.23",
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
   }
 }
