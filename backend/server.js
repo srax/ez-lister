@@ -3,6 +3,7 @@ import express from 'express';
 import { toNodeHandler } from 'better-auth/node';
 import { runMigrations } from './db.js';
 import { auth } from './auth.js';
+import { startWorker } from './worker/soldScan.js';
 import authRoutes from './routes/auth.js';
 import metaRoutes from './routes/meta.js';
 import aiRoutes from './routes/ai.js';
@@ -87,6 +88,9 @@ async function start() {
   }
   app.listen(PORT, HOST, () => {
     console.log(`Carxpert backend on http://${HOST}:${PORT} (env=${process.env.NODE_ENV || 'dev'})`);
+    // In-process hourly sold-scan. Opt-in (SOLD_SCAN_ENABLED) so it only runs where we
+    // intend to poll dealer sites; a cycle is a no-op when no tracked listings exist.
+    if (/^(1|true|yes)$/i.test(process.env.SOLD_SCAN_ENABLED || '')) startWorker();
   });
 }
 
