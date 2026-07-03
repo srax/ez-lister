@@ -14,8 +14,11 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@better-auth/stripe": "^1.6.23",
     "better-auth": "^1.6.23",
     "express": "^4.21.2",
-    "pg": "^8.13.1"
+    "jose": "^6.2.3",
+    "pg": "^8.13.1",
+    "stripe": "^22.3.0"
   }
 }

@@ -1,11 +1,13 @@
-import './env.js';
+import { isProduction } from './env.js';
 import { betterAuth } from 'better-auth';
 import { bearer } from 'better-auth/plugins';
+import { stripe as stripePlugin } from '@better-auth/stripe';
+import Stripe from 'stripe';
 import { pool } from './db.js';
 
 // Better Auth instance. Google is the only provider in v1; the bearer plugin lets the
 // extension authenticate every API call with `Authorization: Bearer <session token>`.
-// The billing agent (B) appends the @better-auth/stripe plugin to `plugins` below.
+// Billing agent (B) appends the @better-auth/stripe plugin below (guarded on env).
 
 const EXTENSION_ID = process.env.EXTENSION_ID || 'ejagngoidhjkjoadbbijjkpdgelklael';
 const devExtensionIds = (process.env.EXTENSION_IDS_DEV || '')
@@ -21,24 +23,44 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
   };
 }
 
+// Stripe billing (billing agent B). Guarded on STRIPE_SECRET_KEY so the server still boots
+// (health + auth shell) before billing env is wired. On the shared live account the plugin
+// only ever touches customers/subscriptions it created — it ignores webhook events for
+// customers it doesn't know — so the main platform's Plus/Pro subscriptions never leak in.
+// It serves subscription + `/stripe/webhook` routes under /api/auth/*, and owns the
+// `subscription` table (+ user.stripeCustomerId) via migration 004.
+const stripeClient = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
+const stripePlugins = stripeClient
+  ? [stripePlugin({
+      stripeClient,
+      stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
+      createCustomerOnSignUp: true,
+      subscription: {
+        enabled: true,
+        plans: [{ name: 'carxpert', priceId: process.env.STRIPE_PRICE_ID }]
+      }
+    })]
+  : [];
+
 export const auth = betterAuth({
   database: pool,
   baseURL: process.env.BETTER_AUTH_URL,
   secret: process.env.BETTER_AUTH_SECRET,
   trustedOrigins: [
     `chrome-extension://${EXTENSION_ID}`,
-    ...(process.env.NODE_ENV !== 'production'
+    ...(!isProduction()
       ? devExtensionIds.map((id) => `chrome-extension://${id}`)
       : [])
   ],
   // Store email + name only (Better Auth defaults). Google is the only provider in v1.
   socialProviders,
-  // BILLING AGENT (B): add the @better-auth/stripe plugin to this array (small, additive).
-  // Let it own the `subscription` table (generate its migration via the Better Auth CLI as
-  // backend/migrations/004_*.sql) and the customer⇄user linkage. See docs/plans/02 + 03.
-  plugins: [bearer()]
+  plugins: [bearer(), ...stripePlugins]
 });
 
 export function googleConfigured() {
   return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+}
+
+export function billingConfigured() {
+  return Boolean(stripeClient);
 }

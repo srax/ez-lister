@@ -7,6 +7,15 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+// True in any deployed environment: explicit NODE_ENV=production, or running on Railway at
+// all. A forgotten NODE_ENV on a public deploy must never re-open dev-only surface (dev
+// routes, verbose health, stack traces, open AI gate) — the old server was loopback-bound,
+// so "not production" used to be physically unreachable; on 0.0.0.0 it no longer is.
+export function isProduction() {
+  return process.env.NODE_ENV === 'production'
+    || Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_ENVIRONMENT_NAME || process.env.RAILWAY_PROJECT_ID);
+}
+
 (function loadEnv() {
   try {
     const envPath = path.join(here, '.env');
