@@ -9,6 +9,9 @@
   // Only run on the dealership site (Facebook has its own content script).
   if (/facebook\.com$/i.test(HOST)) return;
 
+  // Pure helpers shared with the FB filler (lib/mappers.js, loaded first via manifest).
+  const M = globalThis.CarxpertShared;
+
   const DEALER = {
     // Default Marketplace listing location for this dealer.
     location: 'Alexandria, VA'
@@ -23,70 +26,89 @@
     return '';
   };
 
-  // ---- price: dealer sites bury the real price among fees/discounts; pick the largest plausible ----
-  const plausiblePrice = (n) => typeof n === 'number' && n >= 1000 && n <= 500000;
+  // ---- price ----
+  // Live-probed: `data-price`/`data-msrp` are often "0" on used cards, and
+  // `data-dotagging-item-price` disagrees between SRP and VDP for the same car (31405 vs
+  // 995 doc fee — and 16750 on a card whose advertised price was 7495). The labelled
+  // pricelib entry is the site's actual advertised price, so it wins outright; the other
+  // attrs are fallbacks, and page text is the last resort.
   function extractPrice(el) {
+    const labeled = M.decodePriceLib(attr(el, ['data-pricelib']));
+    if (M.plausiblePrice(labeled)) return labeled;
     const candidates = [
       num(attr(el, ['data-dotagging-item-price'])),
-      num(attr(el, ['data-price'])),
-      decodePriceLib(attr(el, ['data-pricelib']))
-    ].filter(plausiblePrice);
+      num(attr(el, ['data-price']))
+    ].filter(M.plausiblePrice);
     if (candidates.length) return Math.max(...candidates);
     // Fallback: largest plausible $ amount shown on the card/page (dealer hides real price in data attrs sometimes).
     const money = [...String(el.innerText || '').matchAll(/\$\s?([\d,]{4,9})/g)]
       .map((m) => Number(m[1].replace(/,/g, '')))
-      .filter(plausiblePrice);
+      .filter(M.plausiblePrice);
     return money.length ? Math.max(...money) : undefined;
   }
-  function decodePriceLib(b64) {
-    if (!b64) return undefined;
-    try {
-      const txt = atob(b64);
-      const prices = [...txt.matchAll(/(\d{4,7})(?:\.\d+)?/g)].map((m) => Number(m[1]));
-      return prices.length ? Math.max(...prices) : undefined;
-    } catch { return undefined; }
-  }
 
-  function extractColors(el) {
-    let ext = attr(el, ['data-extcolor', 'data-exteriorcolor', 'data-dotagging-item-color']);
-    let int = attr(el, ['data-intcolor', 'data-interiorcolor']);
-    if (!ext || !int) {
-      const t = (el.innerText || '').replace(/\s+/g, ' ');
-      if (!ext) ext = (t.match(/Ext\.?:?\s*([^|]+?)\s+Int\.?:/i) || [])[1] || '';
-      if (!int) int = (t.match(/Int\.?:?\s*([A-Za-z0-9/ -]+)/i) || [])[1] || '';
-    }
-    return { ext: ext.trim(), int: int.trim() };
-  }
-
-  // This DealerOn theme carries mileage in data-* on inventory CARDS, but the VDP's vehicle
-  // element omits it — there it lives only in the rendered spec grid. Read the .info__value of
-  // the .info__details block labelled "Mileage", scoped to the vehicle element so a "similar
-  // vehicles" rail (other [data-vin] cards) can't leak its mileage in. Verified live: only the
-  // main vehicle element carries .info__details on a VDP.
-  function mileageFromGrid(el) {
-    if (!el || !el.querySelectorAll) return undefined;
+  // Rendered VDP spec grid (.info__details rows labelled "Mileage", "Exterior Color", …).
+  // Cards don't render it; on a VDP only the main vehicle element carries it (verified
+  // live), so scoping to `el` keeps "similar vehicles" rails from leaking values in.
+  function specFromGrid(el, labelRe) {
+    if (!el || !el.querySelectorAll) return '';
     for (const d of el.querySelectorAll('.info__details')) {
       const label = d.querySelector('.info__label');
-      if (label && /mileage/i.test(label.textContent || '')) {
+      if (label && labelRe.test((label.textContent || '').trim())) {
         const val = d.querySelector('.info__value');
-        if (val) return num(val.getAttribute('title') || val.textContent);
+        if (val) return (val.getAttribute('title') || val.textContent || '').trim();
       }
     }
-    return undefined;
+    return '';
   }
 
-  function photoBaseUrl(el, vin) {
-    // 1) derive from an actual gallery/thumbnail image for this vehicle
-    const imgs = [...el.querySelectorAll('img'), ...document.querySelectorAll('img')];
-    for (const img of imgs) {
-      const src = img.currentSrc || img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('srcset') || '';
-      const m = src.match(/(https?:\/\/[^"'\s]*\/inventoryphotos\/\d+\/[^/]+\/ip\/)\d+\.jpe?g/i)
-        || src.match(/(\/inventoryphotos\/\d+\/[^/]+\/ip\/)\d+\.jpe?g/i);
+  // Color source ladder (best first): data attrs → dotagging attrs → VDP spec-grid row →
+  // card text. Live probe: the card text is rendered FROM the attrs (never richer) and
+  // VDPs never backfill colors the feed lacks — when every rung misses, the color simply
+  // doesn't exist on the site and blank is correct. cleanAttr strips the raw HTML the
+  // feed injects into new-car color attrs (disclaimer links).
+  function extractColors(el) {
+    let ext = M.cleanAttr(attr(el, ['data-extcolor', 'data-exteriorcolor', 'data-dotagging-item-color']));
+    let int = M.cleanAttr(attr(el, ['data-intcolor', 'data-interiorcolor', 'data-dotagging-item-color-interior']));
+    if (!ext) ext = M.cleanAttr(specFromGrid(el, /^exterior colou?r$/i));
+    if (!int) int = M.cleanAttr(specFromGrid(el, /^interior colou?r$/i));
+    if (!ext || !int) {
+      const t = (el.innerText || '').replace(/\s+/g, ' ');
+      if (!ext) ext = ((t.match(/Ext\.?:?\s*([^|]+?)\s+Int\.?:/i) || [])[1] || '').trim();
+      if (!int) int = ((t.match(/Int\.?:?\s*([A-Za-z0-9/ -]+)/i) || [])[1] || '').trim();
+    }
+    return { ext, int };
+  }
+
+  // Gallery base for this vehicle. Live-probed: real photos are `/inventoryphotos/
+  // <code>/<vin>/ip/<n>.jpg` but new-car STOCK photos are `.../sp/<n>.png`, and the
+  // <code> segment differs even within one dealer — so both folder and extension must be
+  // derived, never assumed. Returns { base, ext } or null.
+  const GALLERY_RE = /(https?:\/\/[^"'\s]*\/inventoryphotos\/\d+\/[^/]+\/(?:ip|sp)\/)\d+\.(jpe?g|png)/i;
+  const GALLERY_RE_REL = /(\/inventoryphotos\/\d+\/[^/]+\/(?:ip|sp)\/)\d+\.(jpe?g|png)/i;
+  function photoSource(el, vin) {
+    const fromSrc = (src) => {
+      const m = String(src || '').match(GALLERY_RE) || String(src || '').match(GALLERY_RE_REL);
       if (m && (!vin || m[1].toLowerCase().includes(vin.toLowerCase()))) {
-        return new URL(m[1], location.href).href;
+        return { base: new URL(m[1], location.href).href, ext: m[2].toLowerCase().replace('jpeg', 'jpg') };
+      }
+      return null;
+    };
+    // 1) an actual gallery/thumbnail image for this vehicle
+    for (const img of [...el.querySelectorAll('img'), ...document.querySelectorAll('img')]) {
+      const hit = fromSrc(img.currentSrc || img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('srcset') || '');
+      if (hit) return hit;
+    }
+    // 2) JSON-LD (SRP ItemList / VDP Vehicle) always carries photo 1 — reliable when the
+    //    grid images are lazy-loaded placeholders. fromSrc's VIN check picks OUR car's
+    //    URL out of the ItemList (which contains every card's image).
+    for (const s of document.querySelectorAll('script[type="application/ld+json"]')) {
+      for (const m of (s.textContent || '').matchAll(/https?:\/\/[^"'\s\\]*\/inventoryphotos\/\d+\/[^/]+\/(?:ip|sp)\/\d+\.(?:jpe?g|png)/gi)) {
+        const hit = fromSrc(m[0]);
+        if (hit) return hit;
       }
     }
-    // 2) fall back to dealer code (found anywhere on the page) + VIN
+    // 3) last resort: dealer photo code (from any page image) + VIN, used-car layout
     if (vin) {
       let code = '';
       for (const img of document.querySelectorAll('img')) {
@@ -94,9 +116,9 @@
         const m = s.match(/\/inventoryphotos\/(\d+)\//i);
         if (m) { code = m[1]; break; }
       }
-      if (code) return `${location.origin}/inventoryphotos/${code}/${vin.toLowerCase()}/ip/`;
+      if (code) return { base: `${location.origin}/inventoryphotos/${code}/${vin.toLowerCase()}/ip/`, ext: 'jpg' };
     }
-    return '';
+    return null;
   }
 
   function buildDescription(v) {
@@ -125,7 +147,8 @@
     const vin = attr(el, ['data-vin']);
     // Cards expose data-*-odometer; VDPs don't — fall back to the rendered spec grid there.
     const odo = num(attr(el, ['data-dotagging-item-odometer', 'data-odometer', 'data-mileage']));
-    const mileage = odo === undefined ? mileageFromGrid(el) : odo;
+    const mileage = odo === undefined ? num(specFromGrid(el, /mileage/i)) : odo;
+    const photos = photoSource(el, vin);
     const v = {
       vehicleType: 'Car/van',
       vin,
@@ -141,11 +164,17 @@
       engine: attr(el, ['data-engine']),
       exteriorColor: colors.ext,
       interiorColor: colors.int,
-      transmission: 'Automatic', // FB only offers Manual/Automatic; default + user reviews
+      // DealerOn's own coarse bucket ("Gray", "Other") — SRP cards only. The FB filler
+      // falls back to it when the marketing name doesn't map ("Other" maps to blank).
+      exteriorColorGeneric: M.cleanAttr(attr(el, ['data-dotagging-item-generic-color'])),
+      // Feed value ("Automatic", "Variable", CVT strings) — the FB filler maps anything
+      // non-/manual/ to Automatic, so manual cars finally list as Manual.
+      transmission: attr(el, ['data-trans', 'data-transmission', 'data-dotagging-item-transmission']) || 'Automatic',
       condition: 'Excellent',
       location: DEALER.location,
       sourceUrl: sourceUrl || location.href,
-      photoBaseUrl: photoBaseUrl(el, vin)
+      photoBaseUrl: photos ? photos.base : '',
+      photoExt: photos ? photos.ext : 'jpg'
     };
     v.description = buildDescription(v);
     return v;
@@ -213,7 +242,7 @@
       await chrome.runtime.sendMessage({ type: 'EZLIST_SAVE_DRAFT', draft, autoFill: true });
       // Overlap: start downloading photos now, in parallel with the FB tab opening + form fill.
       if (draft.photoBaseUrl) {
-        chrome.runtime.sendMessage({ type: 'EZLIST_PREFETCH_IMAGES', baseUrl: draft.photoBaseUrl }).catch(() => {});
+        chrome.runtime.sendMessage({ type: 'EZLIST_PREFETCH_IMAGES', baseUrl: draft.photoBaseUrl, ext: draft.photoExt }).catch(() => {});
       }
       await chrome.runtime.sendMessage({ type: 'EZLIST_OPEN_FACEBOOK' });
       btn.textContent = '✓ Opened FB';
@@ -275,14 +304,18 @@
     const m = location.pathname.match(/([A-HJ-NPR-Z0-9]{11,17})(?:[/?#]|$)/i);
     return m ? m[1] : '';
   }
-  // The vehicle this VDP is actually about (match the VIN in the URL, not the first "similar vehicle").
+  // The vehicle this VDP is actually about. Prefer the main `.vdp[data-vin]` element —
+  // live-probed: ~16 OTHER elements also carry data-vin on a VDP (CTA buttons, thumbnails,
+  // related-vehicle cards with different VINs), and only .vdp has the full 49-attr dataset.
   function vdpVehicleEl() {
     const vin = vinFromUrl();
     if (vin) {
-      const el = document.querySelector(`[data-vin="${vin}"]`) || document.querySelector(`[data-vin="${vin.toUpperCase()}"]`);
+      const el = document.querySelector(`.vdp[data-vin="${vin}" i]`)
+        || document.querySelector(`[data-vin="${vin}"]`)
+        || document.querySelector(`[data-vin="${vin.toUpperCase()}"]`);
       if (el) return el;
     }
-    return document.querySelector('[data-vin]');
+    return document.querySelector('.vdp[data-vin]') || document.querySelector('[data-vin]');
   }
   function isVdpPage() {
     return /\/(used|new)-/i.test(location.pathname) && !!vinFromUrl() && !!document.querySelector('[data-vin]');

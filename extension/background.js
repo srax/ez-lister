@@ -1,6 +1,10 @@
 'use strict';
 
 const BACKEND_URL = 'http://127.0.0.1:3737';
+// Shared secret for the gated production backend (sent as the x-carxpert-token header).
+// Empty in dev — the local backend is open; the store build injects the real value.
+// See scripts/build-extension.js.
+const BACKEND_TOKEN = '';
 const MARKETPLACE_VEHICLE_CREATE_URL = 'https://www.facebook.com/marketplace/create/vehicle';
 
 // A single pre-warmed FB "create vehicle" tab so the heavy page load happens before the user clicks List.
@@ -14,7 +18,9 @@ function enableSidePanelOnActionClick() {
   }
 }
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.set({ ezlistBackendUrl: BACKEND_URL });
+  const init = { ezlistBackendUrl: BACKEND_URL };
+  if (BACKEND_TOKEN) init.ezlistBackendToken = BACKEND_TOKEN;
+  chrome.storage.local.set(init);
   enableSidePanelOnActionClick();
 });
 chrome.runtime.onStartup.addListener(enableSidePanelOnActionClick);
@@ -58,7 +64,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     // Side panel asked to (re)fill the form with the current stored draft.
     case 'EZLIST_FILL_NOW':
-      fillFacebook().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      fillFacebook(message.key).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
     case 'EZLIST_PREFETCH_IMAGES':
@@ -133,10 +139,10 @@ async function openOrReuseFacebook() {
 // Ensure a create/vehicle tab is open and tell it to fill with the latest stored draft.
 // A freshly-created tab fills itself on load (via the ezlistAutoFill flag the panel set);
 // an already-open tab needs the explicit nudge.
-async function fillFacebook() {
+async function fillFacebook(key) {
   const res = await openOrReuseFacebook();
   if (!res || !res.tabId) return { ok: false, error: 'no Facebook tab' };
-  try { await chrome.tabs.sendMessage(res.tabId, { type: 'EZLIST_FILL' }); }
+  try { await chrome.tabs.sendMessage(res.tabId, { type: 'EZLIST_FILL', key }); }
   catch { /* tab still loading — it will auto-fill once the content script boots */ }
   return { ok: true, tabId: res.tabId, reused: res.reused };
 }
@@ -164,14 +170,17 @@ function startFetch(msg) {
 const IMG_CONCURRENCY = 6;
 const IMG_MIN_BYTES = 3000;
 
-async function fetchImages({ urls, baseUrl, max = 20, width = 1080 }) {
+async function fetchImages({ urls, baseUrl, ext, max = 20, width = 1080 }) {
   const enumerated = !(Array.isArray(urls) && urls.length);
   let targets;
   if (!enumerated) {
     targets = urls.slice(0, max).map((url, i) => ({ n: i + 1, url }));
   } else if (baseUrl) {
+    // Gallery extension comes from the dealer page (used cars: ip/*.jpg, new-car stock
+    // photos: sp/*.png) — probing the wrong one yields zero images.
+    const extname = ext || 'jpg';
     targets = [];
-    for (let n = 1; n <= max; n += 1) targets.push({ n, url: `${baseUrl}${n}.jpg?width=${width}` });
+    for (let n = 1; n <= max; n += 1) targets.push({ n, url: `${baseUrl}${n}.${extname}?width=${width}` });
   } else {
     return { ok: false, error: 'no image source provided' };
   }

@@ -4,9 +4,7 @@
 // tune the listing (description, emoji, unit, toggles), then hands off to the
 // Facebook content script to fill the form. The user always reviews + Publishes.
 
-const HELP_URL = 'https://github.com/srax/ez-lister';
-
-const DEFAULT_PREFS = { emoji: '', unit: 'mi', category: '', dealerDesc: true, mileage: true, lang: 'en' };
+const DEFAULT_PREFS = { emoji: '', unit: 'mi', category: '', dealerDesc: true, mileage: true, lang: 'en', aiDesc: false };
 
 const el = (id) => document.getElementById(id);
 const ui = {
@@ -20,14 +18,15 @@ const ui = {
   unitMi: el('unit-mi'), unitKm: el('unit-km'),
   desc: el('desc'), charcount: el('charcount'),
   aiDraft: el('ai-draft'), lang: el('lang'), translate: el('translate'),
-  tDealer: el('t-dealer'), tMileage: el('t-mileage'),
-  fill: el('fill'), openfb: el('openfb'), help: el('help'),
+  tAi: el('t-ai'), tDealer: el('t-dealer'), tMileage: el('t-mileage'),
+  fill: el('fill'), openfb: el('openfb'),
   status: el('status'),
   statsBtn: el('stats-btn'), statsBack: el('stats-back'),
   viewLister: el('view-lister'), viewStats: el('view-stats'),
   statsRange: el('stats-range'), statsRangeLabel: el('stats-range-label'),
   stActive: el('st-active'), stSold: el('st-sold'), stGross: el('st-gross'),
-  stDays: el('st-days'), stHeroRange: el('st-hero-range'),
+  stDays: el('st-days'), stHeroRange: el('st-hero-range'), stDelta: el('st-delta'),
+  stListed: el('st-listed'), stListedSub: el('st-listed-sub'), stValue: el('st-value'),
   stPlatforms: el('st-platforms'), stTrend: el('st-trend'), stListings: el('st-listings'),
 };
 
@@ -93,7 +92,8 @@ function setVehiclePhoto(d) {
   if (!img) return;
   const base = d && d.photoBaseUrl;
   if (!base) { img.hidden = true; img.removeAttribute('src'); return; }
-  const candidates = [`${base}1.jpg`, `${base}0.jpg`, `${base}2.jpg`];
+  const ext = (d && d.photoExt) || 'jpg';
+  const candidates = [`${base}1.${ext}`, `${base}0.${ext}`, `${base}2.${ext}`];
   let i = 0;
   img.hidden = true;
   img.onload = () => { img.hidden = false; };
@@ -142,6 +142,7 @@ function applyPrefsToUI() {
   ui.lang.value = state.prefs.lang || 'en';
   ui.unitMi.classList.toggle('on', state.prefs.unit === 'mi');
   ui.unitKm.classList.toggle('on', state.prefs.unit === 'km');
+  ui.tAi.classList.toggle('on', !!state.prefs.aiDesc);
   ui.tDealer.classList.toggle('on', !!state.prefs.dealerDesc);
   ui.tMileage.classList.toggle('on', !!state.prefs.mileage);
 }
@@ -189,35 +190,60 @@ function withinRange(iso, range) {
 }
 
 // All figures below come from our own publish log + manual "Mark sold" events — no FB
-// scraping. Views/leads stay as samples until the FB-insights research lands.
+// scraping. Views/leads stay a locked placeholder until the FB sync lands. Everything is
+// scoped to the selected range so the hero, tiles and platform rows all tell one story.
 function computeStats(range) {
   const all = listingsArray();
-  const activeCount = all.filter((l) => l.status === 'active').length;
+  const active = all.filter((l) => l.status === 'active');
   const soldAll = all.filter((l) => l.status === 'sold');
   const soldInRange = soldAll.filter((l) => withinRange(l.soldAt, range));
+  const listedInRange = all.filter((l) => withinRange(l.listedAt, range)).length;
   const gross = soldInRange.reduce((sum, l) => sum + (Number(l.soldPrice || l.price) || 0), 0);
-  const spans = soldAll
+  const activeValue = active.reduce((sum, l) => sum + (Number(l.price) || 0), 0);
+  const spans = soldInRange
     .filter((l) => l.soldAt && l.listedAt)
     .map((l) => (new Date(l.soldAt) - new Date(l.listedAt)) / 864e5);
   const avgDays = spans.length ? Math.round(spans.reduce((a, b) => a + b, 0) / spans.length) : null;
-  return { activeCount, soldCount: soldInRange.length, gross, avgDays };
+  // Same-length window immediately before this one, for the hero delta (n/a on "all").
+  let prevSoldCount = null;
+  if (range !== 'all') {
+    const days = range === '7' ? 7 : range === '90' ? 90 : 30;
+    prevSoldCount = soldAll.filter((l) => {
+      if (!l.soldAt) return false;
+      const age = (Date.now() - new Date(l.soldAt).getTime()) / 864e5;
+      return age > days && age <= 2 * days;
+    }).length;
+  }
+  return { activeCount: active.length, activeValue, listedInRange, soldCount: soldInRange.length, gross, avgDays, prevSoldCount };
 }
 
-// Listings created per month, last 6 months.
-function monthlyListed() {
+// Listings created + sold per month, last 6 months.
+function monthlyActivity() {
   const now = new Date();
   const buckets = [];
   for (let i = 5; i >= 0; i -= 1) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    buckets.push({ y: d.getFullYear(), m: d.getMonth(), label: d.toLocaleString('en-US', { month: 'short' }), val: 0 });
+    buckets.push({ y: d.getFullYear(), m: d.getMonth(), label: d.toLocaleString('en-US', { month: 'short' }), listed: 0, sold: 0 });
   }
+  const bucketFor = (iso) => {
+    if (!iso) return null;
+    const d = new Date(iso);
+    return buckets.find((x) => x.y === d.getFullYear() && x.m === d.getMonth());
+  };
   for (const l of listingsArray()) {
-    if (!l.listedAt) continue;
-    const d = new Date(l.listedAt);
-    const b = buckets.find((x) => x.y === d.getFullYear() && x.m === d.getMonth());
-    if (b) b.val += 1;
+    const lb = bucketFor(l.listedAt);
+    if (lb) lb.listed += 1;
+    if (l.status === 'sold') {
+      const sb = bucketFor(l.soldAt);
+      if (sb) sb.sold += 1;
+    }
   }
   return buckets;
+}
+
+// $12,340 under 100k, $142k above — tile numbers must not wrap.
+function fmtMoney(v) {
+  return v >= 100000 ? `$${Math.round(v / 1000)}k` : `$${Math.round(v).toLocaleString('en-US')}`;
 }
 
 function renderStats() {
@@ -228,34 +254,47 @@ function renderStats() {
   if (ui.stGross) ui.stGross.textContent = '$' + s.gross.toLocaleString('en-US');
   if (ui.stDays) ui.stDays.textContent = s.avgDays == null ? '—' : String(s.avgDays);
   if (ui.stHeroRange) ui.stHeroRange.textContent = rangeShort(range);
+  if (ui.stListed) ui.stListed.textContent = String(s.listedInRange);
+  if (ui.stListedSub) ui.stListedSub.textContent = rangeShort(range);
+  if (ui.stValue) ui.stValue.textContent = fmtMoney(s.activeValue);
+  if (ui.stDelta) {
+    const show = s.prevSoldCount != null && (s.soldCount > 0 || s.prevSoldCount > 0);
+    ui.stDelta.hidden = !show;
+    if (show) {
+      const diff = s.soldCount - s.prevSoldCount;
+      ui.stDelta.textContent = diff > 0 ? `▲ ${diff} vs prev` : diff < 0 ? `▼ ${Math.abs(diff)} vs prev` : '= prev period';
+    }
+  }
   renderTrend();
-  renderPlatforms();
+  renderPlatforms(range);
   renderListingList();
 }
 
 function renderTrend() {
   if (!ui.stTrend) return;
-  const buckets = monthlyListed();
-  const max = Math.max(1, ...buckets.map((b) => b.val));
-  ui.stTrend.innerHTML = buckets.map((b, i) => {
-    const h = Math.round((b.val / max) * 74);
-    const on = i === buckets.length - 1 ? ' on' : '';
-    return `<div class="trend-col"><span class="trend-val">${b.val}</span>`
-      + `<div class="trend-bar${on}" style="height:${h}px"></div>`
+  const buckets = monthlyActivity();
+  const max = Math.max(1, ...buckets.map((b) => Math.max(b.listed, b.sold)));
+  ui.stTrend.innerHTML = buckets.map((b) => {
+    const hL = Math.round((b.listed / max) * 74);
+    const hS = Math.round((b.sold / max) * 74);
+    return `<div class="trend-col" title="${b.listed} listed · ${b.sold} sold">`
+      + `<span class="trend-val">${b.listed}</span>`
+      + `<div class="trend-duo"><div class="trend-bar" style="height:${hL}px"></div>`
+      + `<div class="trend-bar sold" style="height:${hS}px"></div></div>`
       + `<span class="trend-label">${b.label}</span></div>`;
   }).join('');
 }
 
-function renderPlatforms() {
+function renderPlatforms(range) {
   if (!ui.stPlatforms) return;
   const all = listingsArray();
   const fbLive = all.filter((l) => l.status === 'active').length;
-  const fbSold = all.filter((l) => l.status === 'sold').length;
+  const fbSold = all.filter((l) => l.status === 'sold' && withinRange(l.soldAt, range)).length;
   const total = Math.max(1, fbLive + fbSold);
   const pct = Math.round((fbLive / total) * 100);
   ui.stPlatforms.innerHTML = [
     `<div class="platform-row"><div class="platform-top"><span class="platform-name">FB Marketplace</span>`
-      + `<span class="platform-stat">${fbSold} sold · ${fbLive} live</span></div>`
+      + `<span class="platform-stat">${fbSold} sold ${rangeShort(range)} · ${fbLive} live</span></div>`
       + `<div class="platform-bar"><div class="platform-fill" style="width:${pct}%"></div></div></div>`,
     platformSoon('Craigslist'),
     platformSoon('OfferUp'),
@@ -263,7 +302,7 @@ function renderPlatforms() {
 }
 
 function platformSoon(name) {
-  return `<div class="platform-row soon"><div class="platform-top"><span class="platform-name">${esc(name)}</span>`
+  return `<div class="platform-row is-soon"><div class="platform-top"><span class="platform-name">${esc(name)}</span>`
     + `<span class="platform-stat">soon</span></div>`
     + `<div class="platform-bar"><div class="platform-fill" style="width:0%"></div></div></div>`;
 }
@@ -275,15 +314,19 @@ function renderListingList() {
     ui.stListings.innerHTML = '<div class="listing-empty">No listings tracked yet. Cars you publish with Carxpert show up here.</div>';
     return;
   }
+  const dayCount = (from, to) => Math.max(1, Math.round((new Date(to) - new Date(from)) / 864e5));
   ui.stListings.innerHTML = all.map((l) => {
     const title = esc(l.title || l.vin || l.key || 'Vehicle');
-    const price = l.price ? '$' + Number(l.price).toLocaleString('en-US') : '';
     const sold = l.status === 'sold';
+    const price = l.price || l.soldPrice ? '$' + Number((sold && l.soldPrice) || l.price).toLocaleString('en-US') : '';
     const pill = sold ? '<span class="lst-pill sold">Sold</span>' : '<span class="lst-pill live">Live</span>';
-    const sep = price ? ' · ' : '';
+    const days = sold
+      ? (l.soldAt && l.listedAt ? `sold in ${dayCount(l.listedAt, l.soldAt)}d` : '')
+      : (l.listedAt ? `live ${dayCount(l.listedAt, Date.now())}d` : '');
+    const bits = [price, pill, days ? `<span class="lst-days">${days}</span>` : ''].filter(Boolean).join(' · ');
     return `<div class="listing-row"><div class="listing-main">`
       + `<div class="listing-title">${title}</div>`
-      + `<div class="listing-sub">${price}${sep}${pill}</div></div>`
+      + `<div class="listing-sub">${bits}</div></div>`
       + `<button class="lst-sold-btn${sold ? ' undo' : ''}" data-key="${esc(l.key)}">${sold ? 'Undo' : 'Mark sold'}</button></div>`;
   }).join('');
 }
@@ -321,7 +364,6 @@ function rangeLabel(v) {
 
 // ---------- events ----------
 function wireEvents() {
-  ui.help.addEventListener('click', () => chrome.tabs.create({ url: HELP_URL }));
   ui.statsBtn.addEventListener('click', () => showView('stats'));
   ui.statsBack.addEventListener('click', () => showView('lister'));
   ui.statsRange.addEventListener('change', () => { ui.statsRangeLabel.textContent = rangeLabel(ui.statsRange.value); renderStats(); });
@@ -337,6 +379,10 @@ function wireEvents() {
 
   ui.desc.addEventListener('input', () => { state.userEdited = true; updateCharCount(); });
 
+  ui.tAi.addEventListener('click', () => {
+    savePref('aiDesc', !state.prefs.aiDesc, false);
+    if (state.prefs.aiDesc && state.draft) runAiDraft({ auto: true });
+  });
   ui.emoji.addEventListener('change', () => savePref('emoji', ui.emoji.value, true));
   ui.category.addEventListener('change', () => savePref('category', ui.category.value, false));
   ui.unitMi.addEventListener('click', () => savePref('unit', 'mi', true));
@@ -369,7 +415,11 @@ function onStorageChanged(changes, area) {
     const changedCar = keyForDraft(next) !== keyForDraft(state.draft);
     state.draft = next;
     renderVehicle();
-    if (changedCar) recomposeDesc(); // new car → fresh description; keep edits if same car
+    if (changedCar) {
+      recomposeDesc(); // new car → fresh template description; keep edits if same car
+      // Auto A.I.: template shows instantly, then the AI draft replaces it when ready.
+      if (state.prefs.aiDesc && state.draft) runAiDraft({ auto: true });
+    }
   }
 }
 
@@ -401,19 +451,25 @@ async function onFill() {
 }
 
 // ---------- AI (routed through our backend) ----------
-async function onAiDraft() {
-  if (!state.draft) { setStatus('Pick a car first.', true); return; }
+async function onAiDraft() { return runAiDraft(); }
+
+// One drafting path for the button and the Auto A.I. toggle. Auto mode fails soft: the
+// template description is already in the box, so an unreachable backend costs nothing.
+async function runAiDraft({ auto = false } = {}) {
+  if (!state.draft) { if (!auto) setStatus('Pick a car first.', true); return; }
+  const key = keyForDraft(state.draft);
   ui.aiDraft.disabled = true;
-  setStatus('Drafting with A.I.…');
+  setStatus(auto ? 'Auto-drafting with A.I.…' : 'Drafting with A.I.…');
   try {
     const res = await chrome.runtime.sendMessage({ type: 'EZLIST_AI_DESCRIBE', vehicle: state.draft, options: {} });
     if (!res || !res.ok) throw new Error((res && res.error) || 'A.I. draft failed.');
+    if (keyForDraft(state.draft) !== key) return; // user switched cars mid-draft — drop it
     ui.desc.value = (res.description || '').slice(0, 1000);
     state.userEdited = true;
     updateCharCount();
     setStatus('A.I. draft ready — edit if you like, then Fill.');
   } catch (e) {
-    setStatus(e.message, true);
+    setStatus(auto ? 'A.I. unreachable — using the template description.' : e.message, !auto);
   } finally {
     ui.aiDraft.disabled = false;
   }

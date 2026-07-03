@@ -130,6 +130,7 @@ body{
 .toggle:disabled{ cursor:default; }
 .toggle-label{ flex:1; font-size:13.5px; font-weight:600; color:#2b2e3f; display:flex; align-items:center; gap:6px; }
 .toggle:disabled .toggle-label{ color:#9a9caa; }
+.toggle-hint{ font-size:10.5px; font-weight:600; color:#aeb0bd; }
 .track{ display:inline-flex; align-items:center; width:38px; height:22px; border-radius:999px; padding:2px; flex-shrink:0;
   transition:background .15s; background:#d9dae2; justify-content:flex-start; }
 .toggle.on .track{ background:var(--accent); justify-content:flex-end; }
@@ -163,8 +164,6 @@ body{
 .stats-range-wrap .vsl-sel{ width:auto; height:32px; padding:0 28px 0 11px; font-size:12px; font-weight:700; border-radius:9px; }
 
 .stats-body{ padding:16px 16px 20px; }
-.stats-demo{ font-size:11px; font-weight:700; color:#8a7f1e; background:var(--accent-soft); border:1px solid var(--accent-border);
-  border-radius:9px; padding:6px 10px; margin-bottom:14px; text-align:center; }
 
 /* hero */
 .stat-hero{ position:relative; overflow:hidden; background:var(--accent); border-radius:16px; padding:16px 17px; }
@@ -187,7 +186,14 @@ body{
 .stat-tile-num{ font-size:26px; font-weight:800; color:#191b29; letter-spacing:-0.6px; margin-top:6px; }
 .stat-tile-sub{ font-size:11px; font-weight:600; color:#a4a6b2; margin-top:1px; }
 .stat-tile-sub.up{ color:#4e9b6e; }
-.stat-tile.preview{ opacity:.5; }
+
+/* views/leads placeholder — deliberately quiet, no fake numbers */
+.locked-strip{ display:flex; align-items:center; gap:8px; margin-top:10px; padding:9px 12px;
+  background:var(--input-bg); border:1px dashed #dfe1ea; border-radius:12px; color:#a4a6b2; }
+.locked-strip svg{ flex-shrink:0; }
+.locked-title{ font-size:12px; font-weight:700; color:#8a8d9b; white-space:nowrap; }
+.locked-sub{ flex:1; font-size:11px; font-weight:600; color:#aeb0bd; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.locked-vals{ font-size:12px; font-weight:800; color:#c3c5cf; font-variant-numeric:tabular-nums; white-space:nowrap; }
 
 /* by platform */
 .platform-list{ display:flex; flex-direction:column; gap:13px; }
@@ -197,19 +203,23 @@ body{
 .platform-bar{ height:8px; background:var(--line); border-radius:999px; overflow:hidden; }
 .platform-fill{ height:100%; background:var(--accent); border-radius:999px; }
 
-/* sales trend */
+/* listing activity trend — grey = listed, lime = sold, per month */
 .stat-trend-head{ display:flex; align-items:baseline; justify-content:space-between; margin:0 2px 14px; }
 .section-label.nomargin{ margin:0; }
-.stat-trend-range{ font-size:11.5px; font-weight:700; color:#8a8d9b; }
+.trend-legend{ display:flex; align-items:center; gap:5px; font-size:10.5px; font-weight:700; color:#8a8d9b; }
+.trend-legend .sw{ width:9px; height:9px; border-radius:3px; display:inline-block; }
+.trend-legend .sw.listed{ background:#e7e9ef; }
+.trend-legend .sw.sold{ background:var(--accent); margin-left:7px; }
 .stat-trend{ display:flex; align-items:flex-end; justify-content:space-between; gap:8px; height:110px; padding:0 2px; }
 .trend-col{ flex:1; display:flex; flex-direction:column; align-items:center; gap:7px; height:100%; justify-content:flex-end; }
 .trend-val{ font-size:10.5px; font-weight:800; color:#23263a; font-variant-numeric:tabular-nums; }
-.trend-bar{ width:100%; border-radius:7px 7px 3px 3px; background:#e7e9ef; }
-.trend-bar.on{ background:var(--accent); }
+.trend-duo{ display:flex; align-items:flex-end; gap:2px; width:100%; }
+.trend-bar{ flex:1; border-radius:6px 6px 2px 2px; background:#e7e9ef; }
+.trend-bar.sold{ background:var(--accent); }
 .trend-label{ font-size:10.5px; font-weight:700; color:#a4a6b2; }
 
 /* your listings + mark-sold */
-.platform-row.soon{ opacity:.45; }
+.platform-row.is-soon{ opacity:.45; }
 .listing-list{ display:flex; flex-direction:column; gap:8px; }
 .listing-empty{ font-size:12px; font-weight:600; color:#a4a6b2; background:var(--input-bg); border:1px solid var(--input-border);
   border-radius:12px; padding:14px; text-align:center; line-height:1.45; }
@@ -220,6 +230,7 @@ body{
 .lst-pill{ font-size:10px; font-weight:800; padding:1px 7px; border-radius:999px; }
 .lst-pill.live{ color:#178a3f; background:#e6f6ec; }
 .lst-pill.sold{ color:#8a8d9b; background:#eceef2; }
+.lst-days{ color:#aeb0bd; font-weight:600; white-space:nowrap; }
 .lst-sold-btn{ flex-shrink:0; font-size:11.5px; font-weight:700; color:#5d6070; background:#fff; border:1px solid var(--input-border);
   border-radius:9px; padding:7px 11px; cursor:pointer; font-family:inherit; }
 .lst-sold-btn:hover{ border-color:var(--ink); color:var(--ink); }

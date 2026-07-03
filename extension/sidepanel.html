@@ -28,9 +28,6 @@
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#1c1e12" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="20" x2="6" y2="13"/><line x1="12" y1="20" x2="12" y2="8"/><line x1="18" y1="20" x2="18" y2="4"/></svg>
       Stats
     </button>
-    <button id="help" class="icon-btn" title="Help">
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.3 9a2.7 2.7 0 0 1 5.2 1c0 1.8-2.7 2.4-2.7 2.4"/><line x1="12" y1="17" x2="12" y2="17"/></svg>
-    </button>
     <button class="icon-btn" title="Settings (coming soon)" disabled>
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     </button>
@@ -124,7 +121,7 @@
     <!-- Description -->
     <div class="desc-head">
       <label class="section-label">Listing description</label>
-      <span id="charcount" class="charcount" hidden>0 / 1000</span>
+      <span id="charcount" class="charcount">0 / 1000</span>
     </div>
     <textarea id="desc" class="vsl-in" maxlength="1000" placeholder="Write your listing description, or pick a car to auto-generate it…"></textarea>
 
@@ -150,9 +147,9 @@
 
     <!-- Toggles -->
     <div class="toggles">
-      <button class="toggle" id="t-ai" disabled>
+      <button class="toggle" id="t-ai">
         <span class="track"><span class="knob"></span></span>
-        <span class="toggle-label">A.I. written description <span class="soon">soon</span></span>
+        <span class="toggle-label">Auto A.I. description <span class="toggle-hint">drafts on every car pick</span></span>
       </button>
       <div class="hairline"></div>
       <button class="toggle" id="t-dealer">
@@ -213,12 +210,12 @@
     </header>
 
     <main class="body vsl-scroll stats-body">
-      <div class="stats-demo">Views &amp; leads are sample data — the rest is your live activity</div>
 
-      <!-- Hero: vehicles sold -->
+      <!-- Hero: vehicles sold (live) -->
       <div class="stat-hero">
         <div class="stat-hero-top">
           <span class="stat-hero-label">Vehicles sold</span>
+          <span class="stat-delta" id="st-delta" hidden></span>
         </div>
         <div class="stat-hero-mid">
           <span class="stat-hero-big" id="st-sold">0</span>
@@ -231,7 +228,7 @@
         </div>
       </div>
 
-      <!-- 2x2 metric tiles -->
+      <!-- 2x2 metric tiles — every number here is live -->
       <div class="stat-grid">
         <div class="stat-tile">
           <div class="stat-tile-head">
@@ -239,23 +236,15 @@
             <span>Active listings</span>
           </div>
           <div class="stat-tile-num" id="st-active">0</div>
-          <div class="stat-tile-sub">via Carxpert</div>
+          <div class="stat-tile-sub">live right now</div>
         </div>
-        <div class="stat-tile preview">
+        <div class="stat-tile">
           <div class="stat-tile-head">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
-            <span>Total views</span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+            <span>Listed</span>
           </div>
-          <div class="stat-tile-num">12.4k</div>
-          <div class="stat-tile-sub">sample</div>
-        </div>
-        <div class="stat-tile preview">
-          <div class="stat-tile-head">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-            <span>Leads / messages</span>
-          </div>
-          <div class="stat-tile-num">96</div>
-          <div class="stat-tile-sub">sample</div>
+          <div class="stat-tile-num" id="st-listed">0</div>
+          <div class="stat-tile-sub" id="st-listed-sub">last 30 days</div>
         </div>
         <div class="stat-tile">
           <div class="stat-tile-head">
@@ -263,44 +252,40 @@
             <span>Avg days to sell</span>
           </div>
           <div class="stat-tile-num" id="st-days">—</div>
-          <div class="stat-tile-sub">from your sales</div>
+          <div class="stat-tile-sub">listed → sold</div>
         </div>
+        <div class="stat-tile">
+          <div class="stat-tile-head">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4L12 22l-8.6-8.6a2 2 0 0 1 0-2.8L11 3h7a3 3 0 0 1 3 3v7z" transform="rotate(180 12 12) translate(0 -1)"/><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+            <span>Active value</span>
+          </div>
+          <div class="stat-tile-num" id="st-value">$0</div>
+          <div class="stat-tile-sub">inventory live on FB</div>
+        </div>
+      </div>
+
+      <!-- Views & leads: honest placeholder, no fake numbers -->
+      <div class="locked-strip">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        <span class="locked-title">Views &amp; leads</span>
+        <span class="locked-sub">sync from Facebook — coming soon</span>
+        <span class="locked-vals">— · —</span>
       </div>
 
       <div class="divider"></div>
 
       <!-- By platform -->
       <div class="section-label">By platform</div>
-      <div class="platform-list" id="st-platforms">
-        <div class="platform-row">
-          <div class="platform-top"><span class="platform-name">FB Marketplace</span><span class="platform-stat">9 sold · 22 live</span></div>
-          <div class="platform-bar"><div class="platform-fill" style="width:62%"></div></div>
-        </div>
-        <div class="platform-row">
-          <div class="platform-top"><span class="platform-name">Craigslist</span><span class="platform-stat">5 sold · 8 live</span></div>
-          <div class="platform-bar"><div class="platform-fill" style="width:38%"></div></div>
-        </div>
-        <div class="platform-row">
-          <div class="platform-top"><span class="platform-name">OfferUp</span><span class="platform-stat">4 sold · 4 live</span></div>
-          <div class="platform-bar"><div class="platform-fill" style="width:28%"></div></div>
-        </div>
-      </div>
+      <div class="platform-list" id="st-platforms"></div>
 
       <div class="divider"></div>
 
-      <!-- Sales trend -->
+      <!-- Listing activity trend -->
       <div class="stat-trend-head">
         <span class="section-label nomargin">Listing activity</span>
-        <span class="stat-trend-range">6 months</span>
+        <span class="trend-legend"><i class="sw listed"></i>listed<i class="sw sold"></i>sold</span>
       </div>
-      <div class="stat-trend" id="st-trend">
-        <div class="trend-col"><span class="trend-val">9</span><div class="trend-bar" style="height:37px"></div><span class="trend-label">Jan</span></div>
-        <div class="trend-col"><span class="trend-val">12</span><div class="trend-bar" style="height:49px"></div><span class="trend-label">Feb</span></div>
-        <div class="trend-col"><span class="trend-val">8</span><div class="trend-bar" style="height:33px"></div><span class="trend-label">Mar</span></div>
-        <div class="trend-col"><span class="trend-val">14</span><div class="trend-bar" style="height:57px"></div><span class="trend-label">Apr</span></div>
-        <div class="trend-col"><span class="trend-val">15</span><div class="trend-bar" style="height:62px"></div><span class="trend-label">May</span></div>
-        <div class="trend-col"><span class="trend-val">18</span><div class="trend-bar on" style="height:74px"></div><span class="trend-label">Jun</span></div>
-      </div>
+      <div class="stat-trend" id="st-trend"></div>
 
       <div class="divider"></div>
 
