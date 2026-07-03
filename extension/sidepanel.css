@@ -243,3 +243,27 @@ body{
 .foot-actions{ display:flex; gap:8px; align-items:stretch; }
 .foot-note{ margin-top:9px; font-size:11px; color:#9b9eac; text-align:center; line-height:1.4; }
 .foot-note b{ color:#6f7257; }
+
+/* account menu (header) */
+.account-menu{ position:absolute; top:52px; right:14px; z-index:40; width:210px; background:#fff; border:1px solid var(--input-border); border-radius:12px; box-shadow:0 12px 30px -8px rgba(15,18,40,0.25); padding:8px; }
+.account-email{ font-size:12.5px; font-weight:700; color:#191b29; padding:6px 8px 2px; word-break:break-all; }
+.account-plan{ font-size:11px; font-weight:600; color:#8a8d9b; padding:0 8px 8px; border-bottom:1px solid var(--line); margin-bottom:6px; }
+.menu-item{ display:block; width:100%; text-align:left; border:0; background:transparent; padding:8px; border-radius:8px; font:600 13px/1 'Manrope',sans-serif; color:var(--text); cursor:pointer; }
+.menu-item:hover{ background:#f3f4f7; }
+.menu-item.danger{ color:#c0392b; }
+
+/* entitlement gate — covers the panel until signed in + subscribed + dealership-linked */
+.gate{ position:fixed; inset:0; z-index:60; background:linear-gradient(180deg,#fff 0%,#fafbf3 100%); display:flex; align-items:center; justify-content:center; padding:28px 22px; }
+.gate-card{ width:100%; max-width:300px; text-align:center; display:flex; flex-direction:column; align-items:center; }
+.gate-logo{ width:48px; height:48px; border-radius:13px; box-shadow:0 2px 8px rgba(20,24,55,0.14); margin-bottom:18px; }
+.gate-icon{ font-size:30px; line-height:1; margin-bottom:10px; min-height:20px; }
+.gate-title{ font-size:19px; font-weight:800; color:#191b29; letter-spacing:-0.3px; margin:0 0 8px; }
+.gate-msg{ font-size:13px; line-height:1.5; color:#5d6070; margin:0 0 18px; }
+.gate-price{ margin:0 0 16px; }
+.gate-price-amt{ font-size:22px; font-weight:800; color:#191b29; }
+.gate-price-per{ font-size:12.5px; font-weight:600; color:#8a8d9b; }
+.gate-primary{ width:100%; }
+.gate-secondary{ width:100%; margin-top:9px; }
+.gate-err{ margin-top:12px; font-size:12px; font-weight:600; color:#c0392b; line-height:1.4; }
+.gate-link{ margin-top:16px; border:0; background:transparent; color:#9b9eac; font:600 12px 'Manrope',sans-serif; cursor:pointer; text-decoration:underline; }
+.gate-link:hover{ color:#5d6070; }

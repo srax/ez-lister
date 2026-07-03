@@ -28,9 +28,15 @@ const ui = {
   stDays: el('st-days'), stHeroRange: el('st-hero-range'), stDelta: el('st-delta'),
   stListed: el('st-listed'), stListedSub: el('st-listed-sub'), stValue: el('st-value'),
   stPlatforms: el('st-platforms'), stTrend: el('st-trend'), stListings: el('st-listings'),
+  // auth + entitlement gate
+  gate: el('gate'), gateIcon: el('gate-icon'), gateTitle: el('gate-title'), gateMsg: el('gate-msg'),
+  gatePrice: el('gate-price'), gatePrimary: el('gate-primary'), gateSecondary: el('gate-secondary'),
+  gateErr: el('gate-err'), gateSignout: el('gate-signout'),
+  accountBtn: el('account-btn'), accountMenu: el('account-menu'), accountEmail: el('account-email'),
+  accountPlan: el('account-plan'), acctBilling: el('acct-billing'), acctSignout: el('acct-signout'),
 };
 
-const state = { draft: null, prefs: { ...DEFAULT_PREFS }, listed: {}, listings: {}, userEdited: false, filling: false };
+const state = { draft: null, prefs: { ...DEFAULT_PREFS }, listed: {}, listings: {}, userEdited: false, filling: false, auth: null };
 
 init();
 
@@ -49,6 +55,9 @@ async function init() {
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg && msg.type === 'EZLIST_FILL_STATUS') setStatus(msg.text, msg.error);
   });
+  // Re-check entitlement when the panel regains focus (e.g. returning from Stripe checkout).
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAuth({ refresh: true }); });
+  await refreshAuth();
 }
 
 // ---------- rendering ----------
@@ -389,6 +398,17 @@ function wireEvents() {
   ui.unitKm.addEventListener('click', () => savePref('unit', 'km', true));
   ui.tDealer.addEventListener('click', () => savePref('dealerDesc', !state.prefs.dealerDesc, true));
   ui.tMileage.addEventListener('click', () => savePref('mileage', !state.prefs.mileage, true));
+
+  // auth + gate
+  ui.gatePrimary.addEventListener('click', () => gateAction(ui.gatePrimary.dataset.action));
+  ui.gateSecondary.addEventListener('click', () => gateAction(ui.gateSecondary.dataset.action));
+  ui.gateSignout.addEventListener('click', doSignOut);
+  ui.accountBtn.addEventListener('click', (e) => { e.stopPropagation(); ui.accountMenu.hidden = !ui.accountMenu.hidden; });
+  ui.acctSignout.addEventListener('click', doSignOut);
+  ui.acctBilling.addEventListener('click', openBilling);
+  document.addEventListener('click', (e) => {
+    if (!ui.accountMenu.hidden && !ui.accountMenu.contains(e.target) && !ui.accountBtn.contains(e.target)) ui.accountMenu.hidden = true;
+  });
 }
 
 // Update a preference; `recompose` regenerates the description (overwriting manual edits).
@@ -402,6 +422,7 @@ function savePref(key, value, recompose) {
 
 function onStorageChanged(changes, area) {
   if (area !== 'local') return;
+  if (changes.ezlistMe || changes.ezlistAuthToken) refreshAuth();
   if (changes.ezlistListedVins) {
     state.listed = changes.ezlistListedVins.newValue || {};
     if (state.draft) ui.vehListed.hidden = !isListed(state.draft);
@@ -426,6 +447,9 @@ function onStorageChanged(changes, area) {
 // ---------- fill hand-off ----------
 async function onFill() {
   if (!state.draft || state.filling) return;
+  // Entitlement gate (belt-and-braces: the gate overlay normally covers Fill already).
+  const gate = await chrome.runtime.sendMessage({ type: 'EZLIST_CAN_LIST' }).catch(() => null);
+  if (!gate || !gate.ok) { await refreshAuth({ refresh: true }); return; }
   state.filling = true;
   ui.fill.disabled = true;
   const original = ui.fill.textContent;
@@ -493,6 +517,110 @@ async function onTranslate() {
   } finally {
     ui.translate.disabled = false;
   }
+}
+
+// ---------- auth + entitlement gate (C3) ----------
+// One gate screen per /api/me reason. The background worker owns auth/entitlement; the panel
+// just renders the right step and fires the action.
+const GATE = {
+  signed_out: { icon: '🔑', title: 'Sign in to Carxpert', msg: 'Sign in with your Google account to start listing inventory to Facebook Marketplace.', primary: 'Sign in with Google', action: 'signin' },
+  no_dealership: { icon: '🏬', title: 'Almost there', msg: 'Your account needs a supported dealership linked. If you just signed up, we’ll set this up shortly — tap Re-check in a moment.', primary: 'Re-check', action: 'recheck' },
+  no_subscription: { icon: '⚡', title: 'Start your subscription', msg: 'One-click dealer inventory to Facebook Marketplace, with AI descriptions & translations.', primary: 'Subscribe', action: 'checkout', secondary: 'I’ve paid · refresh', secondaryAction: 'refresh', price: true },
+  expired: { icon: '⚡', title: 'Renew your subscription', msg: 'Your subscription has ended. Renew to keep listing to Facebook Marketplace.', primary: 'Renew', action: 'checkout', secondary: 'I’ve paid · refresh', secondaryAction: 'refresh', price: true },
+  unknown: { icon: '⚠️', title: 'Couldn’t load your account', msg: 'We couldn’t reach the server. Check your connection and try again.', primary: 'Retry', action: 'recheck' }
+};
+
+async function refreshAuth(opts) {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'EZLIST_GET_AUTH', refresh: !!(opts && opts.refresh) });
+    state.auth = (res && res.ok) ? res.auth : { signedIn: false, entitled: false, reason: 'unknown' };
+  } catch {
+    state.auth = { signedIn: false, entitled: false, reason: 'unknown' };
+  }
+  renderGate();
+  return state.auth;
+}
+
+function gateStateKey(auth) {
+  if (!auth || !auth.signedIn) return 'signed_out';
+  if (auth.entitled) return null; // entitled → no gate
+  if (auth.reason === 'no_dealership') return 'no_dealership';
+  if (auth.reason === 'expired') return 'expired';
+  if (auth.reason === 'no_subscription') return 'no_subscription';
+  return 'unknown';
+}
+
+function renderGate() {
+  const auth = state.auth || { signedIn: false };
+  applyAccount(auth);
+  const key = gateStateKey(auth);
+  if (!key) { ui.gate.hidden = true; return; }
+  const g = GATE[key];
+  ui.gate.hidden = false;
+  ui.gateIcon.textContent = g.icon;
+  ui.gateTitle.textContent = g.title;
+  ui.gateMsg.textContent = g.msg;
+  ui.gatePrice.hidden = !g.price;
+  ui.gatePrimary.textContent = g.primary;
+  ui.gatePrimary.dataset.action = g.action;
+  if (g.secondary) { ui.gateSecondary.hidden = false; ui.gateSecondary.textContent = g.secondary; ui.gateSecondary.dataset.action = g.secondaryAction; }
+  else ui.gateSecondary.hidden = true;
+  ui.gateSignout.hidden = !auth.signedIn;
+  ui.gateErr.hidden = true;
+}
+
+function applyAccount(auth) {
+  const signedIn = !!(auth && auth.signedIn);
+  ui.accountBtn.hidden = !signedIn;
+  if (!signedIn) { ui.accountMenu.hidden = true; return; }
+  ui.accountEmail.textContent = (auth.user && auth.user.email) || 'Signed in';
+  const periodEnd = auth.subscription && auth.subscription.periodEnd;
+  ui.accountPlan.textContent = auth.entitled
+    ? (periodEnd ? `Active · renews ${new Date(periodEnd).toLocaleDateString()}` : 'Active')
+    : 'No active plan';
+}
+
+async function gateAction(action) {
+  ui.gateErr.hidden = true;
+  const btn = action === 'refresh' ? ui.gateSecondary : ui.gatePrimary;
+  const label = btn.textContent;
+  btn.disabled = true;
+  try {
+    if (action === 'signin') {
+      btn.textContent = 'Opening Google…';
+      const res = await chrome.runtime.sendMessage({ type: 'EZLIST_SIGN_IN' });
+      if (!res || !res.ok) throw new Error((res && res.error) || 'Sign-in failed.');
+      state.auth = res.auth; renderGate();
+    } else if (action === 'checkout') {
+      btn.textContent = 'Opening checkout…';
+      const res = await chrome.runtime.sendMessage({ type: 'EZLIST_CHECKOUT' });
+      if (!res || !res.ok) throw new Error((res && res.error) || 'Could not start checkout.');
+      // Checkout opens in a tab; entitlement flips when the user returns (visibilitychange) or taps refresh.
+    } else { // refresh | recheck | retry
+      btn.textContent = 'Checking…';
+      await refreshAuth({ refresh: true });
+    }
+  } catch (e) {
+    ui.gateErr.textContent = e.message || 'Something went wrong.';
+    ui.gateErr.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+async function doSignOut() {
+  await chrome.runtime.sendMessage({ type: 'EZLIST_SIGN_OUT' }).catch(() => {});
+  ui.accountMenu.hidden = true;
+  await refreshAuth();
+}
+
+async function openBilling() {
+  ui.accountMenu.hidden = true;
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'EZLIST_PORTAL' });
+    if (!res || !res.ok) throw new Error((res && res.error) || 'Could not open billing.');
+  } catch (e) { setStatus(e.message, true); }
 }
 
 function esc(v) {

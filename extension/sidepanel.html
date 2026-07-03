@@ -28,10 +28,18 @@
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#1c1e12" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="20" x2="6" y2="13"/><line x1="12" y1="20" x2="12" y2="8"/><line x1="18" y1="20" x2="18" y2="4"/></svg>
       Stats
     </button>
-    <button class="icon-btn" title="Settings (coming soon)" disabled>
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    <button id="account-btn" class="icon-btn" title="Account" hidden>
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
     </button>
   </header>
+
+  <!-- Account menu (opened from the header account button when signed in) -->
+  <div id="account-menu" class="account-menu" hidden>
+    <div class="account-email" id="account-email"></div>
+    <div class="account-plan" id="account-plan"></div>
+    <button id="acct-billing" class="menu-item">Manage billing</button>
+    <button id="acct-signout" class="menu-item danger">Sign out</button>
+  </div>
 
   <!-- Scrollable body -->
   <main class="body vsl-scroll">
@@ -294,6 +302,24 @@
       <div class="listing-list" id="st-listings"></div>
 
     </main>
+  </div>
+
+  <!-- Entitlement gate — covers the panel until signed in + subscribed + dealership-linked.
+       One screen per /api/me reason: signed_out → no_dealership → no_subscription → ready. -->
+  <div id="gate" class="gate" hidden>
+    <div class="gate-card">
+      <img class="gate-logo" src="assets/cx-logo.png" alt="Carxpert">
+      <div class="gate-icon" id="gate-icon" aria-hidden="true"></div>
+      <h2 class="gate-title" id="gate-title">Carxpert</h2>
+      <p class="gate-msg" id="gate-msg"></p>
+      <div class="gate-price" id="gate-price" hidden>
+        <span class="gate-price-amt">$89.99</span><span class="gate-price-per"> / month · cancel anytime</span>
+      </div>
+      <button class="accent-btn primary gate-primary" id="gate-primary"></button>
+      <button class="ghost-btn compact gate-secondary" id="gate-secondary" hidden></button>
+      <div class="gate-err" id="gate-err" hidden></div>
+      <button class="gate-link" id="gate-signout" hidden>Sign out</button>
+    </div>
   </div>
 
   <script src="sidepanel.js"></script>
