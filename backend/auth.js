@@ -3,11 +3,11 @@ import { betterAuth } from 'better-auth';
 import { bearer } from 'better-auth/plugins';
 import { stripe as stripePlugin } from '@better-auth/stripe';
 import Stripe from 'stripe';
+import { dash } from '@better-auth/infra';
 import { pool } from './db.js';
 
 // Better Auth instance. Google is the only provider in v1; the bearer plugin lets the
 // extension authenticate every API call with `Authorization: Bearer <session token>`.
-// Billing agent (B) appends the @better-auth/stripe plugin below (guarded on env).
 
 const EXTENSION_ID = process.env.EXTENSION_ID || 'ejagngoidhjkjoadbbijjkpdgelklael';
 const devExtensionIds = (process.env.EXTENSION_IDS_DEV || '')
@@ -42,6 +42,11 @@ const stripePlugins = stripeClient
     })]
   : [];
 
+// Better Auth Dash (@better-auth/infra) — lets the hosted dashboard verify ownership of and
+// manage this deployment (endpoints served under /api/auth/*). dash() reads the key from
+// BETTER_AUTH_API_KEY; guarded so the server still boots without it.
+const dashPlugins = process.env.BETTER_AUTH_API_KEY ? [dash()] : [];
+
 export const auth = betterAuth({
   database: pool,
   baseURL: process.env.BETTER_AUTH_URL,
@@ -54,7 +59,7 @@ export const auth = betterAuth({
   ],
   // Store email + name only (Better Auth defaults). Google is the only provider in v1.
   socialProviders,
-  plugins: [bearer(), ...stripePlugins]
+  plugins: [bearer(), ...dashPlugins, ...stripePlugins]
 });
 
 export function googleConfigured() {
