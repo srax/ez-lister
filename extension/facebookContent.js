@@ -302,6 +302,11 @@
       await waitForLabel('Vehicle type', 20000);
       const log = await fillForm(draft, (line) => postStatus(line));
       const missed = log.filter((r) => !r.ok).map((r) => r.name);
+      // Per-field fill report → sync queue (feeds the backend fill-accuracy metric). C5.
+      chrome.runtime.sendMessage({
+        type: 'EZLIST_ENQUEUE_EVENT',
+        event: { type: 'fill_completed', clientKey: lastFilledKey, data: { fields: log.map((r) => ({ name: r.name, ok: r.ok, msg: r.msg })) } }
+      }).catch(() => {});
       postStatus(missed.length ? `Filled ✓ · add manually: ${missed.join(', ')}` : 'Listing filled ✓');
     } catch (e) {
       postStatus(`Error: ${e.message}`, true);
@@ -361,6 +366,8 @@
       listedAt: prev.listedAt || now,
     };
     await chrome.storage.local.set({ ezlistListedVins: listed, ezlistListings: listings });
+    // Publish event → sync queue; the ezlistListings write above also triggers the listing sync. C5.
+    chrome.runtime.sendMessage({ type: 'EZLIST_ENQUEUE_EVENT', event: { type: 'publish_detected', clientKey: key } }).catch(() => {});
     postStatus('✓ Listed on Marketplace.');
   }
 

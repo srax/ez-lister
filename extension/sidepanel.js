@@ -36,7 +36,7 @@ const ui = {
   accountPlan: el('account-plan'), acctBilling: el('acct-billing'), acctSignout: el('acct-signout'),
 };
 
-const state = { draft: null, prefs: { ...DEFAULT_PREFS }, listed: {}, listings: {}, userEdited: false, filling: false, auth: null };
+const state = { draft: null, prefs: { ...DEFAULT_PREFS }, listed: {}, listings: {}, serverListings: {}, userEdited: false, filling: false, auth: null };
 
 init();
 
@@ -167,7 +167,10 @@ function showView(view) {
   const stats = view === 'stats';
   ui.viewLister.hidden = stats;
   ui.viewStats.hidden = !stats;
-  if (stats) renderStats();
+  if (stats) {
+    renderStats(); // paint local immediately…
+    loadServerListings().then((ok) => { if (ok) renderStats(); }); // …then refresh from the server
+  }
 }
 
 // Seed ezlistListings from older ezlistListedVins keys (users who published before the
@@ -189,7 +192,48 @@ async function migrateListings() {
   if (changed) await chrome.storage.local.set({ ezlistListings: state.listings });
 }
 
-const listingsArray = () => Object.values(state.listings || {});
+// Stats source of truth = server listings (synced from every device) overlaid with the local
+// record, so a just-published or just-marked-sold car shows instantly before the sync lands.
+const listingsArray = () => {
+  const byKey = {};
+  for (const l of Object.values(state.serverListings || {})) byKey[l.key] = l;
+  for (const l of Object.values(state.listings || {})) byKey[l.key] = { ...(byKey[l.key] || {}), ...l };
+  return Object.values(byKey);
+};
+
+// Map a server row (snake_case, status 'listed'|'sold'|'removed') to the local shape the
+// stats renderer expects (status 'active'|'sold').
+function fromServerListing(r) {
+  return {
+    key: r.client_key || r.vin || r.id,
+    vin: r.vin || undefined,
+    title: r.title || [r.year, r.make, r.model].filter(Boolean).join(' ') || undefined,
+    year: r.year, make: r.make, model: r.model,
+    price: r.price != null ? Number(r.price) : undefined,
+    soldPrice: r.sold_price != null ? Number(r.sold_price) : undefined,
+    platform: r.platform || 'fb',
+    status: r.status === 'sold' ? 'sold' : 'active',
+    listedAt: r.listed_at || undefined,
+    soldAt: r.sold_at || undefined,
+    sourceUrl: r.source_url || undefined
+  };
+}
+
+// Pull the server-side listings for the stats view (best effort; leaves local intact on
+// failure / not-entitled / offline). Kept in state.serverListings — never written to storage,
+// so it can't trigger the sync loop.
+async function loadServerListings() {
+  const res = await chrome.runtime.sendMessage({ type: 'EZLIST_GET_LISTINGS' }).catch(() => null);
+  if (!res || !res.ok || !Array.isArray(res.listings)) return false;
+  const next = {};
+  for (const r of res.listings) {
+    if (r.status === 'removed') continue;
+    const m = fromServerListing(r);
+    if (m.key) next[m.key] = m;
+  }
+  state.serverListings = next;
+  return true;
+}
 
 function withinRange(iso, range) {
   if (!iso) return false;
@@ -342,18 +386,26 @@ function renderListingList() {
 
 // Manual sold signal — the reliable MVP source of truth for sale outcomes.
 function markSold(key) {
-  const l = state.listings[key];
-  if (!l) return;
-  if (l.status === 'sold') {
-    l.status = 'active';
-    delete l.soldAt;
-    delete l.soldPrice;
-  } else {
-    l.status = 'sold';
-    l.soldAt = new Date().toISOString();
-    l.soldPrice = l.price;
+  let l = state.listings[key];
+  if (!l) {
+    // Server-only listing (synced from another device) — materialise a local record so the
+    // change persists locally and syncs back.
+    const s = state.serverListings[key];
+    if (!s) return;
+    l = { ...s };
+    state.listings[key] = l;
   }
-  chrome.storage.local.set({ ezlistListings: state.listings });
+  let type;
+  if (l.status === 'sold') {
+    l.status = 'active'; delete l.soldAt; delete l.soldPrice; type = 'marked_sold_undo';
+  } else {
+    l.status = 'sold'; l.soldAt = new Date().toISOString(); l.soldPrice = l.price; type = 'marked_sold';
+  }
+  chrome.storage.local.set({ ezlistListings: state.listings }); // triggers background auto-sync
+  chrome.runtime.sendMessage({
+    type: 'EZLIST_ENQUEUE_EVENT',
+    event: { type, clientKey: key, occurredAt: new Date().toISOString(), data: type === 'marked_sold' ? { soldPrice: l.soldPrice } : null }
+  }).catch(() => {});
   renderStats();
 }
 

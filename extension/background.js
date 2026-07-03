@@ -131,6 +131,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       openPanel(sender).then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
+    // ---- listings sync (C5) ----
+    case 'EZLIST_SYNC':
+      syncNow().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+
+    case 'EZLIST_GET_LISTINGS':
+      getServerListings().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+
+    case 'EZLIST_ENQUEUE_EVENT':
+      enqueueEvent(message.event).then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+
     default:
       return false;
   }
@@ -494,3 +507,91 @@ async function openPanel(sender) {
     await chrome.sidePanel.open({ windowId });
   }
 }
+
+// ==================== listings sync (C5) ====================
+
+// Map a local ezlistListings entry to the /api/listings/sync contract shape.
+function toSyncListing(l) {
+  return {
+    clientKey: l.key,
+    vin: l.vin || null,
+    stock: l.stock || null,
+    title: l.title || null,
+    year: l.year ? Number(l.year) : null,
+    make: l.make || null,
+    model: l.model || null,
+    price: l.price != null ? Number(l.price) : null,
+    sourceUrl: l.sourceUrl || null,
+    platform: l.platform || 'fb',
+    status: l.status === 'sold' ? 'sold' : 'listed', // local 'active' → server 'listed'
+    listedAt: l.listedAt || null,
+    soldAt: l.soldAt || null,
+    soldPrice: l.soldPrice != null ? Number(l.soldPrice) : null
+  };
+}
+
+// Push tracked listings + queued events to the backend. No-op when signed out. The event
+// queue is cleared only for events actually flushed (server dedupes by client uuid), so
+// anything enqueued during the request survives.
+let syncing = false;
+async function syncNow() {
+  if (!(await getToken())) return { ok: false, reason: 'signed_out' };
+  if (syncing) return { ok: true, skipped: 'in_progress' };
+  syncing = true;
+  try {
+    const store = await chrome.storage.local.get(['ezlistListings', 'ezlistEventQueue']);
+    const listings = Object.values(store.ezlistListings || {}).map(toSyncListing);
+    const events = store.ezlistEventQueue || [];
+    if (!listings.length && !events.length) return { ok: true, empty: true };
+    const data = await postBackend('/api/listings/sync', { listings, events });
+    if (events.length) {
+      const flushed = new Set(events.map((e) => e.id));
+      const now = (await chrome.storage.local.get('ezlistEventQueue')).ezlistEventQueue || [];
+      await chrome.storage.local.set({ ezlistEventQueue: now.filter((e) => !flushed.has(e.id)) });
+    }
+    return { ok: true, listings: listings.length, events: events.length, server: data };
+  } finally {
+    syncing = false;
+  }
+}
+
+// Server-side listings for the stats view (entitled). 402 → not entitled (panel keeps local).
+async function getServerListings() {
+  const backend = await getBackendUrl();
+  let resp;
+  try { resp = await fetch(`${backend}/api/listings`, { headers: await authHeaders() }); }
+  catch { return { ok: false, reason: 'offline' }; }
+  if (resp.status === 401) { await clearAuth(); return { ok: false, reason: 'signed_out' }; }
+  if (resp.status === 402) return { ok: false, reason: 'not_entitled' };
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data.ok) return { ok: false, reason: `http_${resp.status}` };
+  return { ok: true, listings: data.listings || [] };
+}
+
+// Append an event to the offline queue (client uuid = idempotency key). Deduped by id;
+// bounded so a permanently-offline client can't grow storage without limit.
+async function enqueueEvent(event) {
+  if (!event || !event.type) return;
+  const ev = {
+    id: event.id || (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`),
+    type: event.type,
+    clientKey: event.clientKey || null,
+    occurredAt: event.occurredAt || new Date().toISOString(),
+    data: event.data || null
+  };
+  const q = (await chrome.storage.local.get('ezlistEventQueue')).ezlistEventQueue || [];
+  if (q.some((e) => e.id === ev.id)) return;
+  q.push(ev);
+  await chrome.storage.local.set({ ezlistEventQueue: q.slice(-500) });
+}
+
+// Auto-sync when tracked listings or the event queue change (publish detection, mark sold,
+// enqueued events) — debounced, best-effort, only when signed in.
+let syncTimer = null;
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  if (changes.ezlistListings || changes.ezlistEventQueue) {
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => { syncNow().catch(() => {}); }, 4000);
+  }
+});
