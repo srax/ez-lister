@@ -194,14 +194,26 @@
   // content script writes ezlistListedVins on a real publish (never on an abandoned form).
   // Until then it stays "⚡ List". Clicking a green button still re-runs the flow to re-list.
   let listedKeys = {};
+  // Entitlement gate (C4): List buttons are live only when the user is signed in + subscribed.
+  // Otherwise they render a "Sign in" affordance that opens the panel. Cheap cached read; the
+  // background verifies the lease (dom-matched to this dealer host) / falls back to /api/me.
+  let entitled = false;
+  function refreshEntitled() {
+    chrome.runtime.sendMessage({ type: 'EZLIST_GET_AUTH' })
+      .then((r) => { const next = !!(r && r.ok && r.auth && r.auth.entitled); if (next !== entitled) { entitled = next; repaintAll(); } })
+      .catch(() => {});
+  }
   chrome.storage.local.get(['ezlistListedVins'])
     .then((s) => { listedKeys = s.ezlistListedVins || {}; repaintAll(); })
     .catch(() => {});
+  refreshEntitled();
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local' && changes.ezlistListedVins) {
+    if (area !== 'local') return;
+    if (changes.ezlistListedVins) {
       listedKeys = changes.ezlistListedVins.newValue || {};
       repaintAll();
     }
+    if (changes.ezlistMe || changes.ezlistAuthToken) refreshEntitled();
   });
   function cardKey(card, vdpUrl) {
     const vin = (card.getAttribute('data-vin') || '').toUpperCase();
@@ -214,8 +226,17 @@
   const BOLT = (sz) => `<svg width="${sz}" height="${sz}" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="flex:0 0 auto"><path d="M13 2L4.5 13.5H11l-1 8.5L19.5 10H13l0-8z"/></svg>`;
   function paint(btn) {
     if (btn.dataset.busy) return; // mid-click transient text — don't clobber
-    const listed = !!(btn.dataset.ezkey && listedKeys[btn.dataset.ezkey]);
     const vdp = btn.classList.contains('ezlist-vdp-btn');
+    if (!entitled) {
+      // Locked: neutral chip that routes to sign-in rather than filling.
+      btn.style.background = '#eceef3';
+      btn.style.color = '#8a8d9b';
+      btn.style.boxShadow = 'none';
+      btn.innerHTML = `<span>🔒 ${vdp ? 'Sign in to list' : 'Sign in'}</span>`;
+      btn.title = 'Sign in to Carxpert to list this vehicle';
+      return;
+    }
+    const listed = !!(btn.dataset.ezkey && listedKeys[btn.dataset.ezkey]);
     if (listed) {
       btn.style.background = '#178a3f';   // success green — reads clearly as "already listed"
       btn.style.color = '#fff';
@@ -234,6 +255,14 @@
   }
 
   async function onList(scope, btn, sourceUrl) {
+    if (!entitled) {
+      // Not entitled → open the panel to sign in / subscribe instead of filling.
+      chrome.runtime.sendMessage({ type: 'EZLIST_OPEN_PANEL' }).catch(() => {});
+      // Re-verify in case the cached flag was stale (e.g. the user just subscribed).
+      chrome.runtime.sendMessage({ type: 'EZLIST_CAN_LIST', host: location.hostname })
+        .then((r) => { if (r && r.ok) { entitled = true; repaintAll(); } }).catch(() => {});
+      return;
+    }
     btn.dataset.busy = '1';
     btn.textContent = '…'; btn.disabled = true;
     try {
