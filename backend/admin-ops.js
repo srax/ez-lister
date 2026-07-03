@@ -21,7 +21,7 @@ export async function createDealership({ id, name, platform, timezone, config, d
     `insert into dealerships (id, name, platform, status, timezone, config)
      values ($1,$2,$3,'supported',$4,$5)
      on conflict (id) do update set name=excluded.name, platform=excluded.platform,
-       timezone=excluded.timezone, config=excluded.config`,
+       timezone=excluded.timezone, config=excluded.config, status='supported'`,
     [id, name, platform, timezone || 'America/New_York', JSON.stringify(config || {})]
   );
   for (const domain of domains) {
@@ -58,6 +58,29 @@ export async function recentScans(limit = 50, db = pool) {
     [Math.min(500, Math.max(1, limit))]
   );
   return rows;
+}
+
+// comp grant (entitlement without Stripe — friends/testing). Grant or revoke by email.
+// Entitlement still requires a linked dealership (isEntitled), so comped testers link a
+// supported dealership first; the grant just substitutes for an active subscription.
+export async function compGrant({ email, expiresAt, note }, db = pool) {
+  if (!email) { const e = new Error('email required'); e.status = 400; throw e; }
+  const { rows } = await db.query('select id from "user" where lower(email) = lower($1)', [email]);
+  if (!rows.length) { const e = new Error('no user with that email (they must sign in once first)'); e.status = 404; throw e; }
+  await db.query(
+    `insert into comp_grants (user_id, expires_at, note) values ($1,$2,$3)
+     on conflict (user_id) do update set expires_at=excluded.expires_at, note=excluded.note`,
+    [rows[0].id, expiresAt || null, note || null]
+  );
+  return { granted: true, userId: rows[0].id, email, expiresAt: expiresAt || null };
+}
+
+export async function compRevoke({ email }, db = pool) {
+  if (!email) { const e = new Error('email required'); e.status = 400; throw e; }
+  const { rows } = await db.query('select id from "user" where lower(email) = lower($1)', [email]);
+  if (!rows.length) { const e = new Error('no user with that email'); e.status = 404; throw e; }
+  const { rowCount } = await db.query('delete from comp_grants where user_id=$1', [rows[0].id]);
+  return { revoked: rowCount > 0, userId: rows[0].id, email };
 }
 
 export function genId(prefix = '') {

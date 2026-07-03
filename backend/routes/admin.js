@@ -2,11 +2,11 @@ import { Router } from 'express';
 import { requireAdmin } from '../admin.js';
 import { fillAccuracy } from '../listings-admin.js';
 import {
-  listDealerRequests, createDealership, adminLink, adminUnlink, recentScans
+  listDealerRequests, createDealership, adminLink, adminUnlink, recentScans, compGrant, compRevoke
 } from '../admin-ops.js';
 
-// ADMIN_TOKEN-gated ops (constant-time gate). CLI/curl only — no UI. comp-grant is added by
-// billing agent B. Every /api/admin/* route is behind requireAdmin (body parsed globally).
+// ADMIN_TOKEN-gated ops (constant-time gate). CLI/curl only — no UI. Every /api/admin/*
+// route is behind requireAdmin (body parsed globally).
 const router = Router();
 router.use('/api/admin', requireAdmin);
 
@@ -45,6 +45,15 @@ router.post('/api/admin/unlink', async (req, res, next) => {
 router.get('/api/admin/scans', async (req, res, next) => {
   try {
     res.json({ ok: true, scans: await recentScans(Number(req.query.limit) || 50) });
+  } catch (err) { next(err); }
+});
+
+// Comp grant/revoke by email (billing agent B) — entitlement without Stripe, for friend
+// testing. Body: { email, expiresAt?, note?, revoke? }.
+router.post('/api/admin/comp', async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    res.json({ ok: true, ...(body.revoke ? await compRevoke(body) : await compGrant(body)) });
   } catch (err) { next(err); }
 });
 

@@ -1,8 +1,10 @@
-import './env.js';
+import { isProduction } from './env.js';
 import express from 'express';
 import { toNodeHandler } from 'better-auth/node';
 import { runMigrations } from './db.js';
 import { auth } from './auth.js';
+import { jwksHandler } from './entitlement/index.js';
+import { warnIfLeaseUnconfigured } from './entitlement/keys.js';
 import { startWorker } from './worker/soldScan.js';
 import authRoutes from './routes/auth.js';
 import metaRoutes from './routes/meta.js';
@@ -11,6 +13,7 @@ import meRoutes from './routes/me.js';
 import dealershipRoutes from './routes/dealerships.js';
 import listingRoutes from './routes/listings.js';
 import adminRoutes from './routes/admin.js';
+import billingRoutes from './routes/billing.js';
 
 const app = express();
 // Railway terminates TLS and forwards; trust the first proxy so req.ip is the real client.
@@ -24,7 +27,7 @@ const devExtensionIds = (process.env.EXTENSION_IDS_DEV || '')
   .split(',').map((s) => s.trim()).filter(Boolean);
 const allowedOrigins = new Set([
   `chrome-extension://${EXTENSION_ID}`,
-  ...(process.env.NODE_ENV !== 'production' ? devExtensionIds.map((id) => `chrome-extension://${id}`) : [])
+  ...(!isProduction() ? devExtensionIds.map((id) => `chrome-extension://${id}`) : [])
 ]);
 
 app.use((req, res, next) => {
@@ -43,17 +46,17 @@ app.use((req, res, next) => {
 // and the global JSON parser (the exchange route brings its own express.json()).
 app.use(authRoutes);
 
-// Better Auth handler reads the RAW request body, so mount it before express.json().
+// Better Auth handler reads the RAW request body, so mount it before express.json(). This
+// also serves the @better-auth/stripe routes, incl. the Stripe webhook at
+// /api/auth/stripe/webhook (raw body handled by Better Auth) — point the Stripe endpoint
+// there; no separate raw-body webhook mount is needed.
 app.all('/api/auth/*', toNodeHandler(auth));
-
-// ⚠️ BILLING AGENT (B): mount the Stripe webhook HERE — before express.json() — with
-// express.raw({ type: 'application/json' }) so signature verification gets the raw bytes.
-// e.g. app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), stripeWebhook);
-// (Anything mounted after the json() below receives an already-parsed body and will fail
-// stripe.webhooks.constructEvent — the classic integration bug the contract warns about.)
 
 // JSON body parser for everything else.
 app.use(express.json({ limit: '2mb' }));
+
+// Lease public keys — the MV3 worker verifies entitlement leases offline against these.
+app.get('/.well-known/jwks.json', jwksHandler);
 
 app.use(metaRoutes);
 app.use(aiRoutes);
@@ -61,9 +64,11 @@ app.use(meRoutes);
 app.use(dealershipRoutes);
 app.use(listingRoutes);
 app.use(adminRoutes);
+app.use(billingRoutes);
 
-// Dormant Firecrawl extraction + HTML fixtures: dev-only, NEVER mounted in production.
-if (process.env.NODE_ENV !== 'production') {
+// Dormant Firecrawl extraction + HTML fixtures: dev-only, NEVER mounted on a deployed
+// backend (isProduction treats "on Railway" as production even if NODE_ENV is forgotten).
+if (!isProduction()) {
   const { default: devRoutes } = await import('./routes/dev.js');
   app.use(devRoutes);
 }
@@ -75,7 +80,7 @@ app.use((req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
 app.use((err, req, res, next) => {
   const status = err.status || 500;
   const body = { ok: false, error: err.message || 'internal error' };
-  if (process.env.NODE_ENV !== 'production' && err.stack) body.stack = err.stack;
+  if (!isProduction() && err.stack) body.stack = err.stack;
   res.status(status).json(body);
 });
 
@@ -85,6 +90,7 @@ const onRailway = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY
 const HOST = process.env.HOST || (onRailway ? '0.0.0.0' : '127.0.0.1');
 
 async function start() {
+  warnIfLeaseUnconfigured();
   try {
     const applied = await runMigrations();
     console.log(applied.length ? `migrations applied: ${applied.join(', ')}` : 'migrations: up to date');
