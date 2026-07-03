@@ -9,6 +9,15 @@ import { importPKCS8, importSPKI, exportJWK } from 'jose';
 const ALG = 'ES256';
 let signing = null;
 
+// Env stores mangle multiline values, so accept the key as a raw PEM (repairing escaped
+// "\n") OR as base64-encoded PEM (single line — immune to newline mangling).
+function pemFrom(raw) {
+  if (!raw) return raw;
+  const v = raw.trim();
+  if (v.includes('-----BEGIN')) return v.replace(/\\n/g, '\n');
+  try { return Buffer.from(v, 'base64').toString('utf8'); } catch { return v; }
+}
+
 export function leaseConfigured() {
   return Boolean(process.env.LEASE_PRIVATE_KEY_PEM && process.env.LEASE_KID);
 }
@@ -23,7 +32,7 @@ export function warnIfLeaseUnconfigured() {
 export async function getSigningKey() {
   if (signing) return signing;
   if (!leaseConfigured()) { const e = new Error('lease signing key not configured'); e.status = 503; throw e; }
-  const privateKey = await importPKCS8(process.env.LEASE_PRIVATE_KEY_PEM, ALG);
+  const privateKey = await importPKCS8(pemFrom(process.env.LEASE_PRIVATE_KEY_PEM), ALG);
   signing = { privateKey, kid: process.env.LEASE_KID };
   return signing;
 }
@@ -32,14 +41,20 @@ function toPublicJwk(jwk, kid) {
   return { kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y, alg: ALG, use: 'sig', kid };
 }
 
+// Public JWK from the private PEM. importPKCS8 defaults to a NON-extractable key, which
+// exportJWK refuses — so import extractable here (public JWK exposes only x/y, no secret).
+async function publicJwkFromPkcs8(pem, kid) {
+  const jwk = await exportJWK(await importPKCS8(pemFrom(pem), ALG, { extractable: true }));
+  return toPublicJwk(jwk, kid);
+}
+
 export async function getJwks() {
   const keys = [];
   if (leaseConfigured()) {
-    const jwk = await exportJWK(await importPKCS8(process.env.LEASE_PRIVATE_KEY_PEM, ALG));
-    keys.push(toPublicJwk(jwk, process.env.LEASE_KID));
+    keys.push(await publicJwkFromPkcs8(process.env.LEASE_PRIVATE_KEY_PEM, process.env.LEASE_KID));
   }
   if (process.env.LEASE_PUBLIC_KEY_PEM_PREV && process.env.LEASE_KID_PREV) {
-    const jwk = await exportJWK(await importSPKI(process.env.LEASE_PUBLIC_KEY_PEM_PREV, ALG));
+    const jwk = await exportJWK(await importSPKI(pemFrom(process.env.LEASE_PUBLIC_KEY_PEM_PREV), ALG, { extractable: true }));
     keys.push(toPublicJwk(jwk, process.env.LEASE_KID_PREV));
   }
   return { keys };
