@@ -54,6 +54,7 @@ router.post('/api/billing/checkout', requireUser, async (req, res, next) => {
       customer,
       line_items: [{ price: PRICE_ID, quantity: 1 }],
       allow_promotion_codes: true,
+      locale: 'en',
       // A 100%-off promo yields a $0 subscription; 'if_required' skips card collection so
       // friends can test on prod without a card.
       payment_method_collection: 'if_required',
@@ -73,7 +74,7 @@ router.post('/api/billing/portal', requireUser, async (req, res, next) => {
     const { rows } = await pool.query('select "stripeCustomerId" from "user" where id = $1', [req.user.id]);
     const customer = rows[0] && rows[0].stripeCustomerId;
     if (!customer) { res.status(409).json({ ok: false, error: 'no billing account yet' }); return; }
-    const session = await stripe.billingPortal.sessions.create({ customer, return_url: `${baseUrl(req)}/billing/success` });
+    const session = await stripe.billingPortal.sessions.create({ customer, locale: 'en', return_url: `${baseUrl(req)}/billing/success` });
     res.json({ ok: true, url: session.url });
   } catch (err) { next(err); }
 });

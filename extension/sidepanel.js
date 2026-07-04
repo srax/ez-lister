@@ -30,7 +30,7 @@ const ui = {
   stPlatforms: el('st-platforms'), stTrend: el('st-trend'), stListings: el('st-listings'),
   // auth + entitlement gate
   gate: el('gate'), gateIcon: el('gate-icon'), gateTitle: el('gate-title'), gateMsg: el('gate-msg'),
-  gatePrice: el('gate-price'), gatePriceAmt: el('gate-price-amt'), gatePricePer: el('gate-price-per'),
+  gateDealer: el('gate-dealer'), gatePrice: el('gate-price'), gatePriceAmt: el('gate-price-amt'), gatePricePer: el('gate-price-per'),
   gatePrimary: el('gate-primary'), gateSecondary: el('gate-secondary'),
   gateErr: el('gate-err'), gateSignout: el('gate-signout'),
   dealerConnect: el('dealer-connect'), dealerPending: el('dealer-pending'),
@@ -611,8 +611,8 @@ async function onTranslate() {
 const GATE = {
   signed_out: { icon: '🔑', title: 'Sign in to Carxpert', msg: 'Sign in with your Google account to start listing inventory to Facebook Marketplace.', primary: 'Sign in with Google', action: 'signin' },
   no_dealership: { icon: '🏬', title: 'Connect your dealership', msg: 'Open your dealership inventory page, then detect and connect it here. Supported dealers unlock checkout immediately.', primary: 'Detect dealership', action: 'connectDealer' },
-  no_subscription: { icon: '⚡', title: 'Start your subscription', msg: 'One-click dealer inventory to Facebook Marketplace, with AI descriptions & translations.', primary: 'Subscribe', action: 'checkout', secondary: 'I’ve paid · refresh', secondaryAction: 'refresh', price: true },
-  expired: { icon: '⚡', title: 'Renew your subscription', msg: 'Your subscription has ended. Renew to keep listing to Facebook Marketplace.', primary: 'Renew', action: 'checkout', secondary: 'I’ve paid · refresh', secondaryAction: 'refresh', price: true },
+  no_subscription: { title: 'Start your subscription', msg: 'One-click dealer inventory to Facebook Marketplace, with AI descriptions & translations.', primary: 'Subscribe', action: 'checkout', price: true },
+  expired: { title: 'Renew your subscription', msg: 'Your subscription has ended. Renew to keep listing to Facebook Marketplace.', primary: 'Renew', action: 'checkout', price: true },
   unknown: { icon: '⚠️', title: 'Couldn’t load your account', msg: 'We couldn’t reach the server. Check your connection and try again.', primary: 'Retry', action: 'recheck' }
 };
 
@@ -662,9 +662,11 @@ function renderGate() {
   if (!key) { ui.gate.hidden = true; return; }
   const g = GATE[key];
   ui.gate.hidden = false;
-  ui.gateIcon.textContent = g.icon;
+  ui.gateIcon.textContent = '';
+  ui.gateIcon.hidden = true;
   ui.gateTitle.textContent = g.title;
   ui.gateMsg.textContent = g.msg;
+  renderVerifiedDealer(key, auth);
   ui.gatePrice.hidden = !g.price;
   if (g.price) renderPlan();
   ui.gatePrimary.textContent = g.primary;
@@ -674,6 +676,14 @@ function renderGate() {
   renderDealerConnect(key, auth);
   ui.gateSignout.hidden = !auth.signedIn;
   ui.gateErr.hidden = true;
+}
+
+function renderVerifiedDealer(key, auth) {
+  const dealer = auth && auth.dealership;
+  const show = !!(dealer && (key === 'no_subscription' || key === 'expired'));
+  ui.gateDealer.hidden = !show;
+  if (!show) return;
+  ui.gateDealer.innerHTML = `${esc(dealer.name || 'Dealership verified')}<small>Verified by Carxpert backend</small>`;
 }
 
 function renderDealerConnect(key, auth) {

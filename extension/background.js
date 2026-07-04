@@ -9,6 +9,9 @@ const BACKEND_URL = 'http://127.0.0.1:3737';
 const BACKEND_TOKEN = '';
 const MARKETPLACE_VEHICLE_CREATE_URL = 'https://www.facebook.com/marketplace/create/vehicle';
 const DEALER_SEEN_TTL_MS = 30 * 60 * 1000;
+const CHECKOUT_WATCH_MS = 2 * 60 * 1000;
+const CHECKOUT_POLL_MS = 3000;
+const CHECKOUT_SYNC_EVERY_MS = 30 * 1000;
 
 // A single pre-warmed FB "create vehicle" tab so the heavy page load happens before the user clicks List.
 let prewarmTabId = null;
@@ -373,9 +376,34 @@ async function getBackendUrl() {
 
 async function recentDealerSeen() {
   const seen = (await chrome.storage.local.get('ezlistDealerSeen')).ezlistDealerSeen;
-  if (!seen || !seen.host || !seen.ts) return null;
-  if ((Date.now() - Number(seen.ts)) > DEALER_SEEN_TTL_MS) return null;
-  return seen;
+  if (seen && seen.host && seen.ts && (Date.now() - Number(seen.ts)) <= DEALER_SEEN_TTL_MS) return seen;
+  return findSupportedDealerTab();
+}
+
+function supportedDealerTabPatterns() {
+  const manifest = chrome.runtime.getManifest();
+  return (manifest.host_permissions || []).filter((pattern) =>
+    /^https:\/\/[^/]+\/\*/i.test(pattern)
+      && !/facebook\.com/i.test(pattern)
+      && !/railway\.app/i.test(pattern)
+      && !/localhost|127\.0\.0\.1/i.test(pattern)
+  );
+}
+
+async function findSupportedDealerTab() {
+  const patterns = supportedDealerTabPatterns();
+  for (const pattern of patterns) {
+    let tabs = [];
+    try { tabs = await chrome.tabs.query({ url: pattern }); } catch { tabs = []; }
+    const tab = tabs.find((t) => t.active && t.url) || tabs.find((t) => t.url);
+    if (!tab || !tab.url) continue;
+    let host = '';
+    try { host = new URL(tab.url).hostname.toLowerCase(); } catch { continue; }
+    const fallbackSeen = { host, url: tab.url, platform: 'dealeron', ts: Date.now() };
+    await chrome.storage.local.set({ ezlistDealerSeen: fallbackSeen });
+    return fallbackSeen;
+  }
+  return null;
 }
 
 async function resolveSeenDealer() {
@@ -485,6 +513,16 @@ async function refreshMe() {
     subscription: data.subscription || null,
     fetchedAt: Date.now()
   };
+  // Local listing history is account-scoped. On a shared dealership computer, a different
+  // salesperson signing in must not inherit — or auto-sync — the previous user's listings.
+  // No stored owner (pre-auth data on this device) → adopt it; a different owner → purge.
+  if (me.user && me.user.id) {
+    const prevOwner = (await chrome.storage.local.get('ezlistOwnerId')).ezlistOwnerId;
+    if (prevOwner && prevOwner !== me.user.id) {
+      await chrome.storage.local.remove(['ezlistListings', 'ezlistListedVins', 'ezlistEventQueue']);
+    }
+    if (prevOwner !== me.user.id) await chrome.storage.local.set({ ezlistOwnerId: me.user.id });
+  }
   const patch = { ezlistMe: me };
   if (data.lease) {
     try { patch.ezlistLease = { jws: data.lease, claims: CarxpertLease.decodeJwt(data.lease).payload }; }
@@ -591,7 +629,57 @@ async function billingUrl(pathname) {
   const data = await postBackend(pathname, {});
   if (!data.url) throw new Error('No URL returned.');
   await chrome.tabs.create({ url: data.url, active: true });
+  if (pathname === '/api/billing/checkout') startCheckoutWatch().catch(() => {});
   return { ok: true, url: data.url };
+}
+
+let checkoutWatchTimer = null;
+
+async function startCheckoutWatch() {
+  await chrome.storage.local.set({
+    ezlistCheckoutWatch: { startedAt: Date.now(), lastSyncAt: Date.now() - (CHECKOUT_SYNC_EVERY_MS - 8000) }
+  });
+  chrome.alarms.create('ezlist-checkout-watch', { delayInMinutes: 0.5 });
+  scheduleCheckoutWatch(1000);
+}
+
+function scheduleCheckoutWatch(delayMs = CHECKOUT_POLL_MS) {
+  clearTimeout(checkoutWatchTimer);
+  checkoutWatchTimer = setTimeout(() => { pollCheckoutWatch().catch(() => {}); }, delayMs);
+}
+
+async function pollCheckoutWatch() {
+  const watch = (await chrome.storage.local.get('ezlistCheckoutWatch')).ezlistCheckoutWatch;
+  if (!watch || !watch.startedAt) return false;
+  const age = Date.now() - Number(watch.startedAt);
+  if (age > CHECKOUT_WATCH_MS) {
+    await chrome.storage.local.remove('ezlistCheckoutWatch');
+    chrome.alarms.clear('ezlist-checkout-watch').catch(() => {});
+    return false;
+  }
+
+  const me = await refreshMe();
+  if (me && me.entitled) {
+    await chrome.storage.local.remove('ezlistCheckoutWatch');
+    chrome.alarms.clear('ezlist-checkout-watch').catch(() => {});
+    syncNow().catch(() => {});
+    return false;
+  }
+
+  const lastSync = Number(watch.lastSyncAt || 0);
+  if (Date.now() - lastSync > CHECKOUT_SYNC_EVERY_MS) {
+    await chrome.storage.local.set({
+      ezlistCheckoutWatch: { ...watch, lastSyncAt: Date.now() }
+    });
+    billingSync().catch(() => {});
+  }
+
+  scheduleCheckoutWatch();
+  return true;
+}
+
+async function billingSync() {
+  return postBackend('/api/billing/sync', {});
 }
 
 // Open the side panel from a content-script request (best effort — needs a window id + gesture).
@@ -695,4 +783,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
 chrome.alarms.create('ezlist-sync', { periodInMinutes: 30 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'ezlist-sync') syncNow().catch(() => {});
+  if (alarm.name === 'ezlist-checkout-watch') {
+    pollCheckoutWatch()
+      .then((keepWatching) => {
+        if (keepWatching) chrome.alarms.create('ezlist-checkout-watch', { delayInMinutes: 0.5 });
+      })
+      .catch(() => {});
+  }
 });
