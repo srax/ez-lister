@@ -1,323 +1,109 @@
-'use strict';
+import { isProduction } from './env.js';
+import express from 'express';
+import { toNodeHandler } from 'better-auth/node';
+import { runMigrations } from './db.js';
+import { auth } from './auth.js';
+import { jwksHandler } from './entitlement/index.js';
+import { warnIfLeaseUnconfigured } from './entitlement/keys.js';
+import { startWorker } from './worker/soldScan.js';
+import authRoutes from './routes/auth.js';
+import metaRoutes from './routes/meta.js';
+import aiRoutes from './routes/ai.js';
+import meRoutes from './routes/me.js';
+import dealershipRoutes from './routes/dealerships.js';
+import listingRoutes from './routes/listings.js';
+import adminRoutes from './routes/admin.js';
+import billingRoutes from './routes/billing.js';
 
-const http = require('node:http');
-const fs = require('node:fs');
-const path = require('node:path');
+const app = express();
+// Railway terminates TLS and forwards; trust the first proxy so req.ip is the real client.
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
 
-// Load backend/.env (KEY=VALUE) without a dependency, before anything reads process.env.
-// (Node 20.6+ also supports `node --env-file=.env`.)
-(function loadEnv() {
-  try {
-    const envPath = path.join(__dirname, '.env');
-    if (!fs.existsSync(envPath)) return;
-    for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
-      const m = line.match(/^\s*([A-Za-z0-9_]+)\s*=\s*(.*?)\s*$/);
-      if (!m || line.trim().startsWith('#')) continue;
-      let val = m[2];
-      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) val = val.slice(1, -1);
-      if (!(m[1] in process.env)) process.env[m[1]] = val;
-    }
-  } catch { /* ignore */ }
-})();
+// CORS: exact chrome-extension origin allowlist (no wildcard in production). Every
+// extension fetch routes through the background worker, so this is the only origin needed.
+const EXTENSION_ID = process.env.EXTENSION_ID || 'nfpnkiknibofeiicekdehonjmpnonaeh';
+const devExtensionIds = (process.env.EXTENSION_IDS_DEV || '')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+const allowedOrigins = new Set([
+  `chrome-extension://${EXTENSION_ID}`,
+  ...(!isProduction() ? devExtensionIds.map((id) => `chrome-extension://${id}`) : [])
+]);
 
-const { normalizeListing } = require('./normalize');
-const { scrapeWithFirecrawl } = require('./firecrawl');
-const ai = require('./ai');
+app.use((req, res, next) => {
+  const origin = req.get('origin');
+  if (origin && allowedOrigins.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-carxpert-token');
+  }
+  if (req.method === 'OPTIONS') { res.sendStatus(204); return; }
+  next();
+});
+
+// Extension auth handshake (start/finish/exchange) — must precede the Better Auth catch-all
+// and the global JSON parser (the exchange route brings its own express.json()).
+app.use(authRoutes);
+
+// Better Auth handler reads the RAW request body, so mount it before express.json(). This
+// also serves the @better-auth/stripe routes, incl. the Stripe webhook at
+// /api/auth/stripe/webhook (raw body handled by Better Auth) — point the Stripe endpoint
+// there; no separate raw-body webhook mount is needed.
+app.all('/api/auth/*', toNodeHandler(auth));
+
+// JSON body parser for everything else.
+app.use(express.json({ limit: '2mb' }));
+
+// Lease public keys — the MV3 worker verifies entitlement leases offline against these.
+app.get('/.well-known/jwks.json', jwksHandler);
+
+app.use(metaRoutes);
+app.use(aiRoutes);
+app.use(meRoutes);
+app.use(dealershipRoutes);
+app.use(listingRoutes);
+app.use(adminRoutes);
+app.use(billingRoutes);
+
+// Dormant Firecrawl extraction + HTML fixtures: dev-only, NEVER mounted on a deployed
+// backend (isProduction treats "on Railway" as production even if NODE_ENV is forgotten).
+if (!isProduction()) {
+  const { default: devRoutes } = await import('./routes/dev.js');
+  app.use(devRoutes);
+}
+
+app.use((req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
+
+// Central error handler — never leak stack traces in production.
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  const status = err.status || 500;
+  const body = { ok: false, error: err.message || 'internal error' };
+  if (!isProduction() && err.stack) body.stack = err.stack;
+  res.status(status).json(body);
+});
 
 const PORT = Number(process.env.PORT || 3737);
+// PaaS routes to the container's public interface (bind 0.0.0.0); local dev stays on loopback.
+const onRailway = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_ENVIRONMENT_NAME || process.env.RAILWAY_PROJECT_ID);
+const HOST = process.env.HOST || (onRailway ? '0.0.0.0' : '127.0.0.1');
 
-// Optional shared-secret gate (set CARXPERT_TOKEN to require it; left open for local dev).
-function gateOk(req) {
-  const required = process.env.CARXPERT_TOKEN;
-  if (!required) return true;
-  return req.headers['x-carxpert-token'] === required;
-}
-
-// Crude in-memory rate limit to protect our OpenAI key during testing.
-const RATE = { windowMs: 60000, max: Number(process.env.RATE_MAX || 40), hits: new Map() };
-function rateLimited(req) {
-  const ip = req.socket.remoteAddress || 'local';
-  const now = Date.now();
-  const rec = RATE.hits.get(ip) || { count: 0, reset: now + RATE.windowMs };
-  if (now > rec.reset) { rec.count = 0; rec.reset = now + RATE.windowMs; }
-  rec.count += 1;
-  RATE.hits.set(ip, rec);
-  return rec.count > RATE.max;
-}
-
-const server = http.createServer(async (req, res) => {
-  setCors(res);
-  const requestUrl = new URL(req.url, 'http://127.0.0.1');
-
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return;
-  }
-
+async function start() {
+  warnIfLeaseUnconfigured();
   try {
-    if (req.method === 'GET' && requestUrl.pathname === '/health') {
-      sendJson(res, 200, {
-        ok: true,
-        service: 'carxpert-backend',
-        ai: Boolean(process.env.OPENAI_API_KEY),
-        models: { describe: ai.DESCRIBE_MODEL, translate: ai.TRANSLATE_MODEL, translateStrong: ai.TRANSLATE_MODEL_STRONG }
-      });
-      return;
-    }
-
-    // ---- AI: our key, our cost (users never supply a key) ----
-    if (req.method === 'POST' && requestUrl.pathname === '/api/ai/describe') {
-      if (!gateOk(req)) { sendJson(res, 401, { ok: false, error: 'unauthorized' }); return; }
-      if (rateLimited(req)) { sendJson(res, 429, { ok: false, error: 'rate limited — slow down' }); return; }
-      const body = await readJson(req);
-      const description = await ai.describe(body.vehicle || {}, body.options || {});
-      sendJson(res, 200, { ok: true, description });
-      return;
-    }
-
-    if (req.method === 'POST' && requestUrl.pathname === '/api/ai/translate') {
-      if (!gateOk(req)) { sendJson(res, 401, { ok: false, error: 'unauthorized' }); return; }
-      if (rateLimited(req)) { sendJson(res, 429, { ok: false, error: 'rate limited — slow down' }); return; }
-      const body = await readJson(req);
-      const translated = await ai.translate(body.text || '', body.targetLang || 'en');
-      sendJson(res, 200, { ok: true, translated });
-      return;
-    }
-
-    if (req.method === 'GET' && (requestUrl.pathname === '/fixtures/sample-vdp' || /^\/(?:used|new|certified)-/i.test(requestUrl.pathname))) {
-      sendHtml(res, 200, sampleVdpHtml());
-      return;
-    }
-
-    if (req.method === 'GET' && requestUrl.pathname === '/fixtures/sample-inventory') {
-      sendHtml(res, 200, sampleInventoryHtml());
-      return;
-    }
-
-    if (req.method === 'POST' && requestUrl.pathname === '/api/listings/extract') {
-      const payload = await readJson(req);
-      const warnings = [];
-      let firecrawlResult = null;
-
-      if (payload.useFirecrawl !== false && payload.url) {
-        try {
-          firecrawlResult = await scrapeWithFirecrawl(payload.url);
-        } catch (error) {
-          warnings.push(`Firecrawl failed, using browser snapshot fallback: ${error.message}`);
-        }
-      }
-
-      const listing = normalizeListing({
-        ...payload,
-        images: mergeImages(payload.images || [], firecrawlResult && firecrawlResult.images ? firecrawlResult.images : []),
-        markdown: firecrawlResult && firecrawlResult.markdown
-          ? `${firecrawlResult.markdown}\n\n${payload.pageText || ''}`
-          : payload.pageText
-      });
-
-      sendJson(res, 200, {
-        ok: true,
-        listing,
-        meta: {
-          firecrawlUsed: Boolean(firecrawlResult && firecrawlResult.markdown),
-          warningCount: warnings.length,
-          warnings
-        }
-      });
-      return;
-    }
-
-    sendJson(res, 404, { ok: false, error: 'Not found' });
-  } catch (error) {
-    sendJson(res, error.status || 500, { ok: false, error: error.message });
+    const applied = await runMigrations();
+    console.log(applied.length ? `migrations applied: ${applied.join(', ')}` : 'migrations: up to date');
+  } catch (err) {
+    // Don't crash-loop: /health is DB-free, so stay up and surface the error in logs.
+    console.error(`migration error: ${err.message}`);
   }
-});
-
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`Carxpert backend listening on http://127.0.0.1:${PORT}`);
-  console.log(`  AI key: ${process.env.OPENAI_API_KEY ? 'set' : 'MISSING — add OPENAI_API_KEY to backend/.env'}`);
-  console.log(`  models: describe=${ai.DESCRIBE_MODEL} translate=${ai.TRANSLATE_MODEL} (strong=${ai.TRANSLATE_MODEL_STRONG})`);
-});
-
-function setCors(res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-carxpert-token');
+  app.listen(PORT, HOST, () => {
+    console.log(`Carxpert backend on http://${HOST}:${PORT} (env=${process.env.NODE_ENV || 'dev'})`);
+    // In-process hourly sold-scan. Opt-in (SOLD_SCAN_ENABLED) so it only runs where we
+    // intend to poll dealer sites; a cycle is a no-op when no tracked listings exist.
+    if (/^(1|true|yes)$/i.test(process.env.SOLD_SCAN_ENABLED || '')) startWorker();
+  });
 }
 
-function sendJson(res, status, body) {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify(body, null, 2));
-}
-
-function sendHtml(res, status, body) {
-  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8' });
-  res.end(body);
-}
-
-async function readJson(req) {
-  const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
-  const raw = Buffer.concat(chunks).toString('utf8');
-  return raw ? JSON.parse(raw) : {};
-}
-
-function mergeImages(...groups) {
-  const seen = new Set();
-  const images = [];
-  for (const group of groups) {
-    for (const image of group || []) {
-      const url = typeof image === 'string' ? image : image && image.url;
-      if (!url || seen.has(url)) continue;
-      seen.add(url);
-      images.push(typeof image === 'string' ? { url } : image);
-    }
-  }
-  return images;
-}
-
-function sampleVdpHtml() {
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="2025 Toyota Land Cruiser for sale in Alexandria, VA. VIN JTEABFAJ9SK020209.">
-    <meta property="og:title" content="2025 Toyota Land Cruiser - Alexandria Toyota">
-    <meta property="og:image" content="https://images.unsplash.com/photo-1549924231-f129b911e442?auto=format&fit=crop&w=1400&q=80">
-    <title>2025 Toyota Land Cruiser - Alexandria Toyota</title>
-    <style>
-      body { margin: 0; color: #1f2328; font: 16px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; background: #f6f8fa; }
-      main { max-width: 1040px; margin: 0 auto; padding: 32px 18px 80px; }
-      .hero { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(320px, .8fr); gap: 24px; align-items: start; }
-      .photos { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-      .photos img:first-child { grid-column: 1 / -1; }
-      img { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; border-radius: 8px; background: #d8dee4; }
-      .details { background: white; border: 1px solid #d8dee4; border-radius: 8px; padding: 20px; }
-      h1 { margin: 0 0 8px; font-size: 30px; line-height: 1.1; }
-      .price { font-size: 26px; font-weight: 800; margin-bottom: 16px; }
-      dl { display: grid; grid-template-columns: 140px 1fr; gap: 8px 14px; }
-      dt { color: #57606a; }
-      dd { margin: 0; font-weight: 650; }
-    </style>
-  </head>
-  <body>
-    <main>
-      <section class="hero">
-        <div class="photos">
-          <img src="https://images.unsplash.com/photo-1549924231-f129b911e442?auto=format&fit=crop&w=1400&q=80" alt="2025 Toyota Land Cruiser front exterior">
-          <img src="https://images.unsplash.com/photo-1492144534655-ae79c964c9d7?auto=format&fit=crop&w=900&q=80" alt="2025 Toyota Land Cruiser side profile">
-          <img src="https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=900&q=80" alt="2025 Toyota Land Cruiser rear exterior">
-        </div>
-        <aside class="details">
-          <h1>2025 Toyota Land Cruiser</h1>
-          <div class="price">$54,970</div>
-          <p>Located in Alexandria, VA</p>
-          <dl>
-            <dt>Mileage</dt><dd>9,582 miles</dd>
-            <dt>VIN</dt><dd>JTEABFAJ9SK020209</dd>
-            <dt>Stock #</dt><dd>00P30392</dd>
-            <dt>Body Style</dt><dd>Sport Utility</dd>
-            <dt>Exterior Color</dt><dd>Grey</dd>
-            <dt>Interior Color</dt><dd>Black</dd>
-            <dt>Engine</dt><dd>4 Cyl - 2.4 L</dd>
-            <dt>Transmission</dt><dd>Automatic</dd>
-            <dt>Fuel Type</dt><dd>Hybrid Fuel</dd>
-            <dt>City/Highway MPG</dt><dd>22/25</dd>
-            <dt>Condition</dt><dd>Excellent</dd>
-            <dt>Title Status</dt><dd>Clean title</dd>
-          </dl>
-          <p>Call or message Sayed today to schedule your test drive.</p>
-        </aside>
-      </section>
-    </main>
-  </body>
-</html>`;
-}
-
-function sampleInventoryHtml() {
-  const vehicles = [
-    {
-      title: '2025 Toyota Land Cruiser 1958',
-      vin: 'JTEABFAJ9SK020209',
-      stock: '00P30392',
-      model: '6165',
-      miles: '9,582 mi',
-      exterior: 'Grey',
-      interior: 'Black',
-      price: '$54,970',
-      img: 'https://images.unsplash.com/photo-1549924231-f129b911e442?auto=format&fit=crop&w=900&q=80'
-    },
-    {
-      title: '2012 Nissan Altima 3.5 SR',
-      vin: '1N4BL2EP8CC223820',
-      stock: '0N19865A',
-      model: '15212',
-      miles: '101,464 mi',
-      exterior: 'Brilliant Silver Metallic',
-      interior: 'Charcoal',
-      price: '$8,470',
-      img: 'https://images.unsplash.com/photo-1492144534655-ae79c964c9d7?auto=format&fit=crop&w=900&q=80'
-    },
-    {
-      title: '2015 Hyundai Elantra Sport',
-      vin: 'KMHDH4AH6FU304808',
-      stock: '0N19766A',
-      model: '46452F4P',
-      miles: '112,888 mi',
-      exterior: 'Geranium Red',
-      interior: 'Beige',
-      price: '$8,970',
-      img: 'https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=900&q=80'
-    }
-  ];
-
-  const cards = vehicles.map((vehicle) => `
-    <article class="vehicle-card__body">
-      <a class="vehicle-card__image" href="/used-+Alexandria-${encodeURIComponent(vehicle.title).replace(/%20/g, '+')}-${vehicle.vin}">
-        <img src="${vehicle.img}" alt="${vehicle.title}">
-      </a>
-      <div class="vehicle-overview oem-toyota__tdg--srp-card-overview">
-        <a class="vehicle-title" href="/used-+Alexandria-${encodeURIComponent(vehicle.title).replace(/%20/g, '+')}-${vehicle.vin}">${vehicle.title}</a>
-        <div>VIN: ${vehicle.vin}</div>
-        <div>Stock: ${vehicle.stock}</div>
-        <div>Model: ${vehicle.model}</div>
-        <div>${vehicle.miles}</div>
-        <div>Ext.: ${vehicle.exterior}</div>
-        <div>Int.: ${vehicle.interior}</div>
-      </div>
-      <div class="price-block">
-        <strong>${vehicle.price}</strong>
-        <a href="/used-+Alexandria-${encodeURIComponent(vehicle.title).replace(/%20/g, '+')}-${vehicle.vin}">View Details</a>
-      </div>
-    </article>
-  `).join('');
-
-  return `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Sample Used Inventory | ezlist</title>
-    <style>
-      body { margin: 0; color: #1f2328; background: #f6f8fa; font: 15px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
-      main { max-width: 1120px; margin: 0 auto; padding: 32px 18px 80px; }
-      h1 { margin: 0 0 18px; }
-      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }
-      .vehicle-card__body { position: relative; min-height: 640px; background: #fff; border: 1px solid #d8dee4; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
-      .vehicle-card__image img { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; }
-      .vehicle-overview { padding: 16px; display: grid; gap: 6px; }
-      .vehicle-title { color: #0969da; font-weight: 800; font-size: 18px; text-decoration: none; }
-      .price-block { border-top: 1px solid #d8dee4; padding: 16px; display: grid; gap: 10px; }
-      .price-block strong { font-size: 22px; }
-    </style>
-  </head>
-  <body>
-    <main>
-      <h1>Showing all 3 vehicles</h1>
-      <section class="grid">${cards}</section>
-    </main>
-  </body>
-</html>`;
-}
+start();

@@ -1,0 +1,17 @@
+# Only the backend/ + root package.json (+ lockfile) are needed at runtime. Keep the
+# deploy image small by excluding the extension, build artifacts, deps, and snapshots.
+# Nixpacks reinstalls dependencies from package-lock.json, so never ship node_modules or
+# local secrets.
+node_modules/
+backend/.env
+extension/
+dist/
+scripts/
+.playwright-mcp/
+.firecrawl/
+*.png
+*.zip
+*.md
+alexandria-*
+facebook-marketplace-*
+chrome-webstore-*
