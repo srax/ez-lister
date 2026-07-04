@@ -7,7 +7,7 @@ import { createAuthCode, consumeAuthCode } from '../auth-codes.js';
 // endpoints wrap Better Auth's Google OAuth for chrome.identity.launchWebAuthFlow. They are
 // registered BEFORE the Better Auth `/api/auth/*` catch-all so they win the route match.
 
-const EXTENSION_ID = process.env.EXTENSION_ID || 'ejagngoidhjkjoadbbijjkpdgelklael';
+const EXTENSION_ID = process.env.EXTENSION_ID || 'nfpnkiknibofeiicekdehonjmpnonaeh';
 const router = Router();
 
 function baseUrl(req) {

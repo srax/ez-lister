@@ -22,7 +22,7 @@ app.disable('x-powered-by');
 
 // CORS: exact chrome-extension origin allowlist (no wildcard in production). Every
 // extension fetch routes through the background worker, so this is the only origin needed.
-const EXTENSION_ID = process.env.EXTENSION_ID || 'ejagngoidhjkjoadbbijjkpdgelklael';
+const EXTENSION_ID = process.env.EXTENSION_ID || 'nfpnkiknibofeiicekdehonjmpnonaeh';
 const devExtensionIds = (process.env.EXTENSION_IDS_DEV || '')
   .split(',').map((s) => s.trim()).filter(Boolean);
 const allowedOrigins = new Set([

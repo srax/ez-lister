@@ -9,7 +9,7 @@ import { pool } from './db.js';
 // Better Auth instance. Google is the only provider in v1; the bearer plugin lets the
 // extension authenticate every API call with `Authorization: Bearer <session token>`.
 
-const EXTENSION_ID = process.env.EXTENSION_ID || 'ejagngoidhjkjoadbbijjkpdgelklael';
+const EXTENSION_ID = process.env.EXTENSION_ID || 'nfpnkiknibofeiicekdehonjmpnonaeh';
 const devExtensionIds = (process.env.EXTENSION_IDS_DEV || '')
   .split(',').map((s) => s.trim()).filter(Boolean);
 
