@@ -1,4 +1,23 @@
+.firecrawl/
+.playwright-mcp/
+node_modules/
+*.log
+
+# Secrets — never commit
+.env
+**/.env
+.env.local
+
+# Local inspection artifacts
+alexandria-*
+facebook-marketplace-*
+chrome-webstore-*
+
+# Build output (npm run build:ext:staging|prod)
 dist/local/
 dist/staging/
 dist/prod/
 dist/*.zip
+
+# stray subagent scratch notes (kept locally, not source)
+research.md/

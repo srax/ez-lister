@@ -197,7 +197,19 @@ async function migrateListings() {
 const listingsArray = () => {
   const byKey = {};
   for (const l of Object.values(state.serverListings || {})) byKey[l.key] = l;
-  for (const l of Object.values(state.listings || {})) byKey[l.key] = { ...(byKey[l.key] || {}), ...l };
+  for (const l of Object.values(state.listings || {})) {
+    const server = byKey[l.key];
+    const merged = { ...(server || {}), ...l };
+    // Sold wins: a server-side sale (e.g. the sold-scan worker) must not be masked by the
+    // stale local 'active' record. A local undo shows sold for a few seconds until its
+    // marked_sold_undo event syncs and the next server pull flips the row back to listed.
+    if (server && server.status === 'sold' && merged.status !== 'sold') {
+      merged.status = 'sold';
+      merged.soldAt = server.soldAt;
+      if (server.soldPrice != null) merged.soldPrice = server.soldPrice;
+    }
+    byKey[l.key] = merged;
+  }
   return Object.values(byKey);
 };
 

@@ -49,7 +49,8 @@
     } catch { return { valid: false, reason: 'signature', claims: payload }; }
     if (!ok) return { valid: false, reason: 'signature', claims: payload };
     const now = Math.floor(Date.now() / 1000);
-    if (typeof payload.exp === 'number' && now > payload.exp + LEEWAY) return { valid: false, reason: 'expired', claims: payload };
+    // Fail closed: a lease without a numeric exp is invalid, not eternal.
+    if (typeof payload.exp !== 'number' || now > payload.exp + LEEWAY) return { valid: false, reason: 'expired', claims: payload };
     return { valid: true, reason: 'ok', claims: payload };
   }
 

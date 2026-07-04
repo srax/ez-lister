@@ -595,3 +595,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
     syncTimer = setTimeout(() => { syncNow().catch(() => {}); }, 4000);
   }
 });
+
+// Periodic flush: the debounce timer above dies with the MV3 worker, so a queued event could
+// otherwise strand until the next storage change. Alarms survive worker restarts.
+chrome.alarms.create('ezlist-sync', { periodInMinutes: 30 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'ezlist-sync') syncNow().catch(() => {});
+});

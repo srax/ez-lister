@@ -45,6 +45,14 @@ test('rejects an expired lease (beyond 60s leeway)', async () => {
   assert.equal(res.reason, 'expired');
 });
 
+test('rejects a lease with no exp claim (fail closed, not eternal)', async () => {
+  const { privateKey, jwks, kid } = await makeKit();
+  const jws = await signLease({ sub: 'u1', dom: [], ent: true }, kid, privateKey);
+  const res = await verifyLeaseJws(jws, jwks);
+  assert.equal(res.valid, false);
+  assert.equal(res.reason, 'expired');
+});
+
 test('accepts a lease inside the 60s leeway', async () => {
   const { privateKey, jwks, kid } = await makeKit();
   const jws = await signLease({ sub: 'u1', dom: [], exp: now() - 30 }, kid, privateKey);
