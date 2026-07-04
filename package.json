@@ -8,7 +8,9 @@
     "start": "node backend/server.js",
     "dev:backend": "node backend/server.js",
     "check": "node scripts/check-syntax.js",
-    "test": "node --test"
+    "test": "node --test",
+    "build:ext:staging": "node scripts/build-extension.js staging",
+    "build:ext:prod": "node scripts/build-extension.js prod"
   },
   "engines": {
     "node": ">=20"

@@ -4,9 +4,7 @@
 // tune the listing (description, emoji, unit, toggles), then hands off to the
 // Facebook content script to fill the form. The user always reviews + Publishes.
 
-const HELP_URL = 'https://github.com/srax/ez-lister';
-
-const DEFAULT_PREFS = { emoji: '', unit: 'mi', category: '', dealerDesc: true, mileage: true, lang: 'en' };
+const DEFAULT_PREFS = { emoji: '', unit: 'mi', category: '', dealerDesc: true, mileage: true, lang: 'en', aiDesc: false };
 
 const el = (id) => document.getElementById(id);
 const ui = {
@@ -20,18 +18,25 @@ const ui = {
   unitMi: el('unit-mi'), unitKm: el('unit-km'),
   desc: el('desc'), charcount: el('charcount'),
   aiDraft: el('ai-draft'), lang: el('lang'), translate: el('translate'),
-  tDealer: el('t-dealer'), tMileage: el('t-mileage'),
-  fill: el('fill'), openfb: el('openfb'), help: el('help'),
+  tAi: el('t-ai'), tDealer: el('t-dealer'), tMileage: el('t-mileage'),
+  fill: el('fill'), openfb: el('openfb'),
   status: el('status'),
   statsBtn: el('stats-btn'), statsBack: el('stats-back'),
   viewLister: el('view-lister'), viewStats: el('view-stats'),
   statsRange: el('stats-range'), statsRangeLabel: el('stats-range-label'),
   stActive: el('st-active'), stSold: el('st-sold'), stGross: el('st-gross'),
-  stDays: el('st-days'), stHeroRange: el('st-hero-range'),
+  stDays: el('st-days'), stHeroRange: el('st-hero-range'), stDelta: el('st-delta'),
+  stListed: el('st-listed'), stListedSub: el('st-listed-sub'), stValue: el('st-value'),
   stPlatforms: el('st-platforms'), stTrend: el('st-trend'), stListings: el('st-listings'),
+  // auth + entitlement gate
+  gate: el('gate'), gateIcon: el('gate-icon'), gateTitle: el('gate-title'), gateMsg: el('gate-msg'),
+  gatePrice: el('gate-price'), gatePrimary: el('gate-primary'), gateSecondary: el('gate-secondary'),
+  gateErr: el('gate-err'), gateSignout: el('gate-signout'),
+  accountBtn: el('account-btn'), accountMenu: el('account-menu'), accountEmail: el('account-email'),
+  accountPlan: el('account-plan'), acctBilling: el('acct-billing'), acctSignout: el('acct-signout'),
 };
 
-const state = { draft: null, prefs: { ...DEFAULT_PREFS }, listed: {}, listings: {}, userEdited: false, filling: false };
+const state = { draft: null, prefs: { ...DEFAULT_PREFS }, listed: {}, listings: {}, serverListings: {}, userEdited: false, filling: false, auth: null };
 
 init();
 
@@ -50,6 +55,9 @@ async function init() {
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg && msg.type === 'EZLIST_FILL_STATUS') setStatus(msg.text, msg.error);
   });
+  // Re-check entitlement when the panel regains focus (e.g. returning from Stripe checkout).
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAuth({ refresh: true }); });
+  await refreshAuth();
 }
 
 // ---------- rendering ----------
@@ -93,7 +101,8 @@ function setVehiclePhoto(d) {
   if (!img) return;
   const base = d && d.photoBaseUrl;
   if (!base) { img.hidden = true; img.removeAttribute('src'); return; }
-  const candidates = [`${base}1.jpg`, `${base}0.jpg`, `${base}2.jpg`];
+  const ext = (d && d.photoExt) || 'jpg';
+  const candidates = [`${base}1.${ext}`, `${base}0.${ext}`, `${base}2.${ext}`];
   let i = 0;
   img.hidden = true;
   img.onload = () => { img.hidden = false; };
@@ -142,6 +151,7 @@ function applyPrefsToUI() {
   ui.lang.value = state.prefs.lang || 'en';
   ui.unitMi.classList.toggle('on', state.prefs.unit === 'mi');
   ui.unitKm.classList.toggle('on', state.prefs.unit === 'km');
+  ui.tAi.classList.toggle('on', !!state.prefs.aiDesc);
   ui.tDealer.classList.toggle('on', !!state.prefs.dealerDesc);
   ui.tMileage.classList.toggle('on', !!state.prefs.mileage);
 }
@@ -157,7 +167,10 @@ function showView(view) {
   const stats = view === 'stats';
   ui.viewLister.hidden = stats;
   ui.viewStats.hidden = !stats;
-  if (stats) renderStats();
+  if (stats) {
+    renderStats(); // paint local immediately…
+    loadServerListings().then((ok) => { if (ok) renderStats(); }); // …then refresh from the server
+  }
 }
 
 // Seed ezlistListings from older ezlistListedVins keys (users who published before the
@@ -179,7 +192,60 @@ async function migrateListings() {
   if (changed) await chrome.storage.local.set({ ezlistListings: state.listings });
 }
 
-const listingsArray = () => Object.values(state.listings || {});
+// Stats source of truth = server listings (synced from every device) overlaid with the local
+// record, so a just-published or just-marked-sold car shows instantly before the sync lands.
+const listingsArray = () => {
+  const byKey = {};
+  for (const l of Object.values(state.serverListings || {})) byKey[l.key] = l;
+  for (const l of Object.values(state.listings || {})) {
+    const server = byKey[l.key];
+    const merged = { ...(server || {}), ...l };
+    // Sold wins: a server-side sale (e.g. the sold-scan worker) must not be masked by the
+    // stale local 'active' record. A local undo shows sold for a few seconds until its
+    // marked_sold_undo event syncs and the next server pull flips the row back to listed.
+    if (server && server.status === 'sold' && merged.status !== 'sold') {
+      merged.status = 'sold';
+      merged.soldAt = server.soldAt;
+      if (server.soldPrice != null) merged.soldPrice = server.soldPrice;
+    }
+    byKey[l.key] = merged;
+  }
+  return Object.values(byKey);
+};
+
+// Map a server row (snake_case, status 'listed'|'sold'|'removed') to the local shape the
+// stats renderer expects (status 'active'|'sold').
+function fromServerListing(r) {
+  return {
+    key: r.client_key || r.vin || r.id,
+    vin: r.vin || undefined,
+    title: r.title || [r.year, r.make, r.model].filter(Boolean).join(' ') || undefined,
+    year: r.year, make: r.make, model: r.model,
+    price: r.price != null ? Number(r.price) : undefined,
+    soldPrice: r.sold_price != null ? Number(r.sold_price) : undefined,
+    platform: r.platform || 'fb',
+    status: r.status === 'sold' ? 'sold' : 'active',
+    listedAt: r.listed_at || undefined,
+    soldAt: r.sold_at || undefined,
+    sourceUrl: r.source_url || undefined
+  };
+}
+
+// Pull the server-side listings for the stats view (best effort; leaves local intact on
+// failure / not-entitled / offline). Kept in state.serverListings — never written to storage,
+// so it can't trigger the sync loop.
+async function loadServerListings() {
+  const res = await chrome.runtime.sendMessage({ type: 'EZLIST_GET_LISTINGS' }).catch(() => null);
+  if (!res || !res.ok || !Array.isArray(res.listings)) return false;
+  const next = {};
+  for (const r of res.listings) {
+    if (r.status === 'removed') continue;
+    const m = fromServerListing(r);
+    if (m.key) next[m.key] = m;
+  }
+  state.serverListings = next;
+  return true;
+}
 
 function withinRange(iso, range) {
   if (!iso) return false;
@@ -189,35 +255,60 @@ function withinRange(iso, range) {
 }
 
 // All figures below come from our own publish log + manual "Mark sold" events — no FB
-// scraping. Views/leads stay as samples until the FB-insights research lands.
+// scraping. Views/leads stay a locked placeholder until the FB sync lands. Everything is
+// scoped to the selected range so the hero, tiles and platform rows all tell one story.
 function computeStats(range) {
   const all = listingsArray();
-  const activeCount = all.filter((l) => l.status === 'active').length;
+  const active = all.filter((l) => l.status === 'active');
   const soldAll = all.filter((l) => l.status === 'sold');
   const soldInRange = soldAll.filter((l) => withinRange(l.soldAt, range));
+  const listedInRange = all.filter((l) => withinRange(l.listedAt, range)).length;
   const gross = soldInRange.reduce((sum, l) => sum + (Number(l.soldPrice || l.price) || 0), 0);
-  const spans = soldAll
+  const activeValue = active.reduce((sum, l) => sum + (Number(l.price) || 0), 0);
+  const spans = soldInRange
     .filter((l) => l.soldAt && l.listedAt)
     .map((l) => (new Date(l.soldAt) - new Date(l.listedAt)) / 864e5);
   const avgDays = spans.length ? Math.round(spans.reduce((a, b) => a + b, 0) / spans.length) : null;
-  return { activeCount, soldCount: soldInRange.length, gross, avgDays };
+  // Same-length window immediately before this one, for the hero delta (n/a on "all").
+  let prevSoldCount = null;
+  if (range !== 'all') {
+    const days = range === '7' ? 7 : range === '90' ? 90 : 30;
+    prevSoldCount = soldAll.filter((l) => {
+      if (!l.soldAt) return false;
+      const age = (Date.now() - new Date(l.soldAt).getTime()) / 864e5;
+      return age > days && age <= 2 * days;
+    }).length;
+  }
+  return { activeCount: active.length, activeValue, listedInRange, soldCount: soldInRange.length, gross, avgDays, prevSoldCount };
 }
 
-// Listings created per month, last 6 months.
-function monthlyListed() {
+// Listings created + sold per month, last 6 months.
+function monthlyActivity() {
   const now = new Date();
   const buckets = [];
   for (let i = 5; i >= 0; i -= 1) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    buckets.push({ y: d.getFullYear(), m: d.getMonth(), label: d.toLocaleString('en-US', { month: 'short' }), val: 0 });
+    buckets.push({ y: d.getFullYear(), m: d.getMonth(), label: d.toLocaleString('en-US', { month: 'short' }), listed: 0, sold: 0 });
   }
+  const bucketFor = (iso) => {
+    if (!iso) return null;
+    const d = new Date(iso);
+    return buckets.find((x) => x.y === d.getFullYear() && x.m === d.getMonth());
+  };
   for (const l of listingsArray()) {
-    if (!l.listedAt) continue;
-    const d = new Date(l.listedAt);
-    const b = buckets.find((x) => x.y === d.getFullYear() && x.m === d.getMonth());
-    if (b) b.val += 1;
+    const lb = bucketFor(l.listedAt);
+    if (lb) lb.listed += 1;
+    if (l.status === 'sold') {
+      const sb = bucketFor(l.soldAt);
+      if (sb) sb.sold += 1;
+    }
   }
   return buckets;
+}
+
+// $12,340 under 100k, $142k above — tile numbers must not wrap.
+function fmtMoney(v) {
+  return v >= 100000 ? `$${Math.round(v / 1000)}k` : `$${Math.round(v).toLocaleString('en-US')}`;
 }
 
 function renderStats() {
@@ -228,34 +319,47 @@ function renderStats() {
   if (ui.stGross) ui.stGross.textContent = '$' + s.gross.toLocaleString('en-US');
   if (ui.stDays) ui.stDays.textContent = s.avgDays == null ? '—' : String(s.avgDays);
   if (ui.stHeroRange) ui.stHeroRange.textContent = rangeShort(range);
+  if (ui.stListed) ui.stListed.textContent = String(s.listedInRange);
+  if (ui.stListedSub) ui.stListedSub.textContent = rangeShort(range);
+  if (ui.stValue) ui.stValue.textContent = fmtMoney(s.activeValue);
+  if (ui.stDelta) {
+    const show = s.prevSoldCount != null && (s.soldCount > 0 || s.prevSoldCount > 0);
+    ui.stDelta.hidden = !show;
+    if (show) {
+      const diff = s.soldCount - s.prevSoldCount;
+      ui.stDelta.textContent = diff > 0 ? `▲ ${diff} vs prev` : diff < 0 ? `▼ ${Math.abs(diff)} vs prev` : '= prev period';
+    }
+  }
   renderTrend();
-  renderPlatforms();
+  renderPlatforms(range);
   renderListingList();
 }
 
 function renderTrend() {
   if (!ui.stTrend) return;
-  const buckets = monthlyListed();
-  const max = Math.max(1, ...buckets.map((b) => b.val));
-  ui.stTrend.innerHTML = buckets.map((b, i) => {
-    const h = Math.round((b.val / max) * 74);
-    const on = i === buckets.length - 1 ? ' on' : '';
-    return `<div class="trend-col"><span class="trend-val">${b.val}</span>`
-      + `<div class="trend-bar${on}" style="height:${h}px"></div>`
+  const buckets = monthlyActivity();
+  const max = Math.max(1, ...buckets.map((b) => Math.max(b.listed, b.sold)));
+  ui.stTrend.innerHTML = buckets.map((b) => {
+    const hL = Math.round((b.listed / max) * 74);
+    const hS = Math.round((b.sold / max) * 74);
+    return `<div class="trend-col" title="${b.listed} listed · ${b.sold} sold">`
+      + `<span class="trend-val">${b.listed}</span>`
+      + `<div class="trend-duo"><div class="trend-bar" style="height:${hL}px"></div>`
+      + `<div class="trend-bar sold" style="height:${hS}px"></div></div>`
       + `<span class="trend-label">${b.label}</span></div>`;
   }).join('');
 }
 
-function renderPlatforms() {
+function renderPlatforms(range) {
   if (!ui.stPlatforms) return;
   const all = listingsArray();
   const fbLive = all.filter((l) => l.status === 'active').length;
-  const fbSold = all.filter((l) => l.status === 'sold').length;
+  const fbSold = all.filter((l) => l.status === 'sold' && withinRange(l.soldAt, range)).length;
   const total = Math.max(1, fbLive + fbSold);
   const pct = Math.round((fbLive / total) * 100);
   ui.stPlatforms.innerHTML = [
     `<div class="platform-row"><div class="platform-top"><span class="platform-name">FB Marketplace</span>`
-      + `<span class="platform-stat">${fbSold} sold · ${fbLive} live</span></div>`
+      + `<span class="platform-stat">${fbSold} sold ${rangeShort(range)} · ${fbLive} live</span></div>`
       + `<div class="platform-bar"><div class="platform-fill" style="width:${pct}%"></div></div></div>`,
     platformSoon('Craigslist'),
     platformSoon('OfferUp'),
@@ -263,7 +367,7 @@ function renderPlatforms() {
 }
 
 function platformSoon(name) {
-  return `<div class="platform-row soon"><div class="platform-top"><span class="platform-name">${esc(name)}</span>`
+  return `<div class="platform-row is-soon"><div class="platform-top"><span class="platform-name">${esc(name)}</span>`
     + `<span class="platform-stat">soon</span></div>`
     + `<div class="platform-bar"><div class="platform-fill" style="width:0%"></div></div></div>`;
 }
@@ -275,33 +379,45 @@ function renderListingList() {
     ui.stListings.innerHTML = '<div class="listing-empty">No listings tracked yet. Cars you publish with Carxpert show up here.</div>';
     return;
   }
+  const dayCount = (from, to) => Math.max(1, Math.round((new Date(to) - new Date(from)) / 864e5));
   ui.stListings.innerHTML = all.map((l) => {
     const title = esc(l.title || l.vin || l.key || 'Vehicle');
-    const price = l.price ? '$' + Number(l.price).toLocaleString('en-US') : '';
     const sold = l.status === 'sold';
+    const price = l.price || l.soldPrice ? '$' + Number((sold && l.soldPrice) || l.price).toLocaleString('en-US') : '';
     const pill = sold ? '<span class="lst-pill sold">Sold</span>' : '<span class="lst-pill live">Live</span>';
-    const sep = price ? ' · ' : '';
+    const days = sold
+      ? (l.soldAt && l.listedAt ? `sold in ${dayCount(l.listedAt, l.soldAt)}d` : '')
+      : (l.listedAt ? `live ${dayCount(l.listedAt, Date.now())}d` : '');
+    const bits = [price, pill, days ? `<span class="lst-days">${days}</span>` : ''].filter(Boolean).join(' · ');
     return `<div class="listing-row"><div class="listing-main">`
       + `<div class="listing-title">${title}</div>`
-      + `<div class="listing-sub">${price}${sep}${pill}</div></div>`
+      + `<div class="listing-sub">${bits}</div></div>`
       + `<button class="lst-sold-btn${sold ? ' undo' : ''}" data-key="${esc(l.key)}">${sold ? 'Undo' : 'Mark sold'}</button></div>`;
   }).join('');
 }
 
 // Manual sold signal — the reliable MVP source of truth for sale outcomes.
 function markSold(key) {
-  const l = state.listings[key];
-  if (!l) return;
-  if (l.status === 'sold') {
-    l.status = 'active';
-    delete l.soldAt;
-    delete l.soldPrice;
-  } else {
-    l.status = 'sold';
-    l.soldAt = new Date().toISOString();
-    l.soldPrice = l.price;
+  let l = state.listings[key];
+  if (!l) {
+    // Server-only listing (synced from another device) — materialise a local record so the
+    // change persists locally and syncs back.
+    const s = state.serverListings[key];
+    if (!s) return;
+    l = { ...s };
+    state.listings[key] = l;
   }
-  chrome.storage.local.set({ ezlistListings: state.listings });
+  let type;
+  if (l.status === 'sold') {
+    l.status = 'active'; delete l.soldAt; delete l.soldPrice; type = 'marked_sold_undo';
+  } else {
+    l.status = 'sold'; l.soldAt = new Date().toISOString(); l.soldPrice = l.price; type = 'marked_sold';
+  }
+  chrome.storage.local.set({ ezlistListings: state.listings }); // triggers background auto-sync
+  chrome.runtime.sendMessage({
+    type: 'EZLIST_ENQUEUE_EVENT',
+    event: { type, clientKey: key, occurredAt: new Date().toISOString(), data: type === 'marked_sold' ? { soldPrice: l.soldPrice } : null }
+  }).catch(() => {});
   renderStats();
 }
 
@@ -321,7 +437,6 @@ function rangeLabel(v) {
 
 // ---------- events ----------
 function wireEvents() {
-  ui.help.addEventListener('click', () => chrome.tabs.create({ url: HELP_URL }));
   ui.statsBtn.addEventListener('click', () => showView('stats'));
   ui.statsBack.addEventListener('click', () => showView('lister'));
   ui.statsRange.addEventListener('change', () => { ui.statsRangeLabel.textContent = rangeLabel(ui.statsRange.value); renderStats(); });
@@ -337,12 +452,27 @@ function wireEvents() {
 
   ui.desc.addEventListener('input', () => { state.userEdited = true; updateCharCount(); });
 
+  ui.tAi.addEventListener('click', () => {
+    savePref('aiDesc', !state.prefs.aiDesc, false);
+    if (state.prefs.aiDesc && state.draft) runAiDraft({ auto: true });
+  });
   ui.emoji.addEventListener('change', () => savePref('emoji', ui.emoji.value, true));
   ui.category.addEventListener('change', () => savePref('category', ui.category.value, false));
   ui.unitMi.addEventListener('click', () => savePref('unit', 'mi', true));
   ui.unitKm.addEventListener('click', () => savePref('unit', 'km', true));
   ui.tDealer.addEventListener('click', () => savePref('dealerDesc', !state.prefs.dealerDesc, true));
   ui.tMileage.addEventListener('click', () => savePref('mileage', !state.prefs.mileage, true));
+
+  // auth + gate
+  ui.gatePrimary.addEventListener('click', () => gateAction(ui.gatePrimary.dataset.action));
+  ui.gateSecondary.addEventListener('click', () => gateAction(ui.gateSecondary.dataset.action));
+  ui.gateSignout.addEventListener('click', doSignOut);
+  ui.accountBtn.addEventListener('click', (e) => { e.stopPropagation(); ui.accountMenu.hidden = !ui.accountMenu.hidden; });
+  ui.acctSignout.addEventListener('click', doSignOut);
+  ui.acctBilling.addEventListener('click', openBilling);
+  document.addEventListener('click', (e) => {
+    if (!ui.accountMenu.hidden && !ui.accountMenu.contains(e.target) && !ui.accountBtn.contains(e.target)) ui.accountMenu.hidden = true;
+  });
 }
 
 // Update a preference; `recompose` regenerates the description (overwriting manual edits).
@@ -356,6 +486,7 @@ function savePref(key, value, recompose) {
 
 function onStorageChanged(changes, area) {
   if (area !== 'local') return;
+  if (changes.ezlistMe || changes.ezlistAuthToken) refreshAuth();
   if (changes.ezlistListedVins) {
     state.listed = changes.ezlistListedVins.newValue || {};
     if (state.draft) ui.vehListed.hidden = !isListed(state.draft);
@@ -369,13 +500,20 @@ function onStorageChanged(changes, area) {
     const changedCar = keyForDraft(next) !== keyForDraft(state.draft);
     state.draft = next;
     renderVehicle();
-    if (changedCar) recomposeDesc(); // new car → fresh description; keep edits if same car
+    if (changedCar) {
+      recomposeDesc(); // new car → fresh template description; keep edits if same car
+      // Auto A.I.: template shows instantly, then the AI draft replaces it when ready.
+      if (state.prefs.aiDesc && state.draft) runAiDraft({ auto: true });
+    }
   }
 }
 
 // ---------- fill hand-off ----------
 async function onFill() {
   if (!state.draft || state.filling) return;
+  // Entitlement gate (belt-and-braces: the gate overlay normally covers Fill already).
+  const gate = await chrome.runtime.sendMessage({ type: 'EZLIST_CAN_LIST' }).catch(() => null);
+  if (!gate || !gate.ok) { await refreshAuth({ refresh: true }); return; }
   state.filling = true;
   ui.fill.disabled = true;
   const original = ui.fill.textContent;
@@ -401,19 +539,25 @@ async function onFill() {
 }
 
 // ---------- AI (routed through our backend) ----------
-async function onAiDraft() {
-  if (!state.draft) { setStatus('Pick a car first.', true); return; }
+async function onAiDraft() { return runAiDraft(); }
+
+// One drafting path for the button and the Auto A.I. toggle. Auto mode fails soft: the
+// template description is already in the box, so an unreachable backend costs nothing.
+async function runAiDraft({ auto = false } = {}) {
+  if (!state.draft) { if (!auto) setStatus('Pick a car first.', true); return; }
+  const key = keyForDraft(state.draft);
   ui.aiDraft.disabled = true;
-  setStatus('Drafting with A.I.…');
+  setStatus(auto ? 'Auto-drafting with A.I.…' : 'Drafting with A.I.…');
   try {
     const res = await chrome.runtime.sendMessage({ type: 'EZLIST_AI_DESCRIBE', vehicle: state.draft, options: {} });
     if (!res || !res.ok) throw new Error((res && res.error) || 'A.I. draft failed.');
+    if (keyForDraft(state.draft) !== key) return; // user switched cars mid-draft — drop it
     ui.desc.value = (res.description || '').slice(0, 1000);
     state.userEdited = true;
     updateCharCount();
     setStatus('A.I. draft ready — edit if you like, then Fill.');
   } catch (e) {
-    setStatus(e.message, true);
+    setStatus(auto ? 'A.I. unreachable — using the template description.' : e.message, !auto);
   } finally {
     ui.aiDraft.disabled = false;
   }
@@ -437,6 +581,110 @@ async function onTranslate() {
   } finally {
     ui.translate.disabled = false;
   }
+}
+
+// ---------- auth + entitlement gate (C3) ----------
+// One gate screen per /api/me reason. The background worker owns auth/entitlement; the panel
+// just renders the right step and fires the action.
+const GATE = {
+  signed_out: { icon: '🔑', title: 'Sign in to Carxpert', msg: 'Sign in with your Google account to start listing inventory to Facebook Marketplace.', primary: 'Sign in with Google', action: 'signin' },
+  no_dealership: { icon: '🏬', title: 'Almost there', msg: 'Your account needs a supported dealership linked. If you just signed up, we’ll set this up shortly — tap Re-check in a moment.', primary: 'Re-check', action: 'recheck' },
+  no_subscription: { icon: '⚡', title: 'Start your subscription', msg: 'One-click dealer inventory to Facebook Marketplace, with AI descriptions & translations.', primary: 'Subscribe', action: 'checkout', secondary: 'I’ve paid · refresh', secondaryAction: 'refresh', price: true },
+  expired: { icon: '⚡', title: 'Renew your subscription', msg: 'Your subscription has ended. Renew to keep listing to Facebook Marketplace.', primary: 'Renew', action: 'checkout', secondary: 'I’ve paid · refresh', secondaryAction: 'refresh', price: true },
+  unknown: { icon: '⚠️', title: 'Couldn’t load your account', msg: 'We couldn’t reach the server. Check your connection and try again.', primary: 'Retry', action: 'recheck' }
+};
+
+async function refreshAuth(opts) {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'EZLIST_GET_AUTH', refresh: !!(opts && opts.refresh) });
+    state.auth = (res && res.ok) ? res.auth : { signedIn: false, entitled: false, reason: 'unknown' };
+  } catch {
+    state.auth = { signedIn: false, entitled: false, reason: 'unknown' };
+  }
+  renderGate();
+  return state.auth;
+}
+
+function gateStateKey(auth) {
+  if (!auth || !auth.signedIn) return 'signed_out';
+  if (auth.entitled) return null; // entitled → no gate
+  if (auth.reason === 'no_dealership') return 'no_dealership';
+  if (auth.reason === 'expired') return 'expired';
+  if (auth.reason === 'no_subscription') return 'no_subscription';
+  return 'unknown';
+}
+
+function renderGate() {
+  const auth = state.auth || { signedIn: false };
+  applyAccount(auth);
+  const key = gateStateKey(auth);
+  if (!key) { ui.gate.hidden = true; return; }
+  const g = GATE[key];
+  ui.gate.hidden = false;
+  ui.gateIcon.textContent = g.icon;
+  ui.gateTitle.textContent = g.title;
+  ui.gateMsg.textContent = g.msg;
+  ui.gatePrice.hidden = !g.price;
+  ui.gatePrimary.textContent = g.primary;
+  ui.gatePrimary.dataset.action = g.action;
+  if (g.secondary) { ui.gateSecondary.hidden = false; ui.gateSecondary.textContent = g.secondary; ui.gateSecondary.dataset.action = g.secondaryAction; }
+  else ui.gateSecondary.hidden = true;
+  ui.gateSignout.hidden = !auth.signedIn;
+  ui.gateErr.hidden = true;
+}
+
+function applyAccount(auth) {
+  const signedIn = !!(auth && auth.signedIn);
+  ui.accountBtn.hidden = !signedIn;
+  if (!signedIn) { ui.accountMenu.hidden = true; return; }
+  ui.accountEmail.textContent = (auth.user && auth.user.email) || 'Signed in';
+  const periodEnd = auth.subscription && auth.subscription.periodEnd;
+  ui.accountPlan.textContent = auth.entitled
+    ? (periodEnd ? `Active · renews ${new Date(periodEnd).toLocaleDateString()}` : 'Active')
+    : 'No active plan';
+}
+
+async function gateAction(action) {
+  ui.gateErr.hidden = true;
+  const btn = action === 'refresh' ? ui.gateSecondary : ui.gatePrimary;
+  const label = btn.textContent;
+  btn.disabled = true;
+  try {
+    if (action === 'signin') {
+      btn.textContent = 'Opening Google…';
+      const res = await chrome.runtime.sendMessage({ type: 'EZLIST_SIGN_IN' });
+      if (!res || !res.ok) throw new Error((res && res.error) || 'Sign-in failed.');
+      state.auth = res.auth; renderGate();
+    } else if (action === 'checkout') {
+      btn.textContent = 'Opening checkout…';
+      const res = await chrome.runtime.sendMessage({ type: 'EZLIST_CHECKOUT' });
+      if (!res || !res.ok) throw new Error((res && res.error) || 'Could not start checkout.');
+      // Checkout opens in a tab; entitlement flips when the user returns (visibilitychange) or taps refresh.
+    } else { // refresh | recheck | retry
+      btn.textContent = 'Checking…';
+      await refreshAuth({ refresh: true });
+    }
+  } catch (e) {
+    ui.gateErr.textContent = e.message || 'Something went wrong.';
+    ui.gateErr.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+async function doSignOut() {
+  await chrome.runtime.sendMessage({ type: 'EZLIST_SIGN_OUT' }).catch(() => {});
+  ui.accountMenu.hidden = true;
+  await refreshAuth();
+}
+
+async function openBilling() {
+  ui.accountMenu.hidden = true;
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'EZLIST_PORTAL' });
+    if (!res || !res.ok) throw new Error((res && res.error) || 'Could not open billing.');
+  } catch (e) { setStatus(e.message, true); }
 }
 
 function esc(v) {

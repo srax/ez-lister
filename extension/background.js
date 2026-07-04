@@ -1,6 +1,12 @@
 'use strict';
 
+importScripts('lib/lease.js'); // offline ES256 lease verifier (globalThis.CarxpertLease)
+
 const BACKEND_URL = 'http://127.0.0.1:3737';
+// Shared secret for the gated production backend (sent as the x-carxpert-token header).
+// Empty in dev — the local backend is open; the store build injects the real value.
+// See scripts/build-extension.js.
+const BACKEND_TOKEN = '';
 const MARKETPLACE_VEHICLE_CREATE_URL = 'https://www.facebook.com/marketplace/create/vehicle';
 
 // A single pre-warmed FB "create vehicle" tab so the heavy page load happens before the user clicks List.
@@ -14,7 +20,9 @@ function enableSidePanelOnActionClick() {
   }
 }
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.set({ ezlistBackendUrl: BACKEND_URL });
+  const init = { ezlistBackendUrl: BACKEND_URL };
+  if (BACKEND_TOKEN) init.ezlistBackendToken = BACKEND_TOKEN;
+  chrome.storage.local.set(init);
   enableSidePanelOnActionClick();
 });
 chrome.runtime.onStartup.addListener(enableSidePanelOnActionClick);
@@ -58,7 +66,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     // Side panel asked to (re)fill the form with the current stored draft.
     case 'EZLIST_FILL_NOW':
-      fillFacebook().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      fillFacebook(message.key).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
     case 'EZLIST_PREFETCH_IMAGES':
@@ -92,6 +100,48 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'EZLIST_HEALTH':
       health().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+
+    // ---- auth + entitlement (C1/C2) ----
+    case 'EZLIST_SIGN_IN':
+      signIn().then((auth) => sendResponse({ ok: true, auth })).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+
+    case 'EZLIST_SIGN_OUT':
+      signOut().then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+
+    case 'EZLIST_GET_AUTH':
+      getAuthState({ refresh: message.refresh }).then((auth) => sendResponse({ ok: true, auth })).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+
+    case 'EZLIST_CAN_LIST':
+      canList(message.host).then(sendResponse).catch((error) => sendResponse({ ok: false, reason: 'error', error: error.message }));
+      return true;
+
+    case 'EZLIST_CHECKOUT':
+      billingUrl('/api/billing/checkout').then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+
+    case 'EZLIST_PORTAL':
+      billingUrl('/api/billing/portal').then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+
+    case 'EZLIST_OPEN_PANEL':
+      openPanel(sender).then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+
+    // ---- listings sync (C5) ----
+    case 'EZLIST_SYNC':
+      syncNow().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+
+    case 'EZLIST_GET_LISTINGS':
+      getServerListings().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+
+    case 'EZLIST_ENQUEUE_EVENT':
+      enqueueEvent(message.event).then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
     default:
@@ -133,10 +183,10 @@ async function openOrReuseFacebook() {
 // Ensure a create/vehicle tab is open and tell it to fill with the latest stored draft.
 // A freshly-created tab fills itself on load (via the ezlistAutoFill flag the panel set);
 // an already-open tab needs the explicit nudge.
-async function fillFacebook() {
+async function fillFacebook(key) {
   const res = await openOrReuseFacebook();
   if (!res || !res.tabId) return { ok: false, error: 'no Facebook tab' };
-  try { await chrome.tabs.sendMessage(res.tabId, { type: 'EZLIST_FILL' }); }
+  try { await chrome.tabs.sendMessage(res.tabId, { type: 'EZLIST_FILL', key }); }
   catch { /* tab still loading — it will auto-fill once the content script boots */ }
   return { ok: true, tabId: res.tabId, reused: res.reused };
 }
@@ -164,14 +214,17 @@ function startFetch(msg) {
 const IMG_CONCURRENCY = 6;
 const IMG_MIN_BYTES = 3000;
 
-async function fetchImages({ urls, baseUrl, max = 20, width = 1080 }) {
+async function fetchImages({ urls, baseUrl, ext, max = 20, width = 1080 }) {
   const enumerated = !(Array.isArray(urls) && urls.length);
   let targets;
   if (!enumerated) {
     targets = urls.slice(0, max).map((url, i) => ({ n: i + 1, url }));
   } else if (baseUrl) {
+    // Gallery extension comes from the dealer page (used cars: ip/*.jpg, new-car stock
+    // photos: sp/*.png) — probing the wrong one yields zero images.
+    const extname = ext || 'jpg';
     targets = [];
-    for (let n = 1; n <= max; n += 1) targets.push({ n, url: `${baseUrl}${n}.jpg?width=${width}` });
+    for (let n = 1; n <= max; n += 1) targets.push({ n, url: `${baseUrl}${n}.${extname}?width=${width}` });
   } else {
     return { ok: false, error: 'no image source provided' };
   }
@@ -216,17 +269,27 @@ async function blobToDataUrl(blob) {
 }
 
 // ---- AI calls (routed through our backend; the key lives there, not in the extension) ----
+// Build request headers with the bearer session token (and, during the token→bearer
+// transition, the legacy x-carxpert-token). Both are sent so nothing breaks before the A5
+// cutover flips the backend to bearer-only.
+async function authHeaders(extra) {
+  const store = await chrome.storage.local.get(['ezlistAuthToken', 'ezlistBackendToken']);
+  const headers = { 'Content-Type': 'application/json', ...(extra || {}) };
+  if (store.ezlistAuthToken) headers.Authorization = `Bearer ${store.ezlistAuthToken}`;
+  if (store.ezlistBackendToken) headers['x-carxpert-token'] = store.ezlistBackendToken;
+  return headers;
+}
+
 async function postBackend(pathname, payload) {
   const backendUrl = await getBackendUrl();
-  const token = (await chrome.storage.local.get(['ezlistBackendToken'])).ezlistBackendToken;
-  const headers = { 'Content-Type': 'application/json' };
-  if (token) headers['x-carxpert-token'] = token;
   let resp;
   try {
-    resp = await fetch(`${backendUrl}${pathname}`, { method: 'POST', headers, body: JSON.stringify(payload) });
+    resp = await fetch(`${backendUrl}${pathname}`, { method: 'POST', headers: await authHeaders(), body: JSON.stringify(payload) });
   } catch (e) {
     throw new Error('Backend not reachable — is it running? (npm run dev:backend)');
   }
+  if (resp.status === 401) { await clearAuth(); throw new Error('Please sign in again.'); }
+  if (resp.status === 402) throw new Error('A subscription is required for this.');
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok || !data.ok) throw new Error(data.error || `Backend returned ${resp.status}`);
   return data;
@@ -265,3 +328,277 @@ async function getBackendUrl() {
   const stored = await chrome.storage.local.get(['ezlistBackendUrl']);
   return stored.ezlistBackendUrl || BACKEND_URL;
 }
+
+// ==================== auth + entitlement (C1/C2) ====================
+
+const AUTH_CODE_RE = /[?&]code=([^&]+)/;
+
+// Sign in via chrome.identity.launchWebAuthFlow → backend start/finish → one-time code →
+// exchange for a bearer session token. Only the code ever transits the redirect URL.
+async function signIn() {
+  const backend = await getBackendUrl();
+  const redirect = await chrome.identity.launchWebAuthFlow({
+    url: `${backend}/api/auth/extension/start`,
+    interactive: true
+  });
+  const m = String(redirect || '').match(AUTH_CODE_RE);
+  if (!m) throw new Error('Sign-in was cancelled.');
+  const code = decodeURIComponent(m[1]);
+  let resp;
+  try {
+    resp = await fetch(`${backend}/api/auth/extension/exchange`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code })
+    });
+  } catch { throw new Error('Backend not reachable during sign-in.'); }
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data.ok || !data.token) throw new Error(data.error || 'Sign-in failed.');
+  await chrome.storage.local.set({ ezlistAuthToken: data.token });
+  await refreshMe();                 // populate profile / entitlement / lease
+  // First sign-in: bulk-upload local listings (best effort). syncNow lands in C5.
+  if (typeof syncNow === 'function') syncNow().catch(() => {});
+  return getAuthState();
+}
+
+async function signOut() { await clearAuth(); }
+
+async function clearAuth() {
+  await chrome.storage.local.remove(['ezlistAuthToken', 'ezlistMe', 'ezlistLease']);
+}
+
+async function getToken() {
+  return (await chrome.storage.local.get('ezlistAuthToken')).ezlistAuthToken || '';
+}
+
+// Pull /api/me and cache profile + entitlement + (if entitled) a fresh lease. Offline-safe:
+// a network failure keeps the existing cache rather than logging the user out.
+async function refreshMe() {
+  const token = await getToken();
+  if (!token) { await chrome.storage.local.remove(['ezlistMe', 'ezlistLease']); return null; }
+  const backend = await getBackendUrl();
+  let resp;
+  try {
+    resp = await fetch(`${backend}/api/me`, { headers: { Authorization: `Bearer ${token}` } });
+  } catch {
+    return (await chrome.storage.local.get('ezlistMe')).ezlistMe || null; // offline: keep cache
+  }
+  if (resp.status === 401) { await clearAuth(); return null; }
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.error || `me ${resp.status}`);
+  const me = {
+    user: data.user || null,
+    dealership: data.dealership || null,
+    entitled: !!data.entitled,
+    reason: data.reason || null,
+    subscription: data.subscription || null,
+    fetchedAt: Date.now()
+  };
+  const patch = { ezlistMe: me };
+  if (data.lease) {
+    try { patch.ezlistLease = { jws: data.lease, claims: CarxpertLease.decodeJwt(data.lease).payload }; }
+    catch { /* malformed lease from server — skip caching it */ }
+  }
+  await chrome.storage.local.set(patch);
+  if (!data.lease) await chrome.storage.local.remove('ezlistLease');
+  return me;
+}
+
+// Cached JWKS; refetch on force (unknown kid → rotation) and cache.
+async function getJwks(force) {
+  if (!force) {
+    const cached = (await chrome.storage.local.get('ezlistJwks')).ezlistJwks;
+    if (cached && cached.keys) return cached;
+  }
+  const backend = await getBackendUrl();
+  try {
+    const r = await fetch(`${backend}/.well-known/jwks.json`);
+    const j = await r.json();
+    if (j && j.keys) { await chrome.storage.local.set({ ezlistJwks: j }); return j; }
+  } catch { /* fall back to cache */ }
+  return (await chrome.storage.local.get('ezlistJwks')).ezlistJwks || null;
+}
+
+// Verify the cached lease locally. Refetches JWKS once if the kid is unknown (rotation).
+async function verifyCachedLease() {
+  const lease = (await chrome.storage.local.get('ezlistLease')).ezlistLease;
+  if (!lease || !lease.jws) return { valid: false, reason: 'none', claims: null };
+  let jwks = await getJwks();
+  let res = jwks ? await CarxpertLease.verifyLeaseJws(lease.jws, jwks) : { valid: false, reason: 'no_jwks', claims: lease.claims };
+  if (!res.valid && res.reason === 'unknown_kid') {
+    jwks = await getJwks(true);
+    if (jwks) res = await CarxpertLease.verifyLeaseJws(lease.jws, jwks);
+  }
+  return res;
+}
+
+// The auth snapshot the panel + content scripts read. `refresh:true` forces a /me pull;
+// otherwise it uses cache and refreshes in the background when /me is stale (>5 min).
+async function getAuthState(opts) {
+  const opt = opts || {};
+  const token = await getToken();
+  if (token && (opt.refresh || await meIsStale())) {
+    try { await refreshMe(); } catch { /* keep cache */ }
+  }
+  const store = await chrome.storage.local.get(['ezlistAuthToken', 'ezlistMe', 'ezlistLease']);
+  const signedIn = !!store.ezlistAuthToken;
+  const me = store.ezlistMe || null;
+  let leaseValid = false;
+  let leaseClaims = (store.ezlistLease && store.ezlistLease.claims) || null;
+  if (store.ezlistLease && store.ezlistLease.jws) {
+    const res = await verifyCachedLease();
+    leaseValid = res.valid;
+    if (res.claims) leaseClaims = res.claims;
+    if (res.valid) maybeRefreshLease(res.claims);
+  }
+  return {
+    signedIn,
+    entitled: me ? me.entitled : false,
+    reason: me ? me.reason : (signedIn ? 'unknown' : 'signed_out'),
+    user: me ? me.user : null,
+    dealership: me ? me.dealership : null,
+    subscription: me ? me.subscription : null,
+    leaseValid,
+    leaseClaims
+  };
+}
+
+async function meIsStale() {
+  const me = (await chrome.storage.local.get('ezlistMe')).ezlistMe;
+  if (!me || !me.fetchedAt) return true;
+  return (Date.now() - me.fetchedAt) > 5 * 60 * 1000;
+}
+
+// Refresh the lease (via /me) when <10 min remain. Fire-and-forget; guarded against stampede.
+let leaseRefreshing = false;
+async function maybeRefreshLease(claims) {
+  if (leaseRefreshing) return;
+  if (CarxpertLease.secondsToExpiry(claims) > 10 * 60) return;
+  leaseRefreshing = true;
+  try { await refreshMe(); } catch { /* ignore */ } finally { leaseRefreshing = false; }
+}
+
+// Gate check for a paid action (List/Fill). Lease-first (offline tolerant — no network in the
+// hot path), falling back to a /me pull. Returns { ok, reason }. reason mirrors /api/me so the
+// panel can render the right gate step: signed_out | no_dealership | no_subscription | expired.
+async function canList(host) {
+  const res = await verifyCachedLease();
+  if (res.valid && (!host || CarxpertLease.leaseCoversHost(res.claims, host))) {
+    maybeRefreshLease(res.claims);
+    return { ok: true, reason: 'ok', via: 'lease' };
+  }
+  let me;
+  try { me = await refreshMe(); } catch { me = (await chrome.storage.local.get('ezlistMe')).ezlistMe || null; }
+  if (!me) return { ok: false, reason: (await getToken()) ? 'unknown' : 'signed_out' };
+  if (!me.entitled) return { ok: false, reason: me.reason || 'not_entitled' };
+  return { ok: true, reason: 'ok', via: 'me' };
+}
+
+// Stripe checkout / billing-portal: ask the backend for a hosted URL and open it in a tab.
+async function billingUrl(pathname) {
+  const data = await postBackend(pathname, {});
+  if (!data.url) throw new Error('No URL returned.');
+  await chrome.tabs.create({ url: data.url, active: true });
+  return { ok: true, url: data.url };
+}
+
+// Open the side panel from a content-script request (best effort — needs a window id + gesture).
+async function openPanel(sender) {
+  const windowId = sender && sender.tab && sender.tab.windowId;
+  if (windowId != null && chrome.sidePanel && chrome.sidePanel.open) {
+    await chrome.sidePanel.open({ windowId });
+  }
+}
+
+// ==================== listings sync (C5) ====================
+
+// Map a local ezlistListings entry to the /api/listings/sync contract shape.
+function toSyncListing(l) {
+  return {
+    clientKey: l.key,
+    vin: l.vin || null,
+    stock: l.stock || null,
+    title: l.title || null,
+    year: l.year ? Number(l.year) : null,
+    make: l.make || null,
+    model: l.model || null,
+    price: l.price != null ? Number(l.price) : null,
+    sourceUrl: l.sourceUrl || null,
+    platform: l.platform || 'fb',
+    status: l.status === 'sold' ? 'sold' : 'listed', // local 'active' → server 'listed'
+    listedAt: l.listedAt || null,
+    soldAt: l.soldAt || null,
+    soldPrice: l.soldPrice != null ? Number(l.soldPrice) : null
+  };
+}
+
+// Push tracked listings + queued events to the backend. No-op when signed out. The event
+// queue is cleared only for events actually flushed (server dedupes by client uuid), so
+// anything enqueued during the request survives.
+let syncing = false;
+async function syncNow() {
+  if (!(await getToken())) return { ok: false, reason: 'signed_out' };
+  if (syncing) return { ok: true, skipped: 'in_progress' };
+  syncing = true;
+  try {
+    const store = await chrome.storage.local.get(['ezlistListings', 'ezlistEventQueue']);
+    const listings = Object.values(store.ezlistListings || {}).map(toSyncListing);
+    const events = store.ezlistEventQueue || [];
+    if (!listings.length && !events.length) return { ok: true, empty: true };
+    const data = await postBackend('/api/listings/sync', { listings, events });
+    if (events.length) {
+      const flushed = new Set(events.map((e) => e.id));
+      const now = (await chrome.storage.local.get('ezlistEventQueue')).ezlistEventQueue || [];
+      await chrome.storage.local.set({ ezlistEventQueue: now.filter((e) => !flushed.has(e.id)) });
+    }
+    return { ok: true, listings: listings.length, events: events.length, server: data };
+  } finally {
+    syncing = false;
+  }
+}
+
+// Server-side listings for the stats view (entitled). 402 → not entitled (panel keeps local).
+async function getServerListings() {
+  const backend = await getBackendUrl();
+  let resp;
+  try { resp = await fetch(`${backend}/api/listings`, { headers: await authHeaders() }); }
+  catch { return { ok: false, reason: 'offline' }; }
+  if (resp.status === 401) { await clearAuth(); return { ok: false, reason: 'signed_out' }; }
+  if (resp.status === 402) return { ok: false, reason: 'not_entitled' };
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data.ok) return { ok: false, reason: `http_${resp.status}` };
+  return { ok: true, listings: data.listings || [] };
+}
+
+// Append an event to the offline queue (client uuid = idempotency key). Deduped by id;
+// bounded so a permanently-offline client can't grow storage without limit.
+async function enqueueEvent(event) {
+  if (!event || !event.type) return;
+  const ev = {
+    id: event.id || (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`),
+    type: event.type,
+    clientKey: event.clientKey || null,
+    occurredAt: event.occurredAt || new Date().toISOString(),
+    data: event.data || null
+  };
+  const q = (await chrome.storage.local.get('ezlistEventQueue')).ezlistEventQueue || [];
+  if (q.some((e) => e.id === ev.id)) return;
+  q.push(ev);
+  await chrome.storage.local.set({ ezlistEventQueue: q.slice(-500) });
+}
+
+// Auto-sync when tracked listings or the event queue change (publish detection, mark sold,
+// enqueued events) — debounced, best-effort, only when signed in.
+let syncTimer = null;
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  if (changes.ezlistListings || changes.ezlistEventQueue) {
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => { syncNow().catch(() => {}); }, 4000);
+  }
+});
+
+// Periodic flush: the debounce timer above dies with the MV3 worker, so a queued event could
+// otherwise strand until the next storage change. Alarms survive worker restarts.
+chrome.alarms.create('ezlist-sync', { periodInMinutes: 30 });
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'ezlist-sync') syncNow().catch(() => {});
+});

@@ -1,21 +1,27 @@
 'use strict';
 
-// Produce a Chrome Web Store-ready extension zip.
+// Produce an environment-specific extension build (the client half of the
+// isDeployed/isProduction/isStaging split — same source, three targets).
 //
-//   node scripts/build-extension.js <BACKEND_URL> [BACKEND_TOKEN]
-//   BACKEND_URL=https://carxpert-backend.up.railway.app BACKEND_TOKEN=xxx node scripts/build-extension.js
+//   node scripts/build-extension.js <env> [--zip]
+//     env = local | staging | prod
 //
-// What it does (vs. the dev extension/):
-//   1. Rewrites host_permissions — drops the http://localhost / 127.0.0.1 dev entries
-//      (which get Web Store review rejected) and adds the deployed backend origin.
-//   2. Rewrites the BACKEND_URL constant in background.js to the deployed URL, and (if a
-//      token is given) the BACKEND_TOKEN constant used to authenticate the gated backend.
-//   3. Zips the result to dist/carxpert-extension-v<version>.zip.
+//   node scripts/build-extension.js prod            # store zip, prod backend
+//   node scripts/build-extension.js staging         # unpacked dir, staging backend
+//   PROD_BACKEND_URL=https://api.example.com node scripts/build-extension.js prod
+//
+// What it does (vs. the source extension/):
+//   1. Rewrites the BACKEND_URL constant in background.js to the env's backend origin.
+//   2. Rewrites host_permissions — strips every backend host (localhost + *.railway.app)
+//      and adds the target env's backend origin. localhost is kept only for `local`.
+//      Dealer + Facebook hosts are always kept.
+//   3. The manifest `key` (pinned extension ID) is carried through unchanged, so the ID is
+//      identical across local/staging/prod and matches the backend's EXTENSION_ID.
+//   4. Emits dist/<env>/ (unpacked, for loading) and a zip for prod (or any env with --zip).
 //
 // The source extension/ tree is never modified — the build happens in a temp dir.
 
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
@@ -23,85 +29,97 @@ const ROOT = path.resolve(__dirname, '..');
 const SRC = path.join(ROOT, 'extension');
 const DIST = path.join(ROOT, 'dist');
 
+// Per-env backend origin. prod is intentionally unset until production is provisioned —
+// supply it via arg or PROD_BACKEND_URL so a store build can never silently point at staging.
+const ENVS = {
+  local: { url: 'http://127.0.0.1:3737', keepLocalhost: true },
+  staging: { url: 'https://carxpert-tools-backend-staging.up.railway.app' },
+  prod: { url: process.env.PROD_BACKEND_URL || '' }
+};
+
+// A host_permission entry is a "backend host" (swappable per env) if it's localhost or a
+// Railway deployment. Dealer/Facebook hosts don't match, so they're preserved.
+const BACKEND_HOST_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\//i;
+const RAILWAY_HOST_RE = /^https?:\/\/[^/]*\.railway\.app\//i;
+
 const DEV_BACKEND_LITERAL = "const BACKEND_URL = 'http://127.0.0.1:3737';";
-const DEV_TOKEN_LITERAL = "const BACKEND_TOKEN = '';";
 
 function fail(msg) {
   console.error(`\n✗ ${msg}\n`);
   process.exit(1);
 }
 
-function parseBackendUrl(raw) {
-  if (!raw) {
-    fail('No backend URL given. Usage: node scripts/build-extension.js <https://your-backend-url>');
-  }
+function parseUrl(raw, env) {
+  if (!raw) fail(`No backend URL for env "${env}". For prod, pass a URL arg or set PROD_BACKEND_URL.`);
   let url;
-  try {
-    url = new URL(raw);
-  } catch {
-    fail(`"${raw}" is not a valid URL.`);
+  try { url = new URL(raw); } catch { fail(`"${raw}" is not a valid URL.`); }
+  if (env !== 'local' && url.protocol !== 'https:') {
+    fail(`Deployed build needs https:// (got ${url.protocol}//). Chrome blocks insecure backend calls.`);
   }
-  if (url.protocol !== 'https:') {
-    fail(`Backend URL must be https:// for a store build (got ${url.protocol}//). Chrome blocks insecure backend calls.`);
-  }
-  // Base URL the extension prepends paths to (no trailing slash): `${BACKEND_URL}/api/...`
   const base = `${url.protocol}//${url.host}`;
   return { base, hostPattern: `${base}/*` };
 }
 
 function main() {
-  const backendArg = process.argv[2] || process.env.BACKEND_URL;
-  const token = (process.argv[3] || process.env.BACKEND_TOKEN || '').trim();
-  const { base, hostPattern } = parseBackendUrl(backendArg);
+  const env = (process.argv[2] || 'prod').toLowerCase();
+  const wantZip = process.argv.includes('--zip') || env === 'prod';
+  const cfg = ENVS[env];
+  if (!cfg) fail(`Unknown env "${env}". Use: local | staging | prod`);
 
-  // ---- read + transform manifest ----
+  // Allow an explicit URL override as the 3rd token (e.g. prod before its URL is in this file).
+  const urlArg = process.argv[3] && !process.argv[3].startsWith('--') ? process.argv[3] : cfg.url;
+  const { base, hostPattern } = parseUrl(urlArg, env);
+
+  // ---- manifest: swap backend hosts, keep key/dealer/facebook ----
   const manifest = JSON.parse(fs.readFileSync(path.join(SRC, 'manifest.json'), 'utf8'));
+  if (!manifest.key) fail('Source manifest has no "key" — the extension ID would be unpinned. Run the keygen step (see docs/plans/04-agent-extension.md C0).');
   const before = manifest.host_permissions || [];
-  const kept = before.filter((h) => !/^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?\//i.test(h));
+  const kept = before.filter((h) => {
+    if (RAILWAY_HOST_RE.test(h)) return false;
+    if (BACKEND_HOST_RE.test(h)) return Boolean(cfg.keepLocalhost);
+    return true; // dealer + facebook
+  });
   const nextPerms = [...new Set([...kept, hostPattern])];
   manifest.host_permissions = nextPerms;
   const version = manifest.version;
 
-  // ---- read + transform background.js ----
+  // ---- background.js: rewrite the BACKEND_URL constant ----
   const bgPath = path.join(SRC, 'background.js');
   let bg = fs.readFileSync(bgPath, 'utf8');
   if (!bg.includes(DEV_BACKEND_LITERAL)) {
-    fail(`Could not find the dev BACKEND_URL line in background.js.\n  Expected: ${DEV_BACKEND_LITERAL}\n  Update DEV_BACKEND_LITERAL in this script if the source changed.`);
+    fail(`Could not find the dev BACKEND_URL line in background.js.\n  Expected: ${DEV_BACKEND_LITERAL}`);
   }
   bg = bg.replace(DEV_BACKEND_LITERAL, `const BACKEND_URL = '${base}';`);
-  if (token) {
-    if (!bg.includes(DEV_TOKEN_LITERAL)) {
-      fail(`Could not find the dev BACKEND_TOKEN line in background.js.\n  Expected: ${DEV_TOKEN_LITERAL}`);
+
+  // ---- assemble build dir (source tree untouched) ----
+  const outDir = path.join(DIST, env);
+  fs.rmSync(outDir, { recursive: true, force: true });
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.cpSync(SRC, outDir, { recursive: true });
+  fs.writeFileSync(path.join(outDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  fs.writeFileSync(path.join(outDir, 'background.js'), bg);
+
+  let zipInfo = '(none)';
+  if (wantZip) {
+    const zipPath = path.join(DIST, `carxpert-extension-${env}-v${version}.zip`);
+    fs.rmSync(zipPath, { force: true });
+    try {
+      execFileSync('zip', ['-rq', zipPath, '.'], { cwd: outDir });
+    } catch (e) {
+      fail(`zip failed (is the "zip" CLI installed? "sudo apt-get install zip"): ${e.message}`);
     }
-    bg = bg.replace(DEV_TOKEN_LITERAL, `const BACKEND_TOKEN = '${token}';`);
+    zipInfo = `${path.relative(ROOT, zipPath)} (${(fs.statSync(zipPath).size / 1024).toFixed(1)} KB)`;
   }
 
-  // ---- assemble build dir (temp; source tree untouched) ----
-  const buildDir = fs.mkdtempSync(path.join(os.tmpdir(), 'carxpert-build-'));
-  fs.cpSync(SRC, buildDir, { recursive: true });
-  fs.writeFileSync(path.join(buildDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-  fs.writeFileSync(path.join(buildDir, 'background.js'), bg);
-
-  // ---- zip ----
-  fs.mkdirSync(DIST, { recursive: true });
-  const zipPath = path.join(DIST, `carxpert-extension-v${version}.zip`);
-  fs.rmSync(zipPath, { force: true });
-  try {
-    execFileSync('zip', ['-rq', zipPath, '.'], { cwd: buildDir });
-  } catch (e) {
-    fail(`zip failed (is the "zip" CLI installed? "sudo apt-get install zip"): ${e.message}`);
-  }
-  fs.rmSync(buildDir, { recursive: true, force: true });
-
-  const size = (fs.statSync(zipPath).size / 1024).toFixed(1);
-  console.log('\n✓ Store-ready build complete');
+  console.log('\n✓ Build complete');
+  console.log(`  env:              ${env}`);
   console.log(`  version:          ${version}`);
   console.log(`  backend URL:      ${base}`);
-  console.log(`  backend token:    ${token ? 'baked in (gated backend)' : 'none (open backend)'}`);
   console.log(`  host_permissions: ${before.length} → ${nextPerms.length}`);
   for (const h of before) if (!nextPerms.includes(h)) console.log(`      removed: ${h}`);
-  console.log(`      added:   ${hostPattern}`);
-  console.log(`  output:           dist/carxpert-extension-v${version}.zip (${size} KB)\n`);
+  if (!before.includes(hostPattern)) console.log(`      added:   ${hostPattern}`);
+  console.log(`  unpacked:         ${path.relative(ROOT, outDir)}/`);
+  console.log(`  zip:              ${zipInfo}\n`);
 }
 
 main();
