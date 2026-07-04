@@ -54,17 +54,22 @@ export async function fetchRoster(dealership, { fetchImpl = politeFetch, condSta
       if (condState.lastModified) headers['If-Modified-Since'] = condState.lastModified;
       const resp = await fetchImpl(sitemapUrl, { headers });
       if (resp.status === 304) {
-        return { ok: true, vins: null, source: 'sitemap', notModified: true, condState };
+        // Unchanged since the last 200 → reuse that scan's roster (cached in condState).
+        // vins stays null when there is no cache (fresh process) — the caller must then
+        // treat membership as unknowable, never as "all present".
+        return { ok: true, vins: condState.vins || null, source: 'sitemap', notModified: true, condState };
       }
       if (resp.ok) {
         const html = await resp.text();
         const vins = extractVins(html);
         const nextCond = {
           etag: resp.headers.get('etag') || null,
-          lastModified: resp.headers.get('last-modified') || null
+          lastModified: resp.headers.get('last-modified') || null,
+          vins // roster cache so a later 304 can re-apply real membership
         };
-        // A sitemap that parses to too few VINs is suspect → let the caller try SRP.
-        if (vins.length >= 10) {
+        // A sitemap that parses to almost no VINs is suspect (bot wall / markup change) →
+        // let the caller try SRP. Kept low (3, not 10) so small dealers still scan.
+        if (vins.length >= 3) {
           return { ok: true, vins, source: 'sitemap', condState: nextCond };
         }
       }

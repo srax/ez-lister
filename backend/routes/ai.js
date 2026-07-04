@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { isProduction } from '../env.js';
 import * as ai from '../ai.js';
 import { requireUser } from '../mw.js';
 import { isEntitled } from '../entitlement/index.js';
@@ -16,9 +17,12 @@ const router = Router();
 const AUTH_MODE = (process.env.AI_AUTH_MODE || 'token').toLowerCase();
 
 // ---- legacy token gate + in-memory rate limit ----
+// Fails CLOSED on a deployed backend: with no CARXPERT_TOKEN configured, the gate is open
+// only in local dev — never on the public Railway URL (that would hand out the OpenAI key's
+// spend to anyone who finds the URL).
 function gateOk(req) {
   const required = process.env.CARXPERT_TOKEN;
-  if (!required) return true;
+  if (!required) return !isProduction();
   return req.get('x-carxpert-token') === required;
 }
 const RATE = { windowMs: 60000, max: Number(process.env.RATE_MAX || 40), hits: new Map() };

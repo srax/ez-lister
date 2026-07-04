@@ -79,6 +79,18 @@ export async function linkDealer(userId, dealershipId, db = pool) {
 }
 
 export async function recordRequest(userId, { rawInput, normalizedDomain, detectedPlatform, fingerprints }, db = pool) {
+  // Flood guard: the same user re-asking about the same domain within a day dedupes to the
+  // existing triage row instead of growing the table on every resolve miss.
+  const dedupeKey = normalizedDomain || rawInput || '';
+  const { rows: recent } = await db.query(
+    `select id from dealer_requests
+     where user_id = $1 and coalesce(normalized_domain, raw_input) = $2
+       and created_at > now() - interval '1 day'
+     limit 1`,
+    [userId, dedupeKey]
+  );
+  if (recent.length) return { id: recent[0].id, deduped: true };
+
   const id = crypto.randomUUID();
   await db.query(
     `insert into dealer_requests (id, user_id, raw_input, normalized_domain, detected_platform, fingerprints)

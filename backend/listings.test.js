@@ -1,6 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeStatus } from './listings.js';
+import { mergeStatus, normalizeStatus } from './listings.js';
+
+test("normalizeStatus: extension 'active' maps to 'listed'; junk is clamped; null passes through", () => {
+  assert.equal(normalizeStatus('active'), 'listed');
+  assert.equal(normalizeStatus('listed'), 'listed');
+  assert.equal(normalizeStatus('sold'), 'sold');
+  assert.equal(normalizeStatus('removed'), 'removed');
+  assert.equal(normalizeStatus('garbage'), 'listed');
+  assert.equal(normalizeStatus(null), null);
+  assert.equal(normalizeStatus(undefined), null);
+});
+
+test("mergeStatus: incoming extension 'active' is stored as 'listed'", () => {
+  const r = mergeStatus(null, { status: 'active' });
+  assert.equal(r.status, 'listed');
+});
+
+test('mergeStatus: incoming row without a status keeps the existing status', () => {
+  const r = mergeStatus({ status: 'removed' }, {});
+  assert.equal(r.status, 'removed');
+});
 
 test('new listing → listed, no sold fields', () => {
   const r = mergeStatus(null, { status: 'listed' });

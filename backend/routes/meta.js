@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { isProduction } from '../env.js';
 import { DESCRIBE_MODEL, TRANSLATE_MODEL, TRANSLATE_MODEL_STRONG } from '../ai.js';
 
 const router = Router();
@@ -6,7 +7,7 @@ const router = Router();
 // Liveness — DB-free so the Railway healthcheck passes even mid-migration. Minimal in
 // production (no key/model details leaked); verbose in dev for quick sanity.
 router.get('/health', (req, res) => {
-  if (process.env.NODE_ENV === 'production') {
+  if (isProduction()) {
     res.json({ ok: true });
     return;
   }

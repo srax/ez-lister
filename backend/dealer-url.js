@@ -24,6 +24,14 @@ export function normalizeHost(raw) {
   return host;
 }
 
+// Hosts the backend must never fetch server-side (SSRF hygiene): IP literals, localhost-ish
+// names, and platform-internal suffixes. Alias matching still sees the input host — we just
+// refuse to send requests toward them.
+const BLOCKED_HOST_RE = /^(\d{1,3}\.){3}\d{1,3}$|^\[|^localhost$|\.(internal|local|localhost)$/i;
+export function isBlockedHost(host) {
+  return BLOCKED_HOST_RE.test(host || '');
+}
+
 // Follow redirects (max 3, GET, ~5s timeout, http(s) only) and return the FINAL host.
 // Best-effort: any network/parse failure falls back to the last known host. Injectable
 // fetchImpl for tests.
@@ -54,6 +62,7 @@ export async function resolveFinalHost(startUrl, { fetchImpl = fetch, maxRedirec
       break;
     }
     if (next.protocol !== 'http:' && next.protocol !== 'https:') break;
+    if (isBlockedHost(next.hostname.toLowerCase())) break; // never follow a redirect inward
     url = next.toString();
   }
   try {
@@ -67,7 +76,7 @@ export async function resolveFinalHost(startUrl, { fetchImpl = fetch, maxRedirec
 export async function candidateHosts(raw, { allowNetwork = true, fetchImpl = fetch } = {}) {
   const inputHost = normalizeHost(raw);
   const hosts = [inputHost];
-  if (allowNetwork) {
+  if (allowNetwork && !isBlockedHost(inputHost)) {
     const finalHost = await resolveFinalHost(`https://${inputHost}`, { fetchImpl });
     if (finalHost && !hosts.includes(finalHost)) hosts.push(finalHost);
   }

@@ -2,18 +2,29 @@ import crypto from 'node:crypto';
 import { pool } from './db.js';
 import { normalizeVin } from './vin.js';
 
+// The extension's local schema says 'active' where the contract says 'listed'. Accept both,
+// and never store a status outside the contract's set. null/undefined stays null (partial
+// updates keep the existing status).
+const STATUSES = new Set(['listed', 'sold', 'removed']);
+export function normalizeStatus(s) {
+  if (s == null) return null;
+  const v = s === 'active' ? 'listed' : String(s);
+  return STATUSES.has(v) ? v : 'listed';
+}
+
 // ---- pure status-merge precedence (contract §Sync) ----
 // manual sold always wins; the scanner never overrides a manual sold; an incoming listing
 // row from the extension never downgrades a sold car (the extension only sends published
 // cars as 'listed'). Returns the fields to persist for status/sold_*.
 export function mergeStatus(existing, incoming) {
   const cur = existing || {};
+  const incomingStatus = normalizeStatus(incoming.status);
   // A manual sold is sticky — nothing from a sync downgrades it.
   if (cur.status === 'sold' && cur.sold_source === 'manual') {
     return { status: 'sold', sold_source: 'manual', sold_at: cur.sold_at, sold_price: cur.sold_price };
   }
   // Incoming explicit manual sold (from a marked_sold action synced as a listing row).
-  if (incoming.status === 'sold') {
+  if (incomingStatus === 'sold') {
     return {
       status: 'sold',
       sold_source: incoming.soldSource || cur.sold_source || 'manual',
@@ -25,11 +36,11 @@ export function mergeStatus(existing, incoming) {
   if (cur.status === 'sold') {
     return { status: 'sold', sold_source: cur.sold_source, sold_at: cur.sold_at, sold_price: cur.sold_price };
   }
-  return { status: incoming.status || cur.status || 'listed', sold_source: null, sold_at: null, sold_price: null };
+  return { status: incomingStatus || normalizeStatus(cur.status) || 'listed', sold_source: null, sold_at: null, sold_price: null };
 }
 
 // ---- DB upsert of one listing ----
-async function upsertListing(ownerId, item, db) {
+async function upsertListing(ownerId, item, db, defaultDealershipId = null) {
   const clientKey = item.clientKey;
   if (!clientKey) return { skipped: 'no clientKey' };
 
@@ -72,7 +83,7 @@ async function upsertListing(ownerId, item, db) {
        facebook_published_at = coalesce(excluded.facebook_published_at, listings.facebook_published_at),
        updated_at = now()`,
     [
-      id, ownerId, item.dealershipId || null, clientKey, vin, item.stock || null, item.title || null,
+      id, ownerId, item.dealershipId || defaultDealershipId, clientKey, vin, item.stock || null, item.title || null,
       item.year || null, item.make || null, item.model || null, item.price ?? null,
       item.platform || 'fb', merged.status, merged.sold_source, item.listedAt || null,
       merged.sold_at, merged.sold_price, item.sourceUrl || null,
@@ -114,14 +125,34 @@ async function insertEvent(ownerId, ev, db) {
       [ownerId, ev.clientKey]
     );
   }
+
+  // A fresh publish is definitive evidence the car is live again — it beats even a sticky
+  // manual sold, but only when the publish happened AFTER the car was marked sold (so a
+  // replayed old event can't un-sell anything).
+  if (ev.type === 'publish_detected' && ev.clientKey) {
+    await db.query(
+      `update listings set status = 'listed', sold_source = null, sold_at = null, sold_price = null,
+         first_missed_at = null, updated_at = now()
+       where owner_id = $1 and client_key = $2 and status = 'sold'
+         and (sold_at is null or sold_at < $3)`,
+      [ownerId, ev.clientKey, ev.occurredAt || new Date().toISOString()]
+    );
+  }
   return { ok: true };
 }
 
 // ---- the sync entrypoint (auth only, not entitlement) ----
 export async function syncListings(ownerId, { listings = [], events = [] } = {}, db = pool) {
   const results = { listings: 0, events: 0 };
+  // Listings synced without an explicit dealershipId inherit the user's linked dealership —
+  // the sold-scan worker only sees listings that carry a dealership_id.
+  let defaultDealershipId = null;
+  if (listings.length) {
+    const { rows } = await db.query('select dealership_id from user_dealerships where user_id = $1', [ownerId]);
+    defaultDealershipId = rows.length ? rows[0].dealership_id : null;
+  }
   for (const item of listings) {
-    const r = await upsertListing(ownerId, item, db);
+    const r = await upsertListing(ownerId, item, db, defaultDealershipId);
     if (r && r.id) results.listings += 1;
   }
   for (const ev of events) {

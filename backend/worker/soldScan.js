@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { pool } from '../db.js';
 import { isEntitled } from '../entitlement/index.js';
 import { pruneUsageEvents } from '../listings-admin.js';
+import { pruneExpiredAuthCodes } from '../auth-codes.js';
 import { fetchRoster } from './adapters/dealeron.js';
 
 const HOUR_MS = 3600 * 1000;
@@ -11,12 +12,14 @@ const RESUME_STALE_MS = 48 * HOUR_MS; // clear misses older than this on entitle
 const ADAPTERS = { dealeron: fetchRoster };
 
 // ---- pure: is a completed scan plausible enough to act on? ----
-// Counts only if it ran without error AND the VIN count is >= max(10, 30% of the previous
-// successful count). Implausible/failed scans change NO listing state.
+// Counts only if it ran without error AND the VIN count is plausible: ≥30% of the last
+// successful count (floor 1), or ≥3 when there is no history yet. A hard floor of 10 would
+// permanently disable sold detection for small dealers; ≥3 on the first scan still rejects
+// a bot-walled or garbage parse. Implausible/failed scans change NO listing state.
 export function isPlausibleScan({ ok, vinCount, prevCount }) {
   if (!ok) return false;
   if (vinCount == null) return false;
-  const floor = Math.max(10, Math.floor((prevCount || 0) * 0.3));
+  const floor = prevCount > 0 ? Math.max(1, Math.floor(prevCount * 0.3)) : 3;
   return vinCount >= floor;
 }
 
@@ -35,7 +38,9 @@ export function judgeListing(listing, present, now) {
     return out;
   }
 
-  // Absent. Only 'listed' cars are candidates (manual/scan sold are excluded by the query).
+  // Absent. An already-sold car has nothing to advance — re-judging it would drift
+  // sold_at forward on every scan. Only 'listed' cars run the miss clock.
+  if (listing.status === 'sold') return null;
   if (firstMissed == null) {
     return { setFirstMissed: now };
   }
@@ -67,11 +72,16 @@ async function scanDealership(dealership, { db = pool, now = Date.now(), adapter
     return { ok: false, reason: 'fetch_threw' };
   }
 
-  // 304 Not Modified → inventory unchanged since last scan; treat as "all tracked VINs present".
+  // 304 Not Modified → roster identical to the last 200 scan; re-apply that cached roster.
+  // Never assume "all present": that would revive scanner-sold cars and reset miss clocks
+  // for VINs that are in fact still absent. With no cached roster (fresh process), we can't
+  // know membership — record the scan and change no listing state.
   if (roster.notModified) {
-    await recordScan(db, { scanId, dealershipId: dealership.id, startedAt, ok: true, vinCount: prevCount, source: roster.source, error: null });
-    await applyPresence(db, dealership.id, null, now, { allPresent: true, isEntitledFn });
-    return { ok: true, notModified: true };
+    const vinCount = roster.vins ? roster.vins.length : prevCount;
+    await recordScan(db, { scanId, dealershipId: dealership.id, startedAt, ok: true, vinCount, source: roster.source, error: null });
+    if (!roster.vins) return { ok: true, notModified: true, skipped: 'no cached roster' };
+    await applyPresence(db, dealership.id, new Set(roster.vins), now, { isEntitledFn });
+    return { ok: true, notModified: true, vinCount };
   }
 
   if (roster.condState) condStates.set(dealership.id, roster.condState);
@@ -90,7 +100,7 @@ async function scanDealership(dealership, { db = pool, now = Date.now(), adapter
 }
 
 // Apply presence/absence to every tracked listing of a dealership whose owner is entitled.
-async function applyPresence(db, dealershipId, rosterSet, now, { allPresent = false, isEntitledFn = isEntitled } = {}) {
+async function applyPresence(db, dealershipId, rosterSet, now, { isEntitledFn = isEntitled } = {}) {
   const { rows } = await db.query(
     `select l.id, l.owner_id, l.vin, l.status, l.sold_source, l.first_missed_at
      from listings l
@@ -113,8 +123,7 @@ async function applyPresence(db, dealershipId, rosterSet, now, { allPresent = fa
       effective = { ...listing, first_missed_at: null };
     }
 
-    const present = allPresent ? true : rosterSet.has(listing.vin);
-    const decision = judgeListing(effective, present, now);
+    const decision = judgeListing(effective, rosterSet.has(listing.vin), now);
     if (!decision) continue;
     await applyDecision(db, effective, decision, now);
   }
@@ -131,8 +140,9 @@ async function applyDecision(db, listing, d, now) {
     return;
   }
   if (d.markSold) {
+    // Clear the miss clock so a later revive → re-miss starts fresh.
     await db.query(
-      `update listings set status='sold', sold_source='scan', sold_at=$2, updated_at=now() where id=$1`,
+      `update listings set status='sold', sold_source='scan', sold_at=$2, first_missed_at=null, updated_at=now() where id=$1`,
       [listing.id, new Date(d.soldAt).toISOString()]
     );
     return;
@@ -166,12 +176,15 @@ async function previousSuccessfulCount(db, dealershipId) {
   return rows.length ? rows[0].vin_count : 0;
 }
 
-// Dealerships with ≥1 tracked (listed, valid-VIN) listing.
+// Dealerships with ≥1 tracked valid-VIN listing that a scan could still change: 'listed'
+// cars (miss clock) AND scanner-sold cars (revival) — otherwise a dealership whose tracked
+// cars are all scan-sold drops out of the cycle and reappearances are never noticed.
 async function dealershipsToScan(db) {
   const { rows } = await db.query(
     `select distinct d.* from dealerships d
      join listings l on l.dealership_id = d.id
-     where l.vin is not null and l.status = 'listed'`
+     where l.vin is not null
+       and (l.status = 'listed' or (l.status = 'sold' and l.sold_source = 'scan'))`
   );
   return rows;
 }
@@ -184,6 +197,7 @@ export async function runScanCycle({ db = pool, now = Date.now(), condStates = n
     results.push({ dealership: d.id, ...(await scanDealership(d, { db, now, condStates, adapters, isEntitledFn })) });
   }
   await pruneUsageEvents(db).catch(() => {});
+  await pruneExpiredAuthCodes(db).catch(() => {});
   return results;
 }
 
