@@ -8,6 +8,7 @@ const BACKEND_URL = 'http://127.0.0.1:3737';
 // See scripts/build-extension.js.
 const BACKEND_TOKEN = '';
 const MARKETPLACE_VEHICLE_CREATE_URL = 'https://www.facebook.com/marketplace/create/vehicle';
+const DEALER_SEEN_TTL_MS = 30 * 60 * 1000;
 
 // A single pre-warmed FB "create vehicle" tab so the heavy page load happens before the user clicks List.
 let prewarmTabId = null;
@@ -38,6 +39,15 @@ if (chrome.action && chrome.action.onClicked) {
       chrome.sidePanel.open({ windowId: tab.windowId }).catch(() => {});
     }
   });
+}
+
+function errorResponse(error) {
+  return {
+    ok: false,
+    error: error && error.message ? error.message : 'Something went wrong.',
+    reason: error && error.reason ? error.reason : null,
+    status: error && error.status ? error.status : null
+  };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -115,16 +125,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       getAuthState({ refresh: message.refresh }).then((auth) => sendResponse({ ok: true, auth })).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
+    case 'EZLIST_BILLING_PLAN':
+      billingPlan().then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    case 'EZLIST_CONNECT_DEALER':
+      connectRecentDealer().then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    case 'EZLIST_REQUEST_DEALER':
+      requestDealerSupport(message.payload || {}).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
     case 'EZLIST_CAN_LIST':
       canList(message.host).then(sendResponse).catch((error) => sendResponse({ ok: false, reason: 'error', error: error.message }));
       return true;
 
     case 'EZLIST_CHECKOUT':
-      billingUrl('/api/billing/checkout').then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      billingUrl('/api/billing/checkout').then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
       return true;
 
     case 'EZLIST_PORTAL':
-      billingUrl('/api/billing/portal').then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      billingUrl('/api/billing/portal').then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
       return true;
 
     case 'EZLIST_OPEN_PANEL':
@@ -288,10 +310,20 @@ async function postBackend(pathname, payload) {
   } catch (e) {
     throw new Error('Backend not reachable — is it running? (npm run dev:backend)');
   }
-  if (resp.status === 401) { await clearAuth(); throw new Error('Please sign in again.'); }
-  if (resp.status === 402) throw new Error('A subscription is required for this.');
   const data = await resp.json().catch(() => ({}));
-  if (!resp.ok || !data.ok) throw new Error(data.error || `Backend returned ${resp.status}`);
+  if (resp.status === 401) { await clearAuth(); throw new Error('Please sign in again.'); }
+  if (resp.status === 402) {
+    const err = new Error(data.error || 'A subscription is required for this.');
+    err.status = resp.status;
+    err.reason = data.reason || 'no_subscription';
+    throw err;
+  }
+  if (!resp.ok || !data.ok) {
+    const err = new Error(data.error || `Backend returned ${resp.status}`);
+    err.status = resp.status;
+    err.reason = data.reason || null;
+    throw err;
+  }
   return data;
 }
 
@@ -324,9 +356,69 @@ async function health() {
   return response.json();
 }
 
+async function billingPlan() {
+  const backendUrl = await getBackendUrl();
+  const resp = await fetch(`${backendUrl}/api/billing/plan`);
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data.ok) throw new Error(data.error || `Backend returned ${resp.status}`);
+  return { ok: true, plan: data.plan || null };
+}
+
 async function getBackendUrl() {
   const stored = await chrome.storage.local.get(['ezlistBackendUrl']);
   return stored.ezlistBackendUrl || BACKEND_URL;
+}
+
+// ==================== dealership onboarding ====================
+
+async function recentDealerSeen() {
+  const seen = (await chrome.storage.local.get('ezlistDealerSeen')).ezlistDealerSeen;
+  if (!seen || !seen.host || !seen.ts) return null;
+  if ((Date.now() - Number(seen.ts)) > DEALER_SEEN_TTL_MS) return null;
+  return seen;
+}
+
+async function resolveSeenDealer() {
+  const seen = await recentDealerSeen();
+  if (!seen) {
+    const err = new Error('Open your dealership inventory page, then tap Detect again.');
+    err.reason = 'no_recent_dealer';
+    throw err;
+  }
+  return postBackend('/api/dealerships/resolve', {
+    url: seen.url || `https://${seen.host}`,
+    fingerprints: { source: 'extension_seen', host: seen.host, platform: seen.platform || null }
+  });
+}
+
+async function connectRecentDealer() {
+  const resolved = await resolveSeenDealer();
+  if (!resolved.supported || !resolved.dealership || !resolved.dealership.id) {
+    return {
+      ok: false,
+      reason: 'unsupported_dealer',
+      error: 'This dealership is not supported yet. Send a request and we’ll add it.',
+      normalizedDomain: resolved.normalizedDomain || null,
+      detectedPlatform: resolved.detectedPlatform || null
+    };
+  }
+  await postBackend('/api/dealerships/link', { dealershipId: resolved.dealership.id });
+  const auth = await getAuthState({ refresh: true });
+  return { ok: true, linked: true, dealership: resolved.dealership, auth };
+}
+
+async function requestDealerSupport(payload) {
+  const body = {
+    url: payload.url || '',
+    contactName: payload.contactName || '',
+    contactEmail: payload.contactEmail || '',
+    contactPhone: payload.contactPhone || '',
+    notes: payload.notes || '',
+    fingerprints: payload.fingerprints || { source: 'extension_request' }
+  };
+  const data = await postBackend('/api/dealerships/request', body);
+  const auth = await getAuthState({ refresh: true });
+  return { ok: true, request: { id: data.id, deduped: !!data.deduped }, auth };
 }
 
 // ==================== auth + entitlement (C1/C2) ====================
@@ -387,6 +479,7 @@ async function refreshMe() {
   const me = {
     user: data.user || null,
     dealership: data.dealership || null,
+    requestPending: data.requestPending || null,
     entitled: !!data.entitled,
     reason: data.reason || null,
     subscription: data.subscription || null,
@@ -455,6 +548,7 @@ async function getAuthState(opts) {
     reason: me ? me.reason : (signedIn ? 'unknown' : 'signed_out'),
     user: me ? me.user : null,
     dealership: me ? me.dealership : null,
+    requestPending: me ? me.requestPending : null,
     subscription: me ? me.subscription : null,
     leaseValid,
     leaseClaims

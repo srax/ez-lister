@@ -183,7 +183,8 @@ async function dealershipsToScan(db) {
   const { rows } = await db.query(
     `select distinct d.* from dealerships d
      join listings l on l.dealership_id = d.id
-     where l.vin is not null
+     where d.status = 'supported'
+       and l.vin is not null
        and (l.status = 'listed' or (l.status = 'sold' and l.sold_source = 'scan'))`
   );
   return rows;

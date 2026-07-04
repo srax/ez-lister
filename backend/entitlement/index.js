@@ -44,11 +44,11 @@ export async function isEntitled(userId, db = pool) {
     subActive = !periodEnd || periodEnd.getTime() > Date.now();
   }
 
-  if (!hasComp && !subActive) {
-    return { entitled: false, reason: hadSubRow ? 'expired' : 'no_subscription', periodEnd };
-  }
   if (!hasDealership) {
     return { entitled: false, reason: 'no_dealership', periodEnd };
+  }
+  if (!hasComp && !subActive) {
+    return { entitled: false, reason: hadSubRow ? 'expired' : 'no_subscription', periodEnd };
   }
   return { entitled: true, reason: 'ok', periodEnd };
 }

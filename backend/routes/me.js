@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { requireUser } from '../mw.js';
 import { isEntitled, issueLease } from '../entitlement/index.js';
-import { getUserDealership } from '../dealerships.js';
+import { getPendingDealerRequest, getUserDealership } from '../dealerships.js';
 
 const router = Router();
 
@@ -9,9 +9,10 @@ const router = Router();
 // `entitled`/`reason` (which step to show) and verifies `lease` locally before paid actions.
 router.get('/api/me', requireUser, async (req, res, next) => {
   try {
-    const [ent, dealership] = await Promise.all([
+    const [ent, dealership, requestPending] = await Promise.all([
       isEntitled(req.user.id),
-      getUserDealership(req.user.id)
+      getUserDealership(req.user.id),
+      getPendingDealerRequest(req.user.id)
     ]);
 
     let lease = null;
@@ -28,6 +29,7 @@ router.get('/api/me', requireUser, async (req, res, next) => {
     res.json({
       user: { id: req.user.id, email: req.user.email, name: req.user.name },
       dealership,
+      requestPending,
       entitled: ent.entitled,
       reason: ent.reason,
       subscription: ent.periodEnd ? { periodEnd: ent.periodEnd } : null,

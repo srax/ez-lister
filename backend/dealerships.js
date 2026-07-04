@@ -78,26 +78,72 @@ export async function linkDealer(userId, dealershipId, db = pool) {
   return { linked: true, dealershipId };
 }
 
-export async function recordRequest(userId, { rawInput, normalizedDomain, detectedPlatform, fingerprints }, db = pool) {
-  // Flood guard: the same user re-asking about the same domain within a day dedupes to the
-  // existing triage row instead of growing the table on every resolve miss.
+export async function recordRequest(userId, {
+  rawInput,
+  normalizedDomain,
+  detectedPlatform,
+  fingerprints,
+  contactName,
+  contactEmail,
+  contactPhone,
+  notes
+}, db = pool) {
+  // Flood guard: the same user re-asking about the same domain dedupes to the existing
+  // triage row instead of growing the table on every resolve miss or panel reload.
   const dedupeKey = normalizedDomain || rawInput || '';
   const { rows: recent } = await db.query(
     `select id from dealer_requests
      where user_id = $1 and coalesce(normalized_domain, raw_input) = $2
-       and created_at > now() - interval '1 day'
      limit 1`,
     [userId, dedupeKey]
   );
-  if (recent.length) return { id: recent[0].id, deduped: true };
+  if (recent.length) {
+    await db.query(
+      `update dealer_requests set
+         contact_name = coalesce($2, contact_name),
+         contact_email = coalesce($3, contact_email),
+         contact_phone = coalesce($4, contact_phone),
+         notes = coalesce($5, notes)
+       where id = $1`,
+      [recent[0].id, contactName || null, contactEmail || null, contactPhone || null, notes || null]
+    );
+    return { id: recent[0].id, deduped: true };
+  }
 
   const id = crypto.randomUUID();
   await db.query(
-    `insert into dealer_requests (id, user_id, raw_input, normalized_domain, detected_platform, fingerprints)
-     values ($1, $2, $3, $4, $5, $6)`,
-    [id, userId, rawInput || '', normalizedDomain || null, detectedPlatform || null, fingerprints ? JSON.stringify(fingerprints) : null]
+    `insert into dealer_requests (
+       id, user_id, raw_input, normalized_domain, detected_platform, fingerprints,
+       contact_name, contact_email, contact_phone, notes
+     )
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+    [
+      id, userId, rawInput || '', normalizedDomain || null, detectedPlatform || null,
+      fingerprints ? JSON.stringify(fingerprints) : null,
+      contactName || null, contactEmail || null, contactPhone || null, notes || null
+    ]
   );
   return { id };
+}
+
+export async function getPendingDealerRequest(userId, db = pool) {
+  const { rows } = await db.query(
+    `select id, raw_input, normalized_domain, detected_platform, created_at
+     from dealer_requests
+     where user_id = $1
+     order by created_at desc
+     limit 1`,
+    [userId]
+  );
+  if (!rows.length) return null;
+  const r = rows[0];
+  return {
+    id: r.id,
+    rawInput: r.raw_input,
+    normalizedDomain: r.normalized_domain,
+    detectedPlatform: r.detected_platform,
+    createdAt: r.created_at
+  };
 }
 
 // For /api/me: the user's linked dealership (public subset) or null.

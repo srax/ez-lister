@@ -9,6 +9,15 @@
   // Only run on the dealership site (Facebook has its own content script).
   if (/facebook\.com$/i.test(HOST)) return;
 
+  chrome.storage.local.set({
+    ezlistDealerSeen: {
+      host: HOST.toLowerCase(),
+      url: location.href,
+      platform: 'dealeron',
+      ts: Date.now()
+    }
+  }).catch(() => {});
+
   // Pure helpers shared with the FB filler (lib/mappers.js, loaded first via manifest).
   const M = globalThis.CarxpertShared;
 

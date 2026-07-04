@@ -19,8 +19,8 @@ function mkDb({ dealership = false, comp = false, sub = 'none' }) {
 const future = () => new Date(Date.now() + 86_400_000).toISOString();
 const past = () => new Date(Date.now() - 1000).toISOString();
 
-test('nothing → no_subscription', async () => {
-  assert.deepEqual(await isEntitled('u', mkDb({})), { entitled: false, reason: 'no_subscription', periodEnd: null });
+test('nothing linked → no_dealership before subscription', async () => {
+  assert.deepEqual(await isEntitled('u', mkDb({})), { entitled: false, reason: 'no_dealership', periodEnd: null });
 });
 
 test('active sub + dealership → entitled/ok', async () => {

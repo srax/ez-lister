@@ -30,13 +30,31 @@ const ui = {
   stPlatforms: el('st-platforms'), stTrend: el('st-trend'), stListings: el('st-listings'),
   // auth + entitlement gate
   gate: el('gate'), gateIcon: el('gate-icon'), gateTitle: el('gate-title'), gateMsg: el('gate-msg'),
-  gatePrice: el('gate-price'), gatePrimary: el('gate-primary'), gateSecondary: el('gate-secondary'),
+  gatePrice: el('gate-price'), gatePriceAmt: el('gate-price-amt'), gatePricePer: el('gate-price-per'),
+  gatePrimary: el('gate-primary'), gateSecondary: el('gate-secondary'),
   gateErr: el('gate-err'), gateSignout: el('gate-signout'),
+  dealerConnect: el('dealer-connect'), dealerPending: el('dealer-pending'),
+  dealerRequestToggle: el('dealer-request-toggle'), dealerRequest: el('dealer-request'),
+  dealerUrl: el('dealer-url'), dealerName: el('dealer-name'), dealerEmail: el('dealer-email'),
+  dealerPhone: el('dealer-phone'), dealerNotes: el('dealer-notes'),
+  dealerRequestCancel: el('dealer-request-cancel'), dealerRequestSubmit: el('dealer-request-submit'),
   accountBtn: el('account-btn'), accountMenu: el('account-menu'), accountEmail: el('account-email'),
   accountPlan: el('account-plan'), acctBilling: el('acct-billing'), acctSignout: el('acct-signout'),
 };
 
-const state = { draft: null, prefs: { ...DEFAULT_PREFS }, listed: {}, listings: {}, serverListings: {}, userEdited: false, filling: false, auth: null };
+const state = {
+  draft: null,
+  prefs: { ...DEFAULT_PREFS },
+  listed: {},
+  listings: {},
+  serverListings: {},
+  userEdited: false,
+  filling: false,
+  auth: null,
+  plan: null,
+  dealerRequestOpen: false,
+  autoDealerConnectTried: false
+};
 
 init();
 
@@ -57,6 +75,7 @@ async function init() {
   });
   // Re-check entitlement when the panel regains focus (e.g. returning from Stripe checkout).
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAuth({ refresh: true }); });
+  loadBillingPlan().catch(() => {});
   await refreshAuth();
 }
 
@@ -466,6 +485,9 @@ function wireEvents() {
   // auth + gate
   ui.gatePrimary.addEventListener('click', () => gateAction(ui.gatePrimary.dataset.action));
   ui.gateSecondary.addEventListener('click', () => gateAction(ui.gateSecondary.dataset.action));
+  ui.dealerRequestToggle.addEventListener('click', () => { state.dealerRequestOpen = true; renderGate(); });
+  ui.dealerRequestCancel.addEventListener('click', () => { state.dealerRequestOpen = false; renderGate(); });
+  ui.dealerRequest.addEventListener('submit', submitDealerRequest);
   ui.gateSignout.addEventListener('click', doSignOut);
   ui.accountBtn.addEventListener('click', (e) => { e.stopPropagation(); ui.accountMenu.hidden = !ui.accountMenu.hidden; });
   ui.acctSignout.addEventListener('click', doSignOut);
@@ -588,11 +610,29 @@ async function onTranslate() {
 // just renders the right step and fires the action.
 const GATE = {
   signed_out: { icon: '🔑', title: 'Sign in to Carxpert', msg: 'Sign in with your Google account to start listing inventory to Facebook Marketplace.', primary: 'Sign in with Google', action: 'signin' },
-  no_dealership: { icon: '🏬', title: 'Almost there', msg: 'Your account needs a supported dealership linked. If you just signed up, we’ll set this up shortly — tap Re-check in a moment.', primary: 'Re-check', action: 'recheck' },
+  no_dealership: { icon: '🏬', title: 'Connect your dealership', msg: 'Open your dealership inventory page, then detect and connect it here. Supported dealers unlock checkout immediately.', primary: 'Detect dealership', action: 'connectDealer' },
   no_subscription: { icon: '⚡', title: 'Start your subscription', msg: 'One-click dealer inventory to Facebook Marketplace, with AI descriptions & translations.', primary: 'Subscribe', action: 'checkout', secondary: 'I’ve paid · refresh', secondaryAction: 'refresh', price: true },
   expired: { icon: '⚡', title: 'Renew your subscription', msg: 'Your subscription has ended. Renew to keep listing to Facebook Marketplace.', primary: 'Renew', action: 'checkout', secondary: 'I’ve paid · refresh', secondaryAction: 'refresh', price: true },
   unknown: { icon: '⚠️', title: 'Couldn’t load your account', msg: 'We couldn’t reach the server. Check your connection and try again.', primary: 'Retry', action: 'recheck' }
 };
+
+async function loadBillingPlan() {
+  const res = await chrome.runtime.sendMessage({ type: 'EZLIST_BILLING_PLAN' }).catch(() => null);
+  if (res && res.ok && res.plan) {
+    state.plan = res.plan;
+    renderPlan();
+  }
+}
+
+function renderPlan() {
+  if (!state.plan || !ui.gatePriceAmt || !ui.gatePricePer) return;
+  const amount = Number(state.plan.amount || 0) / 100;
+  const currency = String(state.plan.currency || 'usd').toUpperCase();
+  ui.gatePriceAmt.textContent = amount
+    ? new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount)
+    : 'Custom';
+  ui.gatePricePer.textContent = amount ? ` / ${state.plan.interval || 'month'} · cancel anytime` : '';
+}
 
 async function refreshAuth(opts) {
   try {
@@ -608,6 +648,7 @@ async function refreshAuth(opts) {
 function gateStateKey(auth) {
   if (!auth || !auth.signedIn) return 'signed_out';
   if (auth.entitled) return null; // entitled → no gate
+  if (!auth.dealership) return 'no_dealership';
   if (auth.reason === 'no_dealership') return 'no_dealership';
   if (auth.reason === 'expired') return 'expired';
   if (auth.reason === 'no_subscription') return 'no_subscription';
@@ -625,12 +666,50 @@ function renderGate() {
   ui.gateTitle.textContent = g.title;
   ui.gateMsg.textContent = g.msg;
   ui.gatePrice.hidden = !g.price;
+  if (g.price) renderPlan();
   ui.gatePrimary.textContent = g.primary;
   ui.gatePrimary.dataset.action = g.action;
   if (g.secondary) { ui.gateSecondary.hidden = false; ui.gateSecondary.textContent = g.secondary; ui.gateSecondary.dataset.action = g.secondaryAction; }
   else ui.gateSecondary.hidden = true;
+  renderDealerConnect(key, auth);
   ui.gateSignout.hidden = !auth.signedIn;
   ui.gateErr.hidden = true;
+}
+
+function renderDealerConnect(key, auth) {
+  const active = key === 'no_dealership';
+  ui.dealerConnect.hidden = !active;
+  if (!active) {
+    state.dealerRequestOpen = false;
+    state.autoDealerConnectTried = false;
+    return;
+  }
+
+  const pending = auth && auth.requestPending;
+  if (pending) {
+    const domain = pending.normalizedDomain || pending.rawInput || 'your dealership';
+    ui.dealerPending.textContent = `Request received for ${domain}. We’ll review support and follow up by email.`;
+    ui.dealerPending.hidden = false;
+  } else {
+    ui.dealerPending.hidden = true;
+  }
+
+  if (auth && auth.user) {
+    if (ui.dealerName && !ui.dealerName.value) ui.dealerName.value = auth.user.name || '';
+    if (ui.dealerEmail && !ui.dealerEmail.value) ui.dealerEmail.value = auth.user.email || '';
+  }
+  ui.dealerRequest.hidden = !state.dealerRequestOpen;
+  ui.dealerRequestToggle.hidden = state.dealerRequestOpen;
+
+  if (!state.autoDealerConnectTried && !pending) {
+    state.autoDealerConnectTried = true;
+    setTimeout(() => connectDealer({ silent: true }), 50);
+  }
+}
+
+function showGateError(text) {
+  ui.gateErr.textContent = text || 'Something went wrong.';
+  ui.gateErr.hidden = false;
 }
 
 function applyAccount(auth) {
@@ -655,21 +734,91 @@ async function gateAction(action) {
       const res = await chrome.runtime.sendMessage({ type: 'EZLIST_SIGN_IN' });
       if (!res || !res.ok) throw new Error((res && res.error) || 'Sign-in failed.');
       state.auth = res.auth; renderGate();
+    } else if (action === 'connectDealer') {
+      await connectDealer();
     } else if (action === 'checkout') {
       btn.textContent = 'Opening checkout…';
       const res = await chrome.runtime.sendMessage({ type: 'EZLIST_CHECKOUT' });
-      if (!res || !res.ok) throw new Error((res && res.error) || 'Could not start checkout.');
+      if (!res || !res.ok) {
+        const err = new Error((res && res.error) || 'Could not start checkout.');
+        err.reason = res && res.reason;
+        throw err;
+      }
       // Checkout opens in a tab; entitlement flips when the user returns (visibilitychange) or taps refresh.
     } else { // refresh | recheck | retry
       btn.textContent = 'Checking…';
       await refreshAuth({ refresh: true });
     }
   } catch (e) {
-    ui.gateErr.textContent = e.message || 'Something went wrong.';
-    ui.gateErr.hidden = false;
+    if (action === 'checkout' && e.reason === 'no_dealership') {
+      await refreshAuth({ refresh: true });
+      showGateError('Connect your dealership before subscribing.');
+    } else {
+      showGateError(e.message || 'Something went wrong.');
+    }
   } finally {
     btn.disabled = false;
     btn.textContent = label;
+  }
+}
+
+async function connectDealer(opts = {}) {
+  if (!opts.silent) {
+    ui.gateErr.hidden = true;
+    ui.gatePrimary.disabled = true;
+    ui.gatePrimary.textContent = 'Detecting…';
+  }
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'EZLIST_CONNECT_DEALER' });
+    if (!res || !res.ok) {
+      if (res && res.reason === 'unsupported_dealer') {
+        if (res.normalizedDomain && !ui.dealerUrl.value) ui.dealerUrl.value = `https://${res.normalizedDomain}`;
+        state.dealerRequestOpen = true;
+        renderGate();
+        showGateError(res.error || 'This dealership is not supported yet.');
+        return;
+      }
+      if (opts.silent && res && res.reason === 'no_recent_dealer') return;
+      throw new Error((res && res.error) || 'Could not detect a supported dealership.');
+    }
+    state.dealerRequestOpen = false;
+    state.auth = res.auth || await refreshAuth({ refresh: true });
+    await refreshAuth({ refresh: true });
+  } catch (e) {
+    if (!opts.silent) showGateError(e.message || 'Could not connect dealership.');
+  } finally {
+    ui.gatePrimary.disabled = false;
+    if (gateStateKey(state.auth) === 'no_dealership') ui.gatePrimary.textContent = GATE.no_dealership.primary;
+  }
+}
+
+async function submitDealerRequest(e) {
+  e.preventDefault();
+  ui.gateErr.hidden = true;
+  ui.dealerRequestSubmit.disabled = true;
+  const label = ui.dealerRequestSubmit.textContent;
+  ui.dealerRequestSubmit.textContent = 'Sending…';
+  try {
+    const payload = {
+      url: ui.dealerUrl.value.trim(),
+      contactName: ui.dealerName.value.trim(),
+      contactEmail: ui.dealerEmail.value.trim(),
+      contactPhone: ui.dealerPhone.value.trim(),
+      notes: ui.dealerNotes.value.trim()
+    };
+    if (!payload.url || !payload.contactName || !payload.contactEmail) {
+      throw new Error('Enter the dealership URL, your name, and email.');
+    }
+    const res = await chrome.runtime.sendMessage({ type: 'EZLIST_REQUEST_DEALER', payload });
+    if (!res || !res.ok) throw new Error((res && res.error) || 'Could not send request.');
+    state.dealerRequestOpen = false;
+    state.auth = res.auth || await refreshAuth({ refresh: true });
+    await refreshAuth({ refresh: true });
+  } catch (err) {
+    showGateError(err.message || 'Could not send request.');
+  } finally {
+    ui.dealerRequestSubmit.disabled = false;
+    ui.dealerRequestSubmit.textContent = label;
   }
 }
 

@@ -313,10 +313,40 @@
       <h2 class="gate-title" id="gate-title">Carxpert</h2>
       <p class="gate-msg" id="gate-msg"></p>
       <div class="gate-price" id="gate-price" hidden>
-        <span class="gate-price-amt">$89.99</span><span class="gate-price-per"> / month · cancel anytime</span>
+        <span class="gate-price-amt" id="gate-price-amt">$89.99</span><span class="gate-price-per" id="gate-price-per"> / month · cancel anytime</span>
       </div>
       <button class="accent-btn primary gate-primary" id="gate-primary"></button>
       <button class="ghost-btn compact gate-secondary" id="gate-secondary" hidden></button>
+      <div class="dealer-connect" id="dealer-connect" hidden>
+        <div class="dealer-pending" id="dealer-pending" hidden></div>
+        <button class="gate-link dealer-request-toggle" id="dealer-request-toggle" type="button">My dealership is not supported yet</button>
+        <form class="dealer-request" id="dealer-request" hidden>
+          <label>
+            <span>Dealership website</span>
+            <input id="dealer-url" type="url" autocomplete="url" placeholder="https://www.exampledealer.com" required>
+          </label>
+          <label>
+            <span>Your name</span>
+            <input id="dealer-name" type="text" autocomplete="name" required>
+          </label>
+          <label>
+            <span>Work email</span>
+            <input id="dealer-email" type="email" autocomplete="email" required>
+          </label>
+          <label>
+            <span>Phone</span>
+            <input id="dealer-phone" type="tel" autocomplete="tel">
+          </label>
+          <label>
+            <span>Notes</span>
+            <textarea id="dealer-notes" rows="3" placeholder="Dealer platform, inventory page, or anything helpful"></textarea>
+          </label>
+          <div class="dealer-request-actions">
+            <button class="ghost-btn compact" id="dealer-request-cancel" type="button">Cancel</button>
+            <button class="accent-btn sm" id="dealer-request-submit" type="submit">Send request</button>
+          </div>
+        </form>
+      </div>
       <div class="gate-err" id="gate-err" hidden></div>
       <button class="gate-link" id="gate-signout" hidden>Sign out</button>
     </div>
