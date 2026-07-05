@@ -2,13 +2,20 @@ import { Router } from 'express';
 import { requireAdmin } from '../admin.js';
 import { fillAccuracy } from '../listings-admin.js';
 import {
-  listDealerRequests, createDealership, adminLink, adminUnlink, recentScans, compGrant, compRevoke
+  listDealerRequests, createDealership, adminLink, adminUnlink, recentScans, compGrant, compRevoke,
+  overview
 } from '../admin-ops.js';
 
 // ADMIN_TOKEN-gated ops (constant-time gate). CLI/curl only — no UI. Every /api/admin/*
 // route is behind requireAdmin (body parsed globally).
 const router = Router();
 router.use('/api/admin', requireAdmin);
+
+router.get('/api/admin/overview', async (req, res, next) => {
+  try {
+    res.json({ ok: true, ...(await overview()) });
+  } catch (err) { next(err); }
+});
 
 router.get('/api/admin/fill-accuracy', async (req, res, next) => {
   try {

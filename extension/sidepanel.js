@@ -53,7 +53,8 @@ const state = {
   auth: null,
   plan: null,
   dealerRequestOpen: false,
-  autoDealerConnectTried: false
+  autoDealerConnectTried: false,
+  linkFlash: null
 };
 
 init();
@@ -658,10 +659,14 @@ function gateStateKey(auth) {
 function renderGate() {
   const auth = state.auth || { signedIn: false };
   applyAccount(auth);
+  // The linking moment gets its own beat (spinner → tick) before the next gate step —
+  // otherwise a successful auto-connect silently drops the user on the subscribe screen.
+  if (state.linkFlash && auth.signedIn) { renderLinkFlash(); return; }
   const key = gateStateKey(auth);
   if (!key) { ui.gate.hidden = true; return; }
   const g = GATE[key];
   ui.gate.hidden = false;
+  ui.gatePrimary.hidden = false;
   ui.gateIcon.textContent = '';
   ui.gateIcon.hidden = true;
   ui.gateTitle.textContent = g.title;
@@ -676,6 +681,42 @@ function renderGate() {
   renderDealerConnect(key, auth);
   ui.gateSignout.hidden = !auth.signedIn;
   ui.gateErr.hidden = true;
+}
+
+function renderLinkFlash() {
+  const f = state.linkFlash;
+  const name = f.name
+    || (state.auth && state.auth.dealership && state.auth.dealership.name)
+    || 'Dealership';
+  ui.gate.hidden = false;
+  ui.gateIcon.hidden = false;
+  ui.gateIcon.innerHTML = f.stage === 'linking'
+    ? '<span class="gate-spinner" aria-hidden="true"></span>'
+    : '<span class="gate-tick" aria-hidden="true">✓</span>';
+  ui.gateTitle.textContent = f.stage === 'linking' ? 'Connecting your dealership…' : 'Dealership linked';
+  ui.gateMsg.textContent = f.stage === 'linking' ? 'Verifying with Carxpert' : '';
+  ui.gateDealer.hidden = f.stage !== 'linked';
+  if (f.stage === 'linked') {
+    ui.gateDealer.innerHTML = `${esc(name)}<small>Verified by Carxpert backend</small>`;
+  }
+  ui.gatePrice.hidden = true;
+  ui.gatePrimary.hidden = true;
+  ui.gateSecondary.hidden = true;
+  ui.dealerConnect.hidden = true;
+  ui.gateErr.hidden = true;
+  ui.gateSignout.hidden = true;
+}
+
+function startLinkFlash(dealer) {
+  if (state.linkFlash) return;
+  state.linkFlash = { stage: 'linking', name: dealer && dealer.name };
+  renderGate();
+  setTimeout(() => {
+    if (!state.linkFlash) return;
+    state.linkFlash.stage = 'linked';
+    renderGate();
+    setTimeout(() => { state.linkFlash = null; renderGate(); }, 1200);
+  }, 800);
 }
 
 function renderVerifiedDealer(key, auth) {
@@ -792,6 +833,11 @@ async function connectDealer(opts = {}) {
       throw new Error((res && res.error) || 'Could not detect a supported dealership.');
     }
     state.dealerRequestOpen = false;
+    // Start the flash before refreshAuth repaints, so the user sees the link happen
+    // instead of jumping straight to the subscribe screen.
+    if (!(state.auth && state.auth.dealership)) {
+      startLinkFlash(res.auth && res.auth.dealership);
+    }
     state.auth = res.auth || await refreshAuth({ refresh: true });
     await refreshAuth({ refresh: true });
   } catch (e) {

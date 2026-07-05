@@ -83,6 +83,49 @@ export async function compRevoke({ email }, db = pool) {
   return { revoked: rowCount > 0, userId: rows[0].id, email };
 }
 
+// One-call ops snapshot: who signed up, what's linked/entitled, listings by user,
+// event volume, last scan, AI spend. Everything the "is prod healthy?" question needs.
+export async function overview(db = pool) {
+  const [users, subs, comps, listings, events, scan, ai] = await Promise.all([
+    db.query(
+      `select u.id, u.email, u."createdAt" as created_at,
+              ud.dealership_id, cg.user_id is not null as comp,
+              count(l.id) filter (where l.status = 'listed') as active_listings,
+              count(l.id) filter (where l.status = 'sold') as sold_listings
+       from "user" u
+       left join user_dealerships ud on ud.user_id = u.id
+       left join comp_grants cg on cg.user_id = u.id
+       left join listings l on l.owner_id = u.id
+       group by u.id, u.email, u."createdAt", ud.dealership_id, cg.user_id
+       order by u."createdAt" desc limit 50`
+    ),
+    db.query('select status, count(*)::int as n from "subscription" group by status'),
+    db.query('select count(*)::int as n from comp_grants'),
+    db.query('select status, count(*)::int as n from listings group by status'),
+    db.query(
+      `select type, count(*)::int as n from usage_events
+       where occurred_at > now() - interval '7 days' group by type order by n desc`
+    ),
+    db.query(
+      `select dealership_id, started_at, finished_at, ok, vin_count, source, error
+       from dealer_inventory_scans order by started_at desc limit 1`
+    ),
+    db.query(
+      `select coalesce(sum(describe_count),0)::int as describe, coalesce(sum(translate_count),0)::int as translate
+       from ai_usage where day = current_date`
+    )
+  ]);
+  return {
+    users: users.rows,
+    subscriptionsByStatus: subs.rows,
+    compGrants: comps.rows[0].n,
+    listingsByStatus: listings.rows,
+    events7d: events.rows,
+    lastScan: scan.rows[0] || null,
+    aiToday: ai.rows[0]
+  };
+}
+
 export function genId(prefix = '') {
   return `${prefix}${crypto.randomUUID()}`;
 }

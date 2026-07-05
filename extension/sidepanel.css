@@ -262,6 +262,11 @@ body{
 .gate-msg{ font-size:13px; line-height:1.5; color:#5d6070; margin:0 0 18px; }
 .gate-dealer{ width:100%; margin:-5px 0 15px; padding:9px 11px; border:1px solid #dfe1ea; border-radius:11px; background:#fbfbfd; color:#23263a; font-size:12px; font-weight:750; line-height:1.35; text-align:left; }
 .gate-dealer small{ display:block; margin-top:2px; color:#8a8d9b; font-size:10.5px; font-weight:700; }
+/* Dealership-link moment: spinner -> tick beat shown between connect and subscribe. */
+.gate-spinner{ display:inline-block; width:32px; height:32px; border-radius:50%; border:3px solid rgba(28,30,18,0.14); border-top-color:var(--ink); animation:gate-spin .7s linear infinite; }
+@keyframes gate-spin{ to{ transform:rotate(360deg); } }
+.gate-tick{ display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border-radius:50%; background:#178a3f; color:#fff; font-size:18px; font-weight:800; animation:gate-pop .22s ease-out; }
+@keyframes gate-pop{ from{ transform:scale(.4); opacity:0; } to{ transform:scale(1); opacity:1; } }
 .gate-price{ margin:0 0 16px; }
 .gate-price-amt{ font-size:22px; font-weight:800; color:#191b29; }
 .gate-price-per{ font-size:12.5px; font-weight:600; color:#8a8d9b; }
