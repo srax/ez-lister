@@ -40,6 +40,37 @@ export function extractVins(html) {
   return [...out];
 }
 
+// DealerOn fronts sitemap.aspx with Varnish: max-age 4h but stale-while-revalidate 14 DAYS,
+// keyed per-UA/per-edge. An hourly scanner can be served a copy that predates a listing by
+// days — its VIN then looks absent every scan and false-sells (observed live 2026-07-05:
+// x-cache HIT with age 265414s, roster frozen at 569 VINs while the real sitemap had 586).
+// Varnish ignores request Cache-Control; a unique query param is the reliable cache-buster.
+function bust(url) {
+  const u = new URL(url);
+  u.searchParams.set('cxfresh', Date.now().toString(36));
+  return u.toString();
+}
+
+// Ground-truth probe: is this exact car's page still live and still about this VIN?
+// Consulted before any scan-sell, and to revive a scanner-sold car whose roster source went
+// stale. Returns true (alive), false (confirmed gone: 404/410, or a 200/redirect landing on
+// a page without the VIN), or null (unknowable this cycle — bot wall, network, 5xx; callers
+// must never sell on null).
+export async function checkVdpAlive(sourceUrl, vin, { fetchImpl = politeFetch } = {}) {
+  if (!sourceUrl || !vin) return null;
+  let resp;
+  try {
+    resp = await fetchImpl(bust(sourceUrl), {});
+  } catch {
+    return null;
+  }
+  if (resp.status === 404 || resp.status === 410) return false;
+  if (!resp.ok) return null;
+  const html = await resp.text().catch(() => null);
+  if (html == null) return null;
+  return html.toUpperCase().includes(vin.toUpperCase());
+}
+
 // Fetch the VIN roster. Tier 1: sitemap.aspx. Tier 2: paginate configured SRP inventoryUrls.
 // `condState` is an in-memory { etag, lastModified } for conditional GET (304 → reuse prior).
 // Returns { ok, vins, source, notModified, error, condState }.
@@ -52,7 +83,7 @@ export async function fetchRoster(dealership, { fetchImpl = politeFetch, condSta
       const headers = {};
       if (condState.etag) headers['If-None-Match'] = condState.etag;
       if (condState.lastModified) headers['If-Modified-Since'] = condState.lastModified;
-      const resp = await fetchImpl(sitemapUrl, { headers });
+      const resp = await fetchImpl(bust(sitemapUrl), { headers });
       if (resp.status === 304) {
         // Unchanged since the last 200 → reuse that scan's roster (cached in condState).
         // vins stays null when there is no cache (fresh process) — the caller must then
@@ -87,7 +118,7 @@ export async function fetchRoster(dealership, { fetchImpl = politeFetch, condSta
     let lastError = null;
     for (const url of inventoryUrls) {
       try {
-        const resp = await fetchImpl(url, {});
+        const resp = await fetchImpl(bust(url), {});
         if (!resp.ok) { lastError = `srp ${resp.status}`; continue; }
         anyOk = true;
         for (const v of extractVins(await resp.text())) all.add(v);

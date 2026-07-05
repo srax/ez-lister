@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isPlausibleScan, judgeListing } from './soldScan.js';
-import { extractVins, fetchRoster } from './adapters/dealeron.js';
+import { isPlausibleScan, judgeListing, resolveWithVdp } from './soldScan.js';
+import { extractVins, fetchRoster, checkVdpAlive } from './adapters/dealeron.js';
 import { isValidVin } from '../vin.js';
 
 // Synthesize n distinct check-digit-valid VINs (brute-force position 9 per serial).
@@ -77,6 +77,69 @@ test('judgeListing: already-sold + still absent → no change (sold_at must not 
     false, T0
   );
   assert.equal(d, null);
+});
+
+// ---- VDP ground truth (the anti-false-positive layer) ----
+const CAR = { status: 'listed', sold_source: null, first_missed_at: new Date(T0 - 21 * HOUR).toISOString() };
+const SCAN_SOLD = { status: 'sold', sold_source: 'scan', first_missed_at: null };
+
+test('resolveWithVdp: live VDP vetoes a mature-miss sale and clears the clock', () => {
+  const d = resolveWithVdp({ decision: { markSold: true, soldAt: T0 }, listing: CAR, alive: true, now: T0 });
+  assert.ok(!d.markSold);
+  assert.equal(d.lastSeen, T0);
+  assert.equal(d.clearFirstMissed, true);
+});
+
+test('resolveWithVdp: VDP confirmed gone → the sale proceeds', () => {
+  const d = resolveWithVdp({ decision: { markSold: true, soldAt: T0 }, listing: CAR, alive: false, now: T0 });
+  assert.equal(d.markSold, true);
+});
+
+test('resolveWithVdp: VDP unknowable → never sell blind, defer', () => {
+  const d = resolveWithVdp({ decision: { markSold: true, soldAt: T0 }, listing: CAR, alive: null, now: T0 });
+  assert.equal(d, null);
+});
+
+test('resolveWithVdp: scanner-sold car with live VDP → revive (stale-roster self-heal)', () => {
+  const d = resolveWithVdp({ decision: null, listing: SCAN_SOLD, alive: true, now: T0 });
+  assert.equal(d.revive, true);
+});
+
+test('resolveWithVdp: scanner-sold car, VDP gone or unknown → stays sold', () => {
+  assert.equal(resolveWithVdp({ decision: null, listing: SCAN_SOLD, alive: false, now: T0 }), null);
+  assert.equal(resolveWithVdp({ decision: null, listing: SCAN_SOLD, alive: null, now: T0 }), null);
+});
+
+test('checkVdpAlive: 200 with the VIN in the body → alive', async () => {
+  const fetchImpl = async () => ({ ok: true, status: 200, text: async () => '<div data-vin="jteabfaj9sk020209">' });
+  assert.equal(await checkVdpAlive('https://d.example/car-JTEABFAJ9SK020209', 'JTEABFAJ9SK020209', { fetchImpl }), true);
+});
+
+test('checkVdpAlive: 200 without the VIN (redirected to SRP / "no longer available") → gone', async () => {
+  const fetchImpl = async () => ({ ok: true, status: 200, text: async () => '<h1>Inventory</h1>' });
+  assert.equal(await checkVdpAlive('https://d.example/car', 'JTEABFAJ9SK020209', { fetchImpl }), false);
+});
+
+test('checkVdpAlive: 404/410 → gone; 403/5xx/network error → unknown (null)', async () => {
+  const mk = (status, ok = false) => async () => ({ ok, status, text: async () => '' });
+  assert.equal(await checkVdpAlive('https://d.example/car', 'JTEABFAJ9SK020209', { fetchImpl: mk(404) }), false);
+  assert.equal(await checkVdpAlive('https://d.example/car', 'JTEABFAJ9SK020209', { fetchImpl: mk(410) }), false);
+  assert.equal(await checkVdpAlive('https://d.example/car', 'JTEABFAJ9SK020209', { fetchImpl: mk(403) }), null);
+  assert.equal(await checkVdpAlive('https://d.example/car', 'JTEABFAJ9SK020209', { fetchImpl: mk(503) }), null);
+  const boom = async () => { throw new Error('net'); };
+  assert.equal(await checkVdpAlive('https://d.example/car', 'JTEABFAJ9SK020209', { fetchImpl: boom }), null);
+});
+
+test('fetchRoster: sitemap fetch is cache-busted (Varnish stale-while-revalidate defense)', async () => {
+  const dealership = { config: { sitemapUrl: 'https://dealer.example/sitemap.aspx' } };
+  const seen = [];
+  const vins = makeVins(5);
+  const fetchImpl = async (url) => {
+    seen.push(url);
+    return { status: 200, ok: true, headers: { get: () => null }, text: async () => vins.join(' ') };
+  };
+  await fetchRoster(dealership, { fetchImpl, condState: {} });
+  assert.ok(seen[0].includes('cxfresh='), `expected cache-buster in ${seen[0]}`);
 });
 
 test('fetchRoster: 304 reuses the cached roster, never "all present"', async () => {

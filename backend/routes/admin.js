@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireAdmin } from '../admin.js';
 import { fillAccuracy } from '../listings-admin.js';
+import { runScanCycle } from '../worker/soldScan.js';
 import {
   listDealerRequests, createDealership, adminLink, adminUnlink, recentScans, compGrant, compRevoke,
   overview
@@ -46,6 +47,14 @@ router.post('/api/admin/link', async (req, res, next) => {
 router.post('/api/admin/unlink', async (req, res, next) => {
   try {
     res.json({ ok: true, ...(await adminUnlink((req.body || {}).userId)) });
+  } catch (err) { next(err); }
+});
+
+// Fire one scan cycle on demand (ops/debug — e.g. right after a fix, instead of waiting
+// for the hourly tick). Same code path as the worker, results returned inline.
+router.post('/api/admin/scan-now', async (req, res, next) => {
+  try {
+    res.json({ ok: true, results: await runScanCycle() });
   } catch (err) { next(err); }
 });
 

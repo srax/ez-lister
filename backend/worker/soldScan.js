@@ -3,13 +3,15 @@ import { pool } from '../db.js';
 import { isEntitled } from '../entitlement/index.js';
 import { pruneUsageEvents } from '../listings-admin.js';
 import { pruneExpiredAuthCodes } from '../auth-codes.js';
-import { fetchRoster } from './adapters/dealeron.js';
+import { fetchRoster, checkVdpAlive } from './adapters/dealeron.js';
 
 const HOUR_MS = 3600 * 1000;
 const SOLD_AFTER_MS = 20 * HOUR_MS; // 20h since first miss (two misses on different days)
 const RESUME_STALE_MS = 48 * HOUR_MS; // clear misses older than this on entitlement resume
+const PROBE_BUDGET = 10; // VDP ground-truth fetches per dealership per cycle (politeFetch spaces them ≥2s)
 
 const ADAPTERS = { dealeron: fetchRoster };
+const VDP_CHECKERS = { dealeron: checkVdpAlive };
 
 // ---- pure: is a completed scan plausible enough to act on? ----
 // Counts only if it ran without error AND the VIN count is plausible: ≥30% of the last
@@ -50,8 +52,24 @@ export function judgeListing(listing, present, now) {
   return null; // missed, but not long enough yet
 }
 
+// ---- pure: merge the roster verdict with VDP ground truth ----
+// The roster is a secondary source (a sitemap behind a CDN that can serve days-stale
+// copies); the car's own page is primary. Selling requires BOTH: roster-absent ≥20h AND
+// the VDP confirmed gone. A live VDP always wins — it clears the miss clock, and it
+// revives a scanner-sold car whose roster source went stale. Unknown (null) never sells.
+export function resolveWithVdp({ decision, listing, alive, now }) {
+  if (alive === true) {
+    if (listing.status === 'sold' && listing.sold_source === 'scan') return { revive: true };
+    return { lastSeen: now, clearFirstMissed: listing.first_missed_at != null };
+  }
+  if (decision && decision.markSold) {
+    return alive === false ? decision : null; // unknown → defer to a later cycle
+  }
+  return decision; // sold + gone/unknown stays sold; everything else unchanged
+}
+
 // ---- DB-driven scan of one dealership ----
-async function scanDealership(dealership, { db = pool, now = Date.now(), adapters = ADAPTERS, condStates = new Map(), isEntitledFn = isEntitled } = {}) {
+async function scanDealership(dealership, { db = pool, now = Date.now(), adapters = ADAPTERS, vdpCheckers = VDP_CHECKERS, condStates = new Map(), isEntitledFn = isEntitled } = {}) {
   const adapter = adapters[dealership.platform];
   const scanId = crypto.randomUUID();
   const startedAt = new Date(now).toISOString();
@@ -76,11 +94,13 @@ async function scanDealership(dealership, { db = pool, now = Date.now(), adapter
   // Never assume "all present": that would revive scanner-sold cars and reset miss clocks
   // for VINs that are in fact still absent. With no cached roster (fresh process), we can't
   // know membership — record the scan and change no listing state.
+  const vdpCheck = vdpCheckers[dealership.platform] || null;
+
   if (roster.notModified) {
     const vinCount = roster.vins ? roster.vins.length : prevCount;
     await recordScan(db, { scanId, dealershipId: dealership.id, startedAt, ok: true, vinCount, source: roster.source, error: null });
     if (!roster.vins) return { ok: true, notModified: true, skipped: 'no cached roster' };
-    await applyPresence(db, dealership.id, new Set(roster.vins), now, { isEntitledFn });
+    await applyPresence(db, dealership.id, new Set(roster.vins), now, { isEntitledFn, vdpCheck });
     return { ok: true, notModified: true, vinCount };
   }
 
@@ -95,14 +115,14 @@ async function scanDealership(dealership, { db = pool, now = Date.now(), adapter
   });
   if (!plausible) return { ok: false, reason: 'implausible', vinCount };
 
-  await applyPresence(db, dealership.id, new Set(roster.vins), now, { isEntitledFn });
+  await applyPresence(db, dealership.id, new Set(roster.vins), now, { isEntitledFn, vdpCheck });
   return { ok: true, vinCount };
 }
 
 // Apply presence/absence to every tracked listing of a dealership whose owner is entitled.
-async function applyPresence(db, dealershipId, rosterSet, now, { isEntitledFn = isEntitled } = {}) {
+async function applyPresence(db, dealershipId, rosterSet, now, { isEntitledFn = isEntitled, vdpCheck = null } = {}) {
   const { rows } = await db.query(
-    `select l.id, l.owner_id, l.vin, l.status, l.sold_source, l.first_missed_at
+    `select l.id, l.owner_id, l.vin, l.status, l.sold_source, l.first_missed_at, l.source_url
      from listings l
      where l.dealership_id = $1 and l.vin is not null
        and (l.status = 'listed' or (l.status = 'sold' and l.sold_source = 'scan'))`,
@@ -111,6 +131,7 @@ async function applyPresence(db, dealershipId, rosterSet, now, { isEntitledFn = 
 
   // Entitlement is per-owner; skip paused users. On resume, clear stale misses (>48h).
   const entCache = new Map();
+  let probeBudget = PROBE_BUDGET;
   for (const listing of rows) {
     let ent = entCache.get(listing.owner_id);
     if (!ent) { ent = await isEntitledFn(listing.owner_id); entCache.set(listing.owner_id, ent); }
@@ -123,7 +144,24 @@ async function applyPresence(db, dealershipId, rosterSet, now, { isEntitledFn = 
       effective = { ...listing, first_missed_at: null };
     }
 
-    const decision = judgeListing(effective, rosterSet.has(listing.vin), now);
+    const present = rosterSet.has(listing.vin);
+    let decision = judgeListing(effective, present, now);
+
+    // Ground-truth check on the two verdicts that matter: an imminent sale, and a
+    // scanner-sold car the roster still can't see (stale-CDN false positive).
+    const canProbe = vdpCheck && listing.source_url && listing.vin;
+    const wantsProbe = canProbe && (
+      (decision && decision.markSold) ||
+      (!present && effective.status === 'sold' && effective.sold_source === 'scan')
+    );
+    if (wantsProbe && probeBudget > 0) {
+      probeBudget -= 1;
+      const alive = await vdpCheck(listing.source_url, listing.vin).catch(() => null);
+      decision = resolveWithVdp({ decision, listing: effective, alive, now });
+    } else if (decision && decision.markSold && canProbe) {
+      decision = null; // probe budget exhausted: defer the sale, never sell unconfirmed
+    }
+
     if (!decision) continue;
     await applyDecision(db, effective, decision, now);
   }
