@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carxpert — list dealership cars to Marketplace in seconds</title>
+<meta name="description" content="Carxpert fills the entire Facebook Marketplace vehicle form from your dealership site in one click — photos, specs, price, AI description. Auto-tracked stats, auto-sold detection.">
+<link rel="icon" href="data:image/png;base64,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Jx/ZwPvv7Eo9xDnS5agcHCnqDyV9+xdx3U0nMfGq7hQE7YMj0w+ZdD+ZLoAkhx4du/Tvlcz681YWvbaTyopWHB3rfHxB3bHyND5U+Hwa5WeWMvHKHpw7tozioM7BeKLZsLB7OUYE4OCUZs33a2gobN8dYcl7lbzzxm5WLK9ky6ZazDZkZJR1CXDq0A6MOaeUMeeU0LdfPlra4dFNJYW4n2NMAA7O8fFer0JA1ezj40MJtnwVYr1zfPzmMHv3RFtxfHwBJ/bJo6Rjw+PjM+uc4MY4RgXgkH5yiKYJvB4FDyoqAgswkw4h0wKwJ5X2eYECBYGVPF8wZljE41bKM5gZE7zW4PIzg44UIdLX7xCOmISkmdySjj3W13MJ17mAnceI5NIy88b31nFMCyCd5nz/aY/K8C798MmYBUuOr4ecALKcnACynJwAspycALKcnACynJwAspycALKcnACynJwAspycALKcnACynJwAspycALKcnACynJwAspycALKcnACynJwAspycALKcnACynJwAspycALKcnACynJwAspycALKcnACynJwAshytxYK6OY5hBP8PZMoehrikj6YAAAAASUVORK5CYII=">
+<style>
+  /* ============ tokens ============ */
+  :root{
+    --bg:#fafaf7;
+    --card:#ffffff;
+    --ink:#1c1e12;
+    --ink-2:#5c5f52;
+    --ink-3:#9a9d8f;
+    --line:#e7e8df;
+    --accent:#e7f852;
+    --accent-ink:#1c1e12;
+    --green:#178a3f;
+    --radius:20px;
+    /* Emil: built-in easings are too weak — strong custom curves */
+    --ease-out:cubic-bezier(0.23,1,0.32,1);
+    --ease-in-out:cubic-bezier(0.77,0,0.175,1);
+  }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html{ scroll-behavior:smooth; }
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:16.5px; line-height:1.55;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  }
+  ::selection{ background:var(--accent); color:var(--ink); }
+  .wrap{ max-width:1080px; margin:0 auto; padding:0 24px; }
+
+  /* ============ reveal (scroll reveal, once, stagger via --d) ============ */
+  .rv{ opacity:0; transform:translateY(12px);
+       transition:opacity .55s var(--ease-out), transform .55s var(--ease-out);
+       transition-delay:var(--d,0ms); }
+  .rv.in{ opacity:1; transform:none; }
+
+  /* ============ nav ============ */
+  nav{ position:sticky; top:0; z-index:50; background:rgba(250,250,247,.82);
+       backdrop-filter:blur(12px); border-bottom:1px solid var(--line); }
+  .nav-in{ display:flex; align-items:center; gap:12px; height:64px; }
+  .logo{ width:34px; height:34px; border-radius:9px; }
+  .brand{ font-weight:800; letter-spacing:-.01em; font-size:17px; }
+  .brand small{ display:block; font-size:10.5px; font-weight:700; color:var(--ink-3); letter-spacing:.02em; margin-top:-2px; }
+  .nav-cta{ margin-left:auto; }
+
+  /* ============ buttons (press feedback everywhere) ============ */
+  .btn{ display:inline-flex; align-items:center; gap:9px; border:0; cursor:pointer;
+        text-decoration:none; font:inherit; font-weight:800; letter-spacing:-.01em;
+        border-radius:999px; padding:13px 24px; color:var(--accent-ink); background:var(--accent);
+        box-shadow:0 1px 2px rgba(28,30,18,.10), inset 0 0 0 1px rgba(28,30,18,.08);
+        transition:transform .16s var(--ease-out), box-shadow .16s var(--ease-out); }
+  .btn:active{ transform:scale(.97); }
+  .btn.sm{ padding:9px 17px; font-size:14px; }
+  .btn.ghost{ background:transparent; box-shadow:inset 0 0 0 1.5px var(--line); color:var(--ink); }
+  @media (hover:hover) and (pointer:fine){
+    .btn:hover{ box-shadow:0 4px 14px -4px rgba(28,30,18,.28), inset 0 0 0 1px rgba(28,30,18,.10); }
+    .btn.ghost:hover{ box-shadow:inset 0 0 0 1.5px var(--ink-3); }
+  }
+  .chrome-ic{ width:18px; height:18px; flex:0 0 auto; }
+
+  /* ============ hero ============ */
+  header{ padding:76px 0 30px; }
+  .eyebrow{ display:inline-flex; align-items:center; gap:8px; font-size:12.5px; font-weight:800;
+            letter-spacing:.06em; text-transform:uppercase; color:var(--ink-2);
+            background:var(--card); border:1px solid var(--line); border-radius:999px; padding:7px 14px; }
+  .eyebrow .dot{ width:7px; height:7px; border-radius:50%; background:var(--green); }
+  h1{ font-size:clamp(38px,6vw,62px); line-height:1.04; letter-spacing:-.035em; font-weight:850; margin:22px 0 18px; max-width:15ch; }
+  h1 .hl{ background:linear-gradient(transparent 62%, var(--accent) 62%); }
+  .sub{ font-size:19px; color:var(--ink-2); max-width:56ch; }
+  .hero-ctas{ display:flex; align-items:center; gap:14px; margin:30px 0 10px; flex-wrap:wrap; }
+  .fineprint{ font-size:13px; color:var(--ink-3); }
+
+  /* ============ hero demo: the 3-second fill, orchestrated ============ */
+  .demo{ margin:54px 0 0; border:1px solid var(--line); border-radius:24px; background:var(--card);
+         padding:22px; display:grid; grid-template-columns:1fr auto 1.25fr; gap:18px; align-items:stretch;
+         box-shadow:0 24px 60px -40px rgba(28,30,18,.25); }
+  .pane{ border:1px solid var(--line); border-radius:16px; overflow:hidden; background:#fdfdfb; min-width:0; }
+  .pane-bar{ display:flex; align-items:center; gap:6px; padding:9px 12px; border-bottom:1px solid var(--line); background:#f6f6f1; }
+  .pane-bar i{ width:9px; height:9px; border-radius:50%; background:#e3e4da; }
+  .pane-bar span{ font-size:11px; color:var(--ink-3); font-weight:700; margin-left:6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pane-in{ padding:14px; }
+  .car-img{ height:86px; border-radius:10px;
+            background:linear-gradient(135deg,#20231a 0%, #3a3f2d 55%, #20231a 100%); position:relative; overflow:hidden; }
+  .car-img::after{ content:"🚙"; position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:40px; }
+  .car-title{ font-weight:800; font-size:14px; margin-top:10px; letter-spacing:-.01em; }
+  .car-meta{ font-size:12px; color:var(--ink-2); margin-top:2px; }
+  .list-btn{ margin-top:12px; display:inline-flex; align-items:center; gap:7px; font-size:13px; font-weight:800;
+             background:var(--accent); border-radius:9px; padding:8px 14px;
+             box-shadow:inset 0 0 0 1px rgba(28,30,18,.08);
+             transition:transform .16s var(--ease-out); }
+  .demo.play .list-btn{ animation:press .34s var(--ease-in-out) .35s; }
+  @keyframes press{ 40%{ transform:scale(.94); } 100%{ transform:scale(1); } }
+
+  .demo-mid{ display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:0 4px; }
+  .bolt{ width:40px; height:40px; border-radius:12px; background:var(--accent); display:flex; align-items:center; justify-content:center;
+         box-shadow:inset 0 0 0 1px rgba(28,30,18,.08); }
+  .bolt svg{ width:20px; height:20px; }
+  .timer{ font-variant-numeric:tabular-nums; font-weight:800; font-size:13px; color:var(--ink-2);
+          background:#f2f3ea; border:1px solid var(--line); border-radius:999px; padding:4px 11px; min-width:58px; text-align:center; }
+
+  .form-rows{ display:flex; flex-direction:column; gap:8px; }
+  .frow{ display:grid; grid-template-columns:92px 1fr; align-items:center; gap:10px; font-size:12.5px; }
+  .frow label{ color:var(--ink-3); font-weight:700; }
+  .fval{ position:relative; height:30px; border:1px solid var(--line); border-radius:8px; background:#fff; overflow:hidden; }
+  .fval .skel{ position:absolute; inset:5px 40% 5px 8px; border-radius:5px;
+               background:linear-gradient(90deg,#f0f1e8 25%,#fafaf5 50%,#f0f1e8 75%); background-size:200% 100%;
+               animation:shimmer 1.3s linear infinite; }
+  @keyframes shimmer{ to{ background-position:-200% 0; } }
+  .fval .val{ position:absolute; inset:0; display:flex; align-items:center; padding:0 9px; font-weight:700;
+              opacity:0; transform:translateY(3px); background:#fff;
+              transition:opacity .28s var(--ease-out), transform .28s var(--ease-out); }
+  .fval.filled .skel{ animation:none; opacity:0; transition:opacity .2s ease; }
+  .fval.filled .val{ opacity:1; transform:none; }
+  .photos{ display:flex; gap:5px; }
+  .ph{ width:26px; height:26px; border-radius:6px; background:linear-gradient(135deg,#2c2f22,#4a503a);
+       opacity:0; transform:scale(.9); transition:opacity .25s var(--ease-out), transform .25s var(--ease-out); }
+  .photos.filled .ph{ opacity:1; transform:none; }
+  .pub{ margin-top:11px; text-align:center; font-size:13px; font-weight:800; border-radius:9px; padding:9px;
+        background:#f2f3ea; color:var(--ink-3); transition:background .3s ease, color .3s ease; }
+  .pub.on{ background:var(--green); color:#fff; }
+
+  /* ============ sections ============ */
+  section{ padding:74px 0; }
+  .kicker{ font-size:12.5px; font-weight:800; letter-spacing:.07em; text-transform:uppercase; color:var(--ink-3); }
+  h2{ font-size:clamp(28px,4vw,40px); letter-spacing:-.03em; line-height:1.1; font-weight:850; margin:10px 0 14px; }
+  .lead{ color:var(--ink-2); max-width:58ch; font-size:17.5px; }
+
+  /* problem cards */
+  .pains{ display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:38px; }
+  .pain{ background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:24px; }
+  .pain .big{ font-size:34px; font-weight:850; letter-spacing:-.03em; font-variant-numeric:tabular-nums; }
+  .pain .big small{ font-size:15px; font-weight:800; color:var(--ink-3); letter-spacing:0; }
+  .pain p{ color:var(--ink-2); font-size:14.5px; margin-top:8px; }
+  .strike{ text-decoration:line-through; text-decoration-color:rgba(28,30,18,.35); text-decoration-thickness:2.5px; }
+
+  /* ============ bento ============ */
+  .bento{ display:grid; grid-template-columns:repeat(12,1fr); gap:14px; margin-top:40px; }
+  .cell{ background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:26px;
+         min-width:0; position:relative; overflow:hidden;
+         transition:transform .18s var(--ease-out), border-color .18s var(--ease-out); }
+  @media (hover:hover) and (pointer:fine){
+    .cell:hover{ transform:translateY(-2px); border-color:#d6d8c8; }
+  }
+  .cell h3{ font-size:18px; font-weight:850; letter-spacing:-.02em; }
+  .cell p{ color:var(--ink-2); font-size:14.5px; margin-top:7px; }
+  .tag{ display:inline-block; font-size:10.5px; font-weight:800; letter-spacing:.05em; text-transform:uppercase;
+        border-radius:999px; padding:4px 10px; margin-bottom:12px; background:#f2f3ea; color:var(--ink-2); }
+  .tag.live{ background:var(--accent); color:var(--ink); }
+  .c-speed{ grid-column:span 7; }
+  .c-stats{ grid-column:span 5; background:var(--accent); border-color:transparent; }
+  .c-sold{ grid-column:span 4; }
+  .c-ai{ grid-column:span 4; }
+  .c-lang{ grid-column:span 4; }
+  .c-mkts{ grid-column:span 7; }
+  .c-img{ grid-column:span 5; }
+
+  /* stats tile (lime) — number tickers */
+  .c-stats .tag{ background:rgba(28,30,18,.10); color:var(--ink); }
+  .stat-hero{ font-size:52px; font-weight:850; letter-spacing:-.04em; line-height:1; font-variant-numeric:tabular-nums; margin-top:6px; }
+  .stat-sub{ font-size:13px; font-weight:800; color:rgba(28,30,18,.62); margin-top:4px; }
+  .stat-grid{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:18px; }
+  .mini{ background:rgba(255,255,255,.55); border-radius:12px; padding:12px 14px; }
+  .mini b{ display:block; font-size:20px; letter-spacing:-.02em; font-variant-numeric:tabular-nums; }
+  .mini span{ font-size:11.5px; font-weight:700; color:rgba(28,30,18,.6); }
+
+  /* speed tile: big 3s */
+  .speed-vis{ display:flex; align-items:baseline; gap:14px; margin:18px 0 6px; }
+  .speed-num{ font-size:76px; font-weight:850; letter-spacing:-.05em; line-height:1; font-variant-numeric:tabular-nums; }
+  .speed-num small{ font-size:30px; letter-spacing:-.02em; }
+  .speed-bar{ height:8px; border-radius:99px; background:#f0f1e8; overflow:hidden; flex:1; align-self:center; }
+  .speed-bar i{ display:block; height:100%; width:100%; border-radius:99px; background:var(--ink);
+                transform:scaleX(0); transform-origin:left; transition:transform 2.8s linear; }
+  .cell.in .speed-bar i{ transform:scaleX(1); }
+
+  /* sold tile: pulse dot */
+  .sold-line{ display:flex; align-items:center; gap:10px; margin-top:16px; font-size:13.5px; font-weight:700; }
+  .pulse{ width:10px; height:10px; border-radius:50%; background:var(--green); position:relative; flex:0 0 auto; }
+  .pulse::after{ content:""; position:absolute; inset:-5px; border-radius:50%; border:2px solid var(--green);
+                 opacity:0; animation:pulse 2.6s var(--ease-out) infinite; }
+  @keyframes pulse{ 0%{ transform:scale(.5); opacity:.7; } 60%{ transform:scale(1.25); opacity:0; } 100%{ opacity:0; } }
+  .sold-chip{ text-decoration:line-through; color:var(--ink-3); }
+
+  /* AI tile: typewriter */
+  .type-box{ margin-top:14px; background:#fdfdfb; border:1px solid var(--line); border-radius:12px; padding:13px 14px;
+             font-size:13px; color:var(--ink-2); min-height:96px; }
+  .caret{ display:inline-block; width:2px; height:14px; background:var(--ink); vertical-align:-2px;
+          animation:blink 1s steps(1) infinite; }
+  @keyframes blink{ 50%{ opacity:0; } }
+
+  /* language chips crossfade */
+  .lang-stage{ margin-top:14px; position:relative; height:96px; }
+  .lang-card{ position:absolute; inset:0; background:#fdfdfb; border:1px solid var(--line); border-radius:12px;
+              padding:13px 14px; font-size:13px; color:var(--ink-2);
+              opacity:0; transform:scale(.985); transition:opacity .4s var(--ease-out), transform .4s var(--ease-out); }
+  .lang-card.on{ opacity:1; transform:none; }
+  .lang-card b{ display:block; font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-3); margin-bottom:5px; }
+  .lang-card[dir="rtl"]{ text-align:right; }
+
+  /* marketplaces */
+  .mkt-row{ display:flex; flex-wrap:wrap; gap:9px; margin-top:16px; }
+  .mkt{ display:inline-flex; align-items:center; gap:8px; border:1px solid var(--line); border-radius:999px;
+        padding:8px 15px; font-size:13.5px; font-weight:800; background:#fdfdfb; }
+  .mkt .st{ font-size:10px; font-weight:800; letter-spacing:.05em; text-transform:uppercase; color:var(--ink-3); }
+  .mkt.live{ border-color:transparent; background:var(--ink); color:#fff; }
+  .mkt.live .st{ color:var(--accent); }
+
+  /* how it works */
+  .steps{ display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:38px; counter-reset:step; }
+  .step{ background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:26px; }
+  .step::before{ counter-increment:step; content:counter(step,decimal-leading-zero);
+                 font-size:13px; font-weight:850; color:var(--ink-3); letter-spacing:.05em; }
+  .step h3{ font-size:17.5px; font-weight:850; margin-top:10px; letter-spacing:-.02em; }
+  .step p{ color:var(--ink-2); font-size:14.5px; margin-top:7px; }
+
+  /* final cta */
+  .cta-card{ background:var(--ink); color:#fafaf7; border-radius:28px; padding:60px 30px; text-align:center; }
+  .cta-card h2{ color:#fff; margin:0 auto 12px; max-width:20ch; }
+  .cta-card .lead{ color:rgba(250,250,247,.72); margin:0 auto; }
+  .price{ margin:26px 0 4px; font-size:44px; font-weight:850; letter-spacing:-.03em; font-variant-numeric:tabular-nums; }
+  .price small{ font-size:16px; font-weight:700; color:rgba(250,250,247,.6); }
+  .cta-card .fineprint{ color:rgba(250,250,247,.5); }
+  .cta-card .btn{ margin:24px auto 12px; }
+
+  footer{ padding:34px 0 46px; display:flex; align-items:center; gap:18px; flex-wrap:wrap;
+          color:var(--ink-3); font-size:13px; }
+  footer a{ color:var(--ink-2); text-decoration:none; font-weight:700; }
+  footer a:hover{ text-decoration:underline; }
+  footer .sp{ margin-left:auto; }
+
+  /* ============ responsive ============ */
+  @media (max-width:860px){
+    .demo{ grid-template-columns:1fr; }
+    .demo-mid{ flex-direction:row; }
+    .pains,.steps{ grid-template-columns:1fr; }
+    .c-speed,.c-stats,.c-sold,.c-ai,.c-lang,.c-mkts,.c-img{ grid-column:span 12; }
+  }
+
+  /* ============ reduced motion: keep fades, drop movement ============ */
+  @media (prefers-reduced-motion:reduce){
+    .rv{ transform:none; transition:opacity .3s ease; }
+    .demo.play .list-btn,.pulse::after{ animation:none; }
+    .fval .val,.ph,.lang-card{ transform:none; }
+    .speed-bar i{ transition:none; }
+    html{ scroll-behavior:auto; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap nav-in">
+    <img class="logo" src="data:image/png;base64,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Jx/ZwPvv7Eo9xDnS5agcHCnqDyV9+xdx3U0nMfGq7hQE7YMj0w+ZdD+ZLoAkhx4du/Tvlcz681YWvbaTyopWHB3rfHxB3bHyND5U+Hwa5WeWMvHKHpw7tozioM7BeKLZsLB7OUYE4OCUZs33a2gobN8dYcl7lbzzxm5WLK9ky6ZazDZkZJR1CXDq0A6MOaeUMeeU0LdfPlra4dFNJYW4n2NMAA7O8fFer0JA1ezj40MJtnwVYr1zfPzmMHv3RFtxfHwBJ/bJo6Rjw+PjM+uc4MY4RgXgkH5yiKYJvB4FDyoqAgswkw4h0wKwJ5X2eYECBYGVPF8wZljE41bKM5gZE7zW4PIzg44UIdLX7xCOmISkmdySjj3W13MJ17mAnceI5NIy88b31nFMCyCd5nz/aY/K8C798MmYBUuOr4ecALKcnACynJwAspycALKcnACynJwAspycALKcnACynJwAspycALKcnACynJwAspycALKcnACynJwAspycALKcnACynJwAspycALKcnACynJwAspycALKcnACynJwAspycALKcnACynJwAshytxYK6OY5hBP8PZMoehrikj6YAAAAASUVORK5CYII=" alt="Carxpert logo">
+    <div class="brand">Carxpert<small>Lightning Lister</small></div>
+    <a class="btn sm nav-cta" href="https://chromewebstore.google.com/detail/nfpnkiknibofeiicekdehonjmpnonaeh">
+      <svg class="chrome-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><path d="M21.17 8H12M3.95 6.06L8.54 14M10.88 21.94L15.46 14"/></svg>
+      Add to Chrome
+    </a>
+  </div>
+</nav>
+
+<header class="wrap">
+  <div class="rv"><span class="eyebrow"><i class="dot"></i>For dealership sales teams</span></div>
+  <h1 class="rv" style="--d:60ms">Stop retyping cars into <span class="hl">Marketplace.</span></h1>
+  <p class="sub rv" style="--d:120ms">Every car you post by hand costs you fifteen minutes of VIN-squinting, photo-juggling and copy-paste — per car, per marketplace. Carxpert fills the entire Facebook Marketplace form straight from your dealership's website in one click. You review it, you hit Publish, you move to the next customer.</p>
+  <div class="hero-ctas rv" style="--d:180ms">
+    <a class="btn" href="https://chromewebstore.google.com/detail/nfpnkiknibofeiicekdehonjmpnonaeh">
+      <svg class="chrome-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><path d="M21.17 8H12M3.95 6.06L8.54 14M10.88 21.94L15.46 14"/></svg>
+      Add to Chrome — 30 seconds
+    </a>
+    <a class="btn ghost" href="#how">See how it works</a>
+  </div>
+  <p class="fineprint rv" style="--d:230ms">Works in your own logged-in Facebook session. Never auto-publishes. Never touches your passwords.</p>
+
+  <!-- the product, explained by motion: dealer card → ⚡ → form fills itself -->
+  <div class="demo rv" id="demo" style="--d:280ms" aria-label="Demo: Carxpert fills a Marketplace listing in seconds">
+    <div class="pane">
+      <div class="pane-bar"><i></i><i></i><i></i><span>yourdealership.com — inventory</span></div>
+      <div class="pane-in">
+        <div class="car-img"></div>
+        <div class="car-title">2026 Toyota Corolla Cross L</div>
+        <div class="car-meta">0 mi · Jet Black · VIN 7MUAA…7819</div>
+        <div class="list-btn">⚡ List</div>
+      </div>
+    </div>
+    <div class="demo-mid">
+      <div class="bolt"><svg viewBox="0 0 24 24" fill="#1c1e12"><path d="M13 2L4.5 13.5H11l-1 8.5L19.5 10H13l0-8z"/></svg></div>
+      <div class="timer" id="timer">0.0s</div>
+    </div>
+    <div class="pane">
+      <div class="pane-bar"><i></i><i></i><i></i><span>facebook.com — Marketplace · Vehicle for sale</span></div>
+      <div class="pane-in">
+        <div class="form-rows">
+          <div class="frow"><label>Year / Make</label><div class="fval"><div class="skel"></div><div class="val">2026 · Toyota</div></div></div>
+          <div class="frow"><label>Model</label><div class="fval"><div class="skel"></div><div class="val">Corolla Cross L</div></div></div>
+          <div class="frow"><label>Price</label><div class="fval"><div class="skel"></div><div class="val">$27,114</div></div></div>
+          <div class="frow"><label>Mileage</label><div class="fval"><div class="skel"></div><div class="val">0</div></div></div>
+          <div class="frow"><label>Photos</label><div class="photos fval" style="border:0;background:none;position:static;height:auto"><div class="ph"></div><div class="ph"></div><div class="ph"></div><div class="ph"></div><div class="ph"></div><div class="ph"></div></div></div>
+          <div class="frow"><label>Description</label><div class="fval"><div class="skel"></div><div class="val">Written by AI — in your buyer's language…</div></div></div>
+        </div>
+        <div class="pub" id="pub">Review &amp; publish — always your click</div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section class="wrap" id="problem">
+  <div class="kicker rv">The old way</div>
+  <h2 class="rv" style="--d:60ms">Hand-posting is a part-time job<br>nobody's paying you for.</h2>
+  <p class="lead rv" style="--d:120ms">You already sold yourself on Marketplace — it's where the buyers are. The problem is everything between the lot and the listing.</p>
+  <div class="pains">
+    <div class="pain rv"><div class="big"><span class="strike">15 min</span> <small>→ seconds</small></div><p>Typing year, trim, mileage, price and specs into Facebook for every single car — then doing it again when it doesn't save.</p></div>
+    <div class="pain rv" style="--d:70ms"><div class="big"><span class="strike">20 photos</span> <small>→ 1 click</small></div><p>Downloading photos from your own website one by one, just to re-upload them one by one somewhere else.</p></div>
+    <div class="pain rv" style="--d:140ms"><div class="big"><span class="strike">"Is it sold?"</span> <small>→ auto</small></div><p>Stale listings for cars that left the lot last week. Buyers lose trust, managers lose the plot, and your numbers live in your head.</p></div>
+  </div>
+</section>
+
+<section class="wrap" id="features">
+  <div class="kicker rv">With Carxpert</div>
+  <h2 class="rv" style="--d:60ms">Everything a closer needs.<br>Nothing they have to maintain.</h2>
+  <div class="bento">
+    <div class="cell c-speed rv"><span class="tag live">Live</span>
+      <h3>Click to filled form in under 3 seconds</h3>
+      <p>Carxpert reads the vehicle straight from your dealership page — no copy-paste, no typos — and fills Marketplace's form: specs, price, colours, up to 20 photos, description. You stay in control of Publish.</p>
+      <div class="speed-vis"><div class="speed-num" data-count="3" data-decimals="0">0<small>s</small></div><div class="speed-bar"><i></i></div></div>
+    </div>
+    <div class="cell c-stats rv" style="--d:60ms"><span class="tag">Your month, live</span>
+      <div class="stat-hero" data-count="28">0</div>
+      <div class="stat-sub">vehicles sold · last 30 days</div>
+      <div class="stat-grid">
+        <div class="mini"><b data-count="712480" data-prefix="$">$0</b><span>gross sales</span></div>
+        <div class="mini"><b data-count="21">0</b><span>avg days to sell</span></div>
+        <div class="mini"><b data-count="34">0</b><span>active listings</span></div>
+        <div class="mini"><b data-count="918760" data-prefix="$">$0</b><span>live inventory value</span></div>
+      </div>
+    </div>
+    <div class="cell c-sold rv"><span class="tag live">Live</span>
+      <h3>Sold cars mark themselves</h3>
+      <p>When a car leaves your website, Carxpert notices and closes the loop — your stats update without you touching a spreadsheet.</p>
+      <div class="sold-line"><span class="pulse"></span><span class="sold-chip">2019 RAV4 XLE</span>&nbsp;→ Sold, day 18</div>
+    </div>
+    <div class="cell c-ai rv" style="--d:60ms"><span class="tag live">Live</span>
+      <h3>AI writes the description</h3>
+      <p>A clean, honest write-up from the car's real specs — drafted in a second, edited by you.</p>
+      <div class="type-box"><span id="typer"></span><span class="caret"></span></div>
+    </div>
+    <div class="cell c-lang rv" style="--d:120ms"><span class="tag live">Live</span>
+      <h3>Sell in your buyer's language</h3>
+      <p>One tap translates the listing — reach the whole city, not just the English-speaking half of it.</p>
+      <div class="lang-stage">
+        <div class="lang-card on"><b>English</b>Clean one-owner SUV, zero miles, ready for its first road trip.</div>
+        <div class="lang-card"><b>Español</b>SUV impecable de un solo dueño, cero millas, lista para su primer viaje.</div>
+        <div class="lang-card" dir="rtl"><b>العربية</b>سيارة SUV نظيفة بمالك واحد، عداد صفر، جاهزة لأول رحلة.</div>
+      </div>
+    </div>
+    <div class="cell c-mkts rv"><span class="tag">Where your buyers are</span>
+      <h3>One inventory, every marketplace</h3>
+      <p>Facebook Marketplace today. The same one-click flow is coming to the rest — list once, be everywhere.</p>
+      <div class="mkt-row">
+        <span class="mkt live">Facebook Marketplace <span class="st">Live</span></span>
+        <span class="mkt">Craigslist <span class="st">Soon</span></span>
+        <span class="mkt">CarGurus <span class="st">Soon</span></span>
+        <span class="mkt">cars.com <span class="st">Soon</span></span>
+        <span class="mkt">OfferUp <span class="st">Soon</span></span>
+      </div>
+    </div>
+    <div class="cell c-img rv" style="--d:60ms"><span class="tag">Coming soon</span>
+      <h3>AI photo backgrounds</h3>
+      <p>Lot clutter out, clean studio look in — the same car photos, suddenly scroll-stopping. Rolling out to early dealerships first.</p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap" id="how">
+  <div class="kicker rv">How it works</div>
+  <h2 class="rv" style="--d:60ms">Three clicks. Zero retyping.</h2>
+  <div class="steps">
+    <div class="step rv"><h3>Browse your own inventory</h3><p>Open your dealership website like you already do. Carxpert adds a ⚡ List button to every car and verifies your dealership automatically.</p></div>
+    <div class="step rv" style="--d:70ms"><h3>Hit ⚡ List</h3><p>The Marketplace form fills itself — specs, price, photos, AI description — in your own logged-in Facebook session.</p></div>
+    <div class="step rv" style="--d:140ms"><h3>Review &amp; publish</h3><p>You give it one look and click Publish yourself. From then on it's tracked: listed, priced, and marked sold automatically.</p></div>
+  </div>
+</section>
+
+<section class="wrap">
+  <div class="cta-card rv">
+    <div class="kicker" style="color:rgba(250,250,247,.5)">Simple pricing</div>
+    <h2>Your next listing takes 3 seconds.</h2>
+    <p class="lead">One plan, everything included — lightning listing, AI descriptions &amp; translations, live stats, automatic sold-detection.</p>
+    <div class="price">$89.99<small> / month · cancel anytime</small></div>
+    <a class="btn" href="https://chromewebstore.google.com/detail/nfpnkiknibofeiicekdehonjmpnonaeh">
+      <svg class="chrome-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><path d="M21.17 8H12M3.95 6.06L8.54 14M10.88 21.94L15.46 14"/></svg>
+      Add Carxpert to Chrome
+    </a>
+    <p class="fineprint">Sign in with Google · your dealership verified in-panel · first listing in minutes</p>
+  </div>
+</section>
+
+<footer class="wrap">
+  <span>© 2026 Carxpert</span>
+  <a href="https://carxpert-tools-backend-production.up.railway.app/privacy">Privacy</a>
+  <a href="mailto:hasnatrao8@gmail.com">Contact</a>
+  <span class="sp">Not affiliated with or endorsed by Meta or Facebook.</span>
+</footer>
+
+<script>
+(function(){
+  'use strict';
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // ---- scroll reveal (once) ----
+  var io = new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if (e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); }
+    });
+  }, { rootMargin:'-60px 0px', threshold:0.1 });
+  document.querySelectorAll('.rv,.cell').forEach(function(el){ io.observe(el); });
+
+  // ---- hero demo orchestration: fills fire in a stagger, timer ticks to 2.8s ----
+  var demo = document.getElementById('demo');
+  var timerEl = document.getElementById('timer');
+  var pub = document.getElementById('pub');
+  function playDemo(){
+    demo.classList.add('play');
+    var vals = demo.querySelectorAll('.fval');
+    var t0 = 700;               // after the ⚡ press beat
+    var gap = reduced ? 0 : 260;
+    vals.forEach(function(v,i){
+      setTimeout(function(){ v.classList.add('filled'); }, reduced ? 0 : t0 + i*gap);
+    });
+    var total = reduced ? 0 : t0 + vals.length*gap + 200;
+    if (!reduced){
+      var start = null;
+      function tick(ts){
+        if (!start) start = ts;
+        var s = Math.min((ts - start)/1000, 2.8);
+        timerEl.textContent = s.toFixed(1) + 's';
+        if (s < 2.8) requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+    } else { timerEl.textContent = '2.8s'; }
+    setTimeout(function(){ pub.classList.add('on'); pub.textContent = '✓ Ready to publish'; }, total);
+  }
+  var dio = new IntersectionObserver(function(entries){
+    if (entries[0].isIntersecting){ playDemo(); dio.disconnect(); }
+  }, { threshold:0.35 });
+  dio.observe(demo);
+
+  // ---- number tickers (count up once in view, tabular-nums) ----
+  function ease(t){ return 1 - Math.pow(1 - t, 3); }
+  function countUp(el){
+    var target = parseFloat(el.dataset.count), prefix = el.dataset.prefix || '';
+    if (reduced){
+      if (el.classList.contains('speed-num')) el.innerHTML = target + '<small>s</small>';
+      else el.textContent = prefix + target.toLocaleString('en-US');
+      return;
+    }
+    var dur = 1100, start = null;
+    function frame(ts){
+      if (!start) start = ts;
+      var p = Math.min((ts - start)/dur, 1);
+      var v = Math.round(target * ease(p));
+      if (el.classList.contains('speed-num')) el.innerHTML = v + '<small>s</small>';
+      else el.textContent = prefix + v.toLocaleString('en-US');
+      if (p < 1) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+  var nio = new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if (e.isIntersecting){ countUp(e.target); nio.unobserve(e.target); }
+    });
+  }, { threshold:0.5 });
+  document.querySelectorAll('[data-count]').forEach(function(el){ nio.observe(el); });
+
+  // ---- AI typewriter (once in view) ----
+  var typer = document.getElementById('typer');
+  var text = 'Discover the 2026 Corolla Cross L in Jet Black — zero miles, factory-fresh, and ready for its first owner. Efficient, spacious, and backed by Toyota reliability.';
+  var tio = new IntersectionObserver(function(entries){
+    if (!entries[0].isIntersecting) return;
+    tio.disconnect();
+    if (reduced){ typer.textContent = text; return; }
+    var i = 0;
+    (function type(){
+      typer.textContent = text.slice(0, ++i);
+      if (i < text.length) setTimeout(type, 18 + Math.random()*22);
+    })();
+  }, { threshold:0.5 });
+  tio.observe(typer);
+
+  // ---- language crossfade loop (ambient, slow, subtle) ----
+  var cards = document.querySelectorAll('.lang-card');
+  var li = 0;
+  if (!reduced && cards.length){
+    setInterval(function(){
+      cards[li].classList.remove('on');
+      li = (li + 1) % cards.length;
+      cards[li].classList.add('on');
+    }, 3200);
+  }
+})();
+</script>
+</body>
+</html>
