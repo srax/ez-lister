@@ -53,7 +53,7 @@ export async function adminUnlink(userId, db = pool) {
 
 export async function recentScans(limit = 50, db = pool) {
   const { rows } = await db.query(
-    `select id, dealership_id, started_at, finished_at, ok, vin_count, source, error
+    `select id, dealership_id, started_at, finished_at, ok, vin_count, source, error, meta
      from dealer_inventory_scans order by started_at desc limit $1`,
     [Math.min(500, Math.max(1, limit))]
   );

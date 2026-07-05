@@ -49,21 +49,18 @@ test('judgeListing: present + had a miss → clear the miss', () => {
   assert.equal(d.clearFirstMissed, true);
 });
 
-test('judgeListing: first absence sets first_missed_at, does not sell', () => {
+test('judgeListing: first absence sets first_missed_at + requests a probe — NEVER sells', () => {
   const d = judgeListing({ status: 'listed', first_missed_at: null }, false, T0);
   assert.equal(d.setFirstMissed, T0);
+  assert.equal(d.probe, true);
   assert.ok(!d.markSold);
 });
 
-test('judgeListing: absent < 20h → no change', () => {
-  const d = judgeListing({ status: 'listed', first_missed_at: new Date(T0 - 19 * HOUR).toISOString() }, false, T0);
-  assert.equal(d, null);
-});
-
-test('judgeListing: absent >= 20h → sold(scan)', () => {
-  const d = judgeListing({ status: 'listed', first_missed_at: new Date(T0 - 20 * HOUR).toISOString() }, false, T0);
-  assert.equal(d.markSold, true);
-  assert.equal(d.soldAt, T0);
+test('judgeListing: still absent, however long — roster alone can never sell', () => {
+  const d = judgeListing({ status: 'listed', first_missed_at: new Date(T0 - 100 * HOUR).toISOString() }, false, T0);
+  assert.equal(d.probe, true);
+  assert.equal(d.setFirstMissed, null);
+  assert.ok(!d.markSold);
 });
 
 test('judgeListing: scanner-sold reappears → revive', () => {
@@ -71,43 +68,65 @@ test('judgeListing: scanner-sold reappears → revive', () => {
   assert.equal(d.revive, true);
 });
 
-test('judgeListing: already-sold + still absent → no change (sold_at must not drift)', () => {
-  const d = judgeListing(
-    { status: 'sold', sold_source: 'scan', first_missed_at: new Date(T0 - 30 * HOUR).toISOString() },
-    false, T0
-  );
-  assert.equal(d, null);
+test('judgeListing: scanner-sold + still absent → revival probe; manual sold untouchable', () => {
+  const scanSold = judgeListing({ status: 'sold', sold_source: 'scan', first_missed_at: null }, false, T0);
+  assert.equal(scanSold.probe, true);
+  assert.ok(!scanSold.markSold && !scanSold.revive);
+  assert.equal(judgeListing({ status: 'sold', sold_source: 'manual', first_missed_at: null }, false, T0), null);
 });
 
-// ---- VDP ground truth (the anti-false-positive layer) ----
-const CAR = { status: 'listed', sold_source: null, first_missed_at: new Date(T0 - 21 * HOUR).toISOString() };
-const SCAN_SOLD = { status: 'sold', sold_source: 'scan', first_missed_at: null };
+// ---- VDP ground truth (the anti-false-positive layer + the fast-sale clock) ----
+const MIN = 60 * 1000;
+const PROBE = { probe: true, setFirstMissed: null };
+const CAR = { status: 'listed', sold_source: null, first_missed_at: new Date(T0 - HOUR).toISOString(), gone_confirmed_at: null };
+const CAR_CONFIRMED = { ...CAR, gone_confirmed_at: new Date(T0 - 30 * MIN).toISOString() };
+const SCAN_SOLD = { status: 'sold', sold_source: 'scan', first_missed_at: null, gone_confirmed_at: null };
 
-test('resolveWithVdp: live VDP vetoes a mature-miss sale and clears the clock', () => {
-  const d = resolveWithVdp({ decision: { markSold: true, soldAt: T0 }, listing: CAR, alive: true, now: T0 });
+test('resolveWithVdp: live VDP clears every clock (roster was lying)', () => {
+  const d = resolveWithVdp({ decision: PROBE, listing: CAR, alive: true, now: T0 });
   assert.ok(!d.markSold);
   assert.equal(d.lastSeen, T0);
   assert.equal(d.clearFirstMissed, true);
 });
 
-test('resolveWithVdp: VDP confirmed gone → the sale proceeds', () => {
-  const d = resolveWithVdp({ decision: { markSold: true, soldAt: T0 }, listing: CAR, alive: false, now: T0 });
-  assert.equal(d.markSold, true);
+test('resolveWithVdp: first gone-confirmation arms the clock, does not sell', () => {
+  const d = resolveWithVdp({ decision: PROBE, listing: CAR, alive: false, now: T0 });
+  assert.equal(d.setGoneConfirmed, T0);
+  assert.ok(!d.markSold);
 });
 
-test('resolveWithVdp: VDP unknowable → never sell blind, defer', () => {
-  const d = resolveWithVdp({ decision: { markSold: true, soldAt: T0 }, listing: CAR, alive: null, now: T0 });
-  assert.equal(d, null);
+test('resolveWithVdp: second gone-confirmation ≥25min later → sold', () => {
+  const d = resolveWithVdp({ decision: PROBE, listing: CAR_CONFIRMED, alive: false, now: T0 });
+  assert.equal(d.markSold, true);
+  assert.equal(d.soldAt, T0);
+});
+
+test('resolveWithVdp: second confirmation too soon (<25min) → wait for the next cycle', () => {
+  const soon = { ...CAR, gone_confirmed_at: new Date(T0 - 10 * MIN).toISOString() };
+  assert.equal(resolveWithVdp({ decision: PROBE, listing: soon, alive: false, now: T0 }), null);
+});
+
+test('resolveWithVdp: a stale confirmation (>48h, worker pause) restarts the pair instead of selling', () => {
+  const stale = { ...CAR, gone_confirmed_at: new Date(T0 - 49 * HOUR).toISOString() };
+  const d = resolveWithVdp({ decision: PROBE, listing: stale, alive: false, now: T0 });
+  assert.equal(d.setGoneConfirmed, T0);
+  assert.ok(!d.markSold);
+});
+
+test('resolveWithVdp: VDP unknowable → never sell, never confirm; telemetry only', () => {
+  assert.equal(resolveWithVdp({ decision: PROBE, listing: CAR_CONFIRMED, alive: null, now: T0 }), null);
+  const withMiss = resolveWithVdp({ decision: { probe: true, setFirstMissed: T0 }, listing: CAR, alive: null, now: T0 });
+  assert.deepEqual(withMiss, { setFirstMissed: T0 });
 });
 
 test('resolveWithVdp: scanner-sold car with live VDP → revive (stale-roster self-heal)', () => {
-  const d = resolveWithVdp({ decision: null, listing: SCAN_SOLD, alive: true, now: T0 });
+  const d = resolveWithVdp({ decision: { probe: true }, listing: SCAN_SOLD, alive: true, now: T0 });
   assert.equal(d.revive, true);
 });
 
 test('resolveWithVdp: scanner-sold car, VDP gone or unknown → stays sold', () => {
-  assert.equal(resolveWithVdp({ decision: null, listing: SCAN_SOLD, alive: false, now: T0 }), null);
-  assert.equal(resolveWithVdp({ decision: null, listing: SCAN_SOLD, alive: null, now: T0 }), null);
+  assert.equal(resolveWithVdp({ decision: { probe: true }, listing: SCAN_SOLD, alive: false, now: T0 }), null);
+  assert.equal(resolveWithVdp({ decision: { probe: true }, listing: SCAN_SOLD, alive: null, now: T0 }), null);
 });
 
 test('checkVdpAlive: 200 with the VIN in the body → alive', async () => {

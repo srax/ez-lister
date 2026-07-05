@@ -98,10 +98,17 @@ export async function fetchRoster(dealership, { fetchImpl = politeFetch, condSta
           lastModified: resp.headers.get('last-modified') || null,
           vins // roster cache so a later 304 can re-apply real membership
         };
+        // Evidence for the scan record: how stale was the copy the CDN served us? The
+        // 2026-07-05 false sold was only diagnosable from these headers, after the fact.
+        const cacheMeta = {
+          age: resp.headers.get('age') || null,
+          xCache: resp.headers.get('x-cache') || resp.headers.get('cf-cache-status') || null,
+          lastModified: resp.headers.get('last-modified') || null
+        };
         // A sitemap that parses to almost no VINs is suspect (bot wall / markup change) →
         // let the caller try SRP. Kept low (3, not 10) so small dealers still scan.
         if (vins.length >= 3) {
-          return { ok: true, vins, source: 'sitemap', condState: nextCond };
+          return { ok: true, vins, source: 'sitemap', condState: nextCond, cacheMeta };
         }
       }
     } catch (err) {
