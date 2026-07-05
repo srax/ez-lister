@@ -523,6 +523,8 @@ async function refreshMe() {
     }
     if (prevOwner !== me.user.id) await chrome.storage.local.set({ ezlistOwnerId: me.user.id });
   }
+  // Best-effort: repopulate green-button state from the server (no-op unless local is empty).
+  if (me.entitled) restoreListedFromServer().catch(() => {});
   const patch = { ezlistMe: me };
   if (data.lease) {
     try { patch.ezlistLease = { jws: data.lease, claims: CarxpertLease.decodeJwt(data.lease).payload }; }
@@ -748,6 +750,23 @@ async function getServerListings() {
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok || !data.ok) return { ok: false, reason: `http_${resp.status}` };
   return { ok: true, listings: data.listings || [] };
+}
+
+// New device / post-purge restore: the server is the source of truth for what's already
+// published. When local green-button state is empty, rebuild it from the server so a
+// salesperson doesn't accidentally double-list cars they published from another machine.
+async function restoreListedFromServer() {
+  const local = (await chrome.storage.local.get('ezlistListedVins')).ezlistListedVins || {};
+  if (Object.keys(local).length) return;
+  const res = await getServerListings();
+  if (!res.ok || !res.listings.length) return;
+  const listed = {};
+  for (const l of res.listings) {
+    if (l.status === 'listed' && l.client_key) {
+      listed[l.client_key] = { listedAt: l.listed_at || new Date().toISOString(), restored: true };
+    }
+  }
+  if (Object.keys(listed).length) await chrome.storage.local.set({ ezlistListedVins: listed });
 }
 
 // Append an event to the offline queue (client uuid = idempotency key). Deduped by id;
