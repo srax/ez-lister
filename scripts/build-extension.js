@@ -15,8 +15,9 @@
 //   2. Rewrites host_permissions — strips every backend host (localhost + *.railway.app)
 //      and adds the target env's backend origin. localhost is kept only for `local`.
 //      Dealer + Facebook hosts are always kept.
-//   3. The manifest `key` (pinned extension ID) is carried through unchanged, so the ID is
-//      identical across local/staging/prod and matches the backend's EXTENSION_ID.
+//   3. The manifest `key` (pinned extension ID) is carried through in dist/<env>/ for
+//      unpacked local testing. It is stripped from Web Store ZIPs because Chrome Web Store
+//      rejects uploaded packages that include the `key` field.
 //   4. Emits dist/<env>/ (unpacked, for loading) and a zip for prod (or any env with --zip).
 //
 // The source extension/ tree is never modified — the build happens in a temp dir.
@@ -96,17 +97,31 @@ function main() {
   fs.rmSync(outDir, { recursive: true, force: true });
   fs.mkdirSync(outDir, { recursive: true });
   fs.cpSync(SRC, outDir, { recursive: true });
+  for (const file of fs.readdirSync(path.join(outDir, 'lib'))) {
+    if (file.endsWith('.test.js')) fs.rmSync(path.join(outDir, 'lib', file), { force: true });
+  }
   fs.writeFileSync(path.join(outDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   fs.writeFileSync(path.join(outDir, 'background.js'), bg);
 
   let zipInfo = '(none)';
   if (wantZip) {
     const zipPath = path.join(DIST, `carxpert-extension-${env}-v${version}.zip`);
+    const zipDir = path.join(DIST, `.zip-${env}`);
     fs.rmSync(zipPath, { force: true });
+    fs.rmSync(zipDir, { recursive: true, force: true });
+    fs.cpSync(outDir, zipDir, { recursive: true });
+
+    const storeManifestPath = path.join(zipDir, 'manifest.json');
+    const storeManifest = JSON.parse(fs.readFileSync(storeManifestPath, 'utf8'));
+    delete storeManifest.key;
+    fs.writeFileSync(storeManifestPath, `${JSON.stringify(storeManifest, null, 2)}\n`);
+
     try {
-      execFileSync('zip', ['-rq', zipPath, '.'], { cwd: outDir });
+      execFileSync('zip', ['-rq', zipPath, '.'], { cwd: zipDir });
     } catch (e) {
       fail(`zip failed (is the "zip" CLI installed? "sudo apt-get install zip"): ${e.message}`);
+    } finally {
+      fs.rmSync(zipDir, { recursive: true, force: true });
     }
     zipInfo = `${path.relative(ROOT, zipPath)} (${(fs.statSync(zipPath).size / 1024).toFixed(1)} KB)`;
   }
