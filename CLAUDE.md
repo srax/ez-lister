@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `npm run check` — `node --check` over backend + extension JS (fast sanity before reloading).
 - `npm test` — Node's built-in test runner. Single file: `node --test backend/normalize.test.js`.
 - `./scripts/open-test-chrome.sh` — launches Windows Chrome on a dedicated profile with `--remote-debugging-port=9222` and the extension auto-loaded (`--load-extension`). This is how live testing is done.
-- Package the extension: `cd extension && zip -rq ../dist/carxpert-extension-v0.2.0.zip .`
+- Package the extension: `cd extension && zip -rq ../dist/carxpert-extension-v0.2.1.zip .`
 - After reloading the unpacked extension, **refresh any already-open dealer/Facebook tabs** — content scripts only inject on fresh page loads.
 
 ## Architecture: three runtime contexts

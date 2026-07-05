@@ -1,14 +1,16 @@
-# Chrome Web Store submission — Carxpert v0.2.0
+# Chrome Web Store submission — Carxpert Lightning Lister v0.2.1
 
-Everything to paste into the dev console (chrome.google.com/webstore/devconsole) when
-creating the **new** item. Upload `dist/carxpert-extension-prod-v0.2.0.zip` — the zip's
-manifest carries the pinned `key`, so the new item's ID becomes
-`nfpnkiknibofeiicekdehonjmpnonaeh` (must match — the backend's OAuth redirect depends on it).
+Everything to paste into the dev console (chrome.google.com/webstore/devconsole). The item
+was created (Draft) with ID `nfpnkiknibofeiicekdehonjmpnonaeh` via the one-time
+`--first-upload` zip (key.pem at the zip root — see scripts/build-extension.js). Every
+upload from now on uses the normal keyless build: `npm run build:ext:prod` →
+`dist/carxpert-extension-prod-v<version>.zip`. The ID is fixed for the item's lifetime —
+the backend's OAuth redirect and CORS depend on it staying `nfpn…`.
 The old unlisted "ezlist" item (`ejagn…`) stays untouched; archive it once this is live.
 
 ## Listing
 
-- **Name:** Carxpert
+- **Name:** Carxpert Lightning Lister (taken from the manifest `name`, not this doc)
 - **Summary (132 chars max):** List your dealership's inventory to Facebook Marketplace in
   one click — with AI descriptions, sync, and sales stats.
 - **Category:** Workflow & Planning (or Tools)
