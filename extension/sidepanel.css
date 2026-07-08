@@ -78,6 +78,42 @@ body{
 .chev{ position:absolute; right:11px; top:50%; transform:translateY(-50%); pointer-events:none; }
 .globe{ position:absolute; left:11px; top:50%; transform:translateY(-50%); pointer-events:none; }
 
+/* custom dropdown — enhances native <select> (kept hidden for value + change events) */
+.csel-native{ display:none !important; }
+.csel{ position:relative; width:100%; }
+.csel-trigger{ display:flex; align-items:center; gap:8px; width:100%; padding:10px 12px; font-family:inherit;
+  font-size:13.5px; font-weight:600; color:var(--text); background:var(--input-bg);
+  border:1px solid var(--input-border); border-radius:11px; cursor:pointer; text-align:left;
+  transition:border-color .12s, box-shadow .12s; }
+.csel-trigger:hover{ border-color:#d4d6e0; }
+.csel.open .csel-trigger{ border-color:var(--accent-border); box-shadow:0 0 0 3px var(--accent-soft); }
+.csel-lg .csel-trigger{ font-size:15px; }
+.csel-left{ display:flex; align-items:center; flex-shrink:0; color:var(--label); }
+.csel-value{ flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.csel-chev{ flex-shrink:0; color:#9a9caa; transition:transform .16s ease; }
+.csel.open .csel-chev{ transform:rotate(180deg); }
+.csel-menu{ position:absolute; top:calc(100% + 6px); left:0; right:0; z-index:60; margin:0; padding:5px;
+  list-style:none; background:#fff; border:1px solid var(--input-border); border-radius:12px;
+  box-shadow:0 10px 30px rgba(20,24,55,.14); max-height:264px; overflow-y:auto; animation:cselIn .13s ease; }
+@keyframes cselIn{ from{ opacity:0; transform:translateY(-4px); } to{ opacity:1; transform:none; } }
+.csel-opt{ display:flex; align-items:center; gap:9px; padding:8px 10px; border-radius:8px;
+  font-size:13px; font-weight:600; color:var(--text); cursor:pointer; }
+.csel-lg .csel-opt{ font-size:14.5px; }
+.csel-opt.active{ background:var(--line); }
+.csel-opt.is-selected{ color:var(--ink); }
+.csel-opt.is-disabled{ opacity:.42; cursor:default; }
+.csel-opt-label{ flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.csel-oicon{ display:flex; align-items:center; flex-shrink:0; }
+.csel-check{ flex-shrink:0; color:var(--ink); opacity:0; }
+.csel-opt.is-selected .csel-check{ opacity:1; }
+.csel-badge{ display:inline-flex; align-items:center; justify-content:center; width:19px; height:19px;
+  border-radius:6px; color:#fff; font-size:10.5px; font-weight:800; flex-shrink:0; }
+.csel-emoji{ font-size:15px; line-height:1; }
+/* compact variant for the stats date-range picker */
+.stats-range-wrap .csel, .stats-range-wrap .csel-trigger{ width:auto; }
+.stats-range-wrap .csel-trigger{ height:32px; padding:0 11px; font-size:12px; font-weight:700; border-radius:9px; }
+.stats-range-wrap .csel-menu{ left:auto; right:0; min-width:154px; }
+
 /* segmented */
 .unit-field{ margin-top:11px; }
 .seg{ display:flex; gap:4px; background:#f3f4f7; border:1px solid #ebecf1; border-radius:11px; padding:3px; }

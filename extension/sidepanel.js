@@ -179,6 +179,160 @@ function applyPrefsToUI() {
   ui.tAi.classList.toggle('on', !!state.prefs.aiDesc);
   ui.tDealer.classList.toggle('on', !!state.prefs.dealerDesc);
   ui.tMileage.classList.toggle('on', !!state.prefs.mileage);
+  syncSelects();
+}
+
+// ---------- custom dropdowns (progressive enhancement over native <select>) ----------
+// The native <select> stays in the DOM (hidden) as the value store + change source, so all the
+// existing wiring (ui.x.value, addEventListener('change'), savePref) is untouched. We overlay a
+// styled, keyboard-accessible listbox that writes back to the select and dispatches 'change'.
+const cselRegistry = [];
+
+function platformIcon(value) {
+  const map = { fb: ['f', '#1877f2'], craigslist: ['c', '#5c2d91'], offerup: ['o', '#12b76a'] };
+  if (value === 'cars') return '<span class="csel-emoji">🚗</span>';
+  const m = map[value];
+  return m ? `<span class="csel-badge" style="background:${m[1]}">${esc(m[0])}</span>` : '';
+}
+const CSEL_GLOBE = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z"/></svg>';
+const optIconHtml = (selId, value) => (selId === 'platform' ? platformIcon(value) : '');
+const triggerLeftHtml = (selId, value) => (selId === 'lang' ? CSEL_GLOBE : optIconHtml(selId, value));
+
+function closeAllCsel(except) { cselRegistry.forEach((e) => { if (e !== except) e.close(); }); }
+function syncSelects() { cselRegistry.forEach((e) => e.sync()); }
+
+function enhanceSelects() {
+  document.querySelectorAll('select.vsl-sel').forEach(enhanceSelect);
+  if (!enhanceSelects._bound) {
+    document.addEventListener('click', (e) => {
+      cselRegistry.forEach((entry) => { if (!entry.root.contains(e.target)) entry.close(); });
+    });
+    enhanceSelects._bound = true;
+  }
+}
+
+function enhanceSelect(select) {
+  const wrap = select.closest('.select-wrap');
+  if (!wrap || wrap.querySelector('.csel')) return;
+  const selId = select.id;
+  const opts = [...select.options];
+
+  const root = document.createElement('div');
+  root.className = 'csel';
+  if (select.classList.contains('emoji-sel')) root.classList.add('csel-lg');
+
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'csel-trigger';
+  trigger.setAttribute('aria-haspopup', 'listbox');
+  trigger.setAttribute('aria-expanded', 'false');
+  trigger.innerHTML = '<span class="csel-left"></span><span class="csel-value"></span>'
+    + '<svg class="csel-chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>';
+
+  const menu = document.createElement('ul');
+  menu.className = 'csel-menu';
+  menu.setAttribute('role', 'listbox');
+  menu.hidden = true;
+  opts.forEach((o, i) => {
+    const li = document.createElement('li');
+    li.className = 'csel-opt';
+    li.setAttribute('role', 'option');
+    li.dataset.index = String(i);
+    if (o.disabled) li.classList.add('is-disabled');
+    const icon = optIconHtml(selId, o.value);
+    li.innerHTML = (icon ? `<span class="csel-oicon">${icon}</span>` : '')
+      + `<span class="csel-opt-label">${esc(o.textContent.trim())}</span>`
+      + '<svg class="csel-check" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+    menu.appendChild(li);
+  });
+
+  root.appendChild(trigger);
+  root.appendChild(menu);
+  wrap.appendChild(root);
+  select.classList.add('csel-native');
+  wrap.querySelectorAll(':scope > .chev, :scope > .globe').forEach((el) => { el.style.display = 'none'; });
+
+  const items = [...menu.children];
+  let activeIdx = -1;
+  const setActive = (idx) => {
+    if (items[activeIdx]) items[activeIdx].classList.remove('active');
+    activeIdx = idx;
+    if (items[idx]) { items[idx].classList.add('active'); items[idx].scrollIntoView({ block: 'nearest' }); }
+  };
+  const firstEnabled = () => opts.findIndex((o) => !o.disabled);
+  const sync = () => {
+    const val = select.value;
+    const sel = opts.find((o) => o.value === val) || opts[0];
+    const left = triggerLeftHtml(selId, val);
+    const leftEl = trigger.querySelector('.csel-left');
+    leftEl.innerHTML = left;
+    leftEl.style.display = left ? '' : 'none';
+    trigger.querySelector('.csel-value').textContent = sel ? sel.textContent.trim() : '';
+    items.forEach((li, i) => {
+      const on = opts[i].value === val;
+      li.setAttribute('aria-selected', on ? 'true' : 'false');
+      li.classList.toggle('is-selected', on);
+    });
+  };
+  const close = () => {
+    if (menu.hidden) return;
+    menu.hidden = true;
+    root.classList.remove('open');
+    trigger.setAttribute('aria-expanded', 'false');
+    setActive(-1);
+  };
+  const open = () => {
+    if (!menu.hidden) return;
+    closeAllCsel(entry);
+    menu.hidden = false;
+    root.classList.add('open');
+    trigger.setAttribute('aria-expanded', 'true');
+    const cur = opts.findIndex((o) => o.value === select.value);
+    setActive(cur >= 0 && !opts[cur].disabled ? cur : firstEnabled());
+  };
+  const choose = (idx) => {
+    const o = opts[idx];
+    if (!o || o.disabled) return;
+    if (select.value !== o.value) {
+      select.value = o.value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    sync();
+    close();
+    trigger.focus();
+  };
+  const step = (dir) => {
+    let i = activeIdx;
+    for (let n = 0; n < opts.length; n += 1) {
+      i = (i + dir + opts.length) % opts.length;
+      if (!opts[i].disabled) { setActive(i); break; }
+    }
+  };
+
+  trigger.addEventListener('click', () => (menu.hidden ? open() : close()));
+  trigger.addEventListener('keydown', (e) => {
+    if (menu.hidden) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+      return;
+    }
+    if (e.key === 'ArrowDown') { e.preventDefault(); step(1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); step(-1); }
+    else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(activeIdx); }
+    else if (e.key === 'Escape') { e.preventDefault(); close(); }
+    else if (e.key === 'Tab') { close(); }
+  });
+  menu.addEventListener('click', (e) => {
+    const li = e.target.closest('.csel-opt');
+    if (li) choose(parseInt(li.dataset.index, 10));
+  });
+  menu.addEventListener('mousemove', (e) => {
+    const li = e.target.closest('.csel-opt');
+    if (li && !li.classList.contains('is-disabled')) setActive(parseInt(li.dataset.index, 10));
+  });
+
+  const entry = { select, root, sync, close };
+  cselRegistry.push(entry);
+  sync();
 }
 
 function setStatus(text, isError) {
@@ -462,6 +616,7 @@ function rangeLabel(v) {
 
 // ---------- events ----------
 function wireEvents() {
+  enhanceSelects(); // replace native <select>s with the styled custom dropdown
   ui.statsBtn.addEventListener('click', () => showView('stats'));
   ui.statsBack.addEventListener('click', () => showView('lister'));
   ui.statsRange.addEventListener('change', () => { ui.statsRangeLabel.textContent = rangeLabel(ui.statsRange.value); renderStats(); });
