@@ -90,9 +90,18 @@ function keyForDraft(d) {
   return (d.vin || '').toUpperCase() || d.stock || d.sourceUrl || '';
 }
 
+// ezlistListedVins entries are per-platform { fb?, craigslist?, ... }; legacy flat { listedAt }
+// means Facebook. "Listed" reflects the currently-selected "Where to post" marketplace.
+function listedPlatforms(entry) {
+  if (!entry || typeof entry !== 'object') return {};
+  if ('listedAt' in entry) return { fb: { listedAt: entry.listedAt } };
+  return entry;
+}
 function isListed(d) {
   const k = keyForDraft(d);
-  return !!(k && state.listed[k]);
+  if (!k) return false;
+  const platform = (state.prefs && state.prefs.platform) || 'fb';
+  return !!listedPlatforms(state.listed[k])[platform];
 }
 
 function renderVehicle() {
@@ -357,13 +366,14 @@ function showView(view) {
 async function migrateListings() {
   let changed = false;
   for (const [key, v] of Object.entries(state.listed || {})) {
-    if (!state.listings[key]) {
+    const fb = listedPlatforms(v).fb; // ezlistListings is the FB-side stats record (Phase 1)
+    if (fb && !state.listings[key]) {
       state.listings[key] = {
         key,
         vin: key.length === 17 ? key : undefined,
         platform: 'fb',
         status: 'active',
-        listedAt: (v && v.listedAt) || new Date().toISOString(),
+        listedAt: fb.listedAt || new Date().toISOString(),
       };
       changed = true;
     }
@@ -532,17 +542,40 @@ function renderTrend() {
 function renderPlatforms(range) {
   if (!ui.stPlatforms) return;
   const all = listingsArray();
-  const fbLive = all.filter((l) => l.status === 'active').length;
-  const fbSold = all.filter((l) => l.status === 'sold' && withinRange(l.soldAt, range)).length;
-  const total = Math.max(1, fbLive + fbSold);
-  const pct = Math.round((fbLive / total) * 100);
+  // Facebook is server-backed (synced across devices) → count from the listings records.
+  const fb = all.filter((l) => (l.platform || 'fb') === 'fb');
+  const fbLive = fb.filter((l) => l.status === 'active').length;
+  const fbSold = fb.filter((l) => l.status === 'sold' && withinRange(l.soldAt, range)).length;
+
+  // Craigslist/OfferUp are local-only this phase → count from the per-platform ezlistListedVins
+  // slots, cross-referencing sold state (a property of the car) from the listings records by key.
+  const soldByKey = {};
+  for (const l of all) if (l.status === 'sold') soldByKey[l.key] = l;
+  const localCount = (platform) => {
+    let live = 0; let sold = 0;
+    for (const [key, entry] of Object.entries(state.listed || {})) {
+      if (!listedPlatforms(entry)[platform]) continue;
+      const s = soldByKey[key];
+      if (s && withinRange(s.soldAt, range)) sold += 1; else live += 1;
+    }
+    return { live, sold };
+  };
+  const cl = localCount('craigslist');
+  const ou = localCount('offerup');
+
   ui.stPlatforms.innerHTML = [
-    `<div class="platform-row"><div class="platform-top"><span class="platform-name">FB Marketplace</span>`
-      + `<span class="platform-stat">${fbSold} sold ${rangeShort(range)} · ${fbLive} live</span></div>`
-      + `<div class="platform-bar"><div class="platform-fill" style="width:${pct}%"></div></div></div>`,
-    platformSoon('Craigslist'),
-    platformSoon('OfferUp'),
+    platformRow('FB Marketplace', fbLive, fbSold, range),
+    (cl.live || cl.sold) ? platformRow('Craigslist', cl.live, cl.sold, range) : platformSoon('Craigslist'),
+    (ou.live || ou.sold) ? platformRow('OfferUp', ou.live, ou.sold, range) : platformSoon('OfferUp'),
   ].join('');
+}
+
+function platformRow(name, live, sold, range) {
+  const total = Math.max(1, live + sold);
+  const pct = Math.round((live / total) * 100);
+  return `<div class="platform-row"><div class="platform-top"><span class="platform-name">${esc(name)}</span>`
+    + `<span class="platform-stat">${sold} sold ${rangeShort(range)} · ${live} live</span></div>`
+    + `<div class="platform-bar"><div class="platform-fill" style="width:${pct}%"></div></div></div>`;
 }
 
 function platformSoon(name) {
@@ -625,7 +658,10 @@ function wireEvents() {
     if (btn && btn.dataset.key) markSold(btn.dataset.key);
   });
   ui.openfb.addEventListener('click', () => chrome.runtime.sendMessage({ type: 'EZLIST_OPEN_PLATFORM', platform: ui.platform.value || 'fb' }));
-  ui.platform.addEventListener('change', () => savePref('platform', ui.platform.value, false));
+  ui.platform.addEventListener('change', () => {
+    savePref('platform', ui.platform.value, false);
+    if (state.draft) ui.vehListed.hidden = !isListed(state.draft); // badge follows the selected marketplace
+  });
   ui.fill.addEventListener('click', onFill);
   ui.aiDraft.addEventListener('click', onAiDraft);
   ui.translate.addEventListener('click', onTranslate);

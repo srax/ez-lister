@@ -230,7 +230,10 @@
       repaintAll();
     }
     if (changes.ezlistMe || changes.ezlistAuthToken) refreshEntitled();
-    if (changes.ezlistPrefs) platform = (changes.ezlistPrefs.newValue && changes.ezlistPrefs.newValue.platform) || 'fb';
+    if (changes.ezlistPrefs) {
+      const next = (changes.ezlistPrefs.newValue && changes.ezlistPrefs.newValue.platform) || 'fb';
+      if (next !== platform) { platform = next; repaintAll(); } // re-color cards for the new marketplace
+    }
   });
   function cardKey(card, vdpUrl) {
     const vin = (card.getAttribute('data-vin') || '').toUpperCase();
@@ -241,6 +244,13 @@
   // Inline ink-coloured bolt (the panel's lightning mark); fill:currentColor so it inherits
   // the button's text colour. Set via innerHTML (static markup, no user input).
   const BOLT = (sz) => `<svg width="${sz}" height="${sz}" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="flex:0 0 auto"><path d="M13 2L4.5 13.5H11l-1 8.5L19.5 10H13l0-8z"/></svg>`;
+  // ezlistListedVins entries are per-platform { fb?:{...}, craigslist?:{...} }; legacy flat
+  // { listedAt } means Facebook. A card is "Added" only if it's listed on the SELECTED platform.
+  const listedOn = (entry, plat) => {
+    if (!entry || typeof entry !== 'object') return false;
+    if ('listedAt' in entry) return plat === 'fb'; // legacy flat = Facebook
+    return !!entry[plat];
+  };
   function paint(btn) {
     if (btn.dataset.busy) return; // mid-click transient text — don't clobber
     const vdp = btn.classList.contains('ezlist-vdp-btn');
@@ -253,7 +263,7 @@
       btn.title = 'Sign in to Carxpert to list this vehicle';
       return;
     }
-    const listed = !!(btn.dataset.ezkey && listedKeys[btn.dataset.ezkey]);
+    const listed = !!(btn.dataset.ezkey && listedOn(listedKeys[btn.dataset.ezkey], platform));
     if (listed) {
       btn.style.background = '#178a3f';   // success green — reads clearly as "already listed"
       btn.style.color = '#fff';

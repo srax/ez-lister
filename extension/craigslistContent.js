@@ -150,9 +150,13 @@
         type: 'EZLIST_ENQUEUE_EVENT',
         event: { type: 'fill_completed', clientKey: draftKey(draft), data: { platform: 'craigslist', fields: log.map((r) => ({ name: r.name, ok: r.ok, msg: r.msg })) } }
       }).catch(() => {});
-      // Hand off to the images step: mark that this CL session still wants its photos, so the
-      // uploader page (a separate navigation) attaches them automatically when it loads.
-      chrome.storage.local.set({ ezlistClPendingPhotos: draftKey(draft) }).catch(() => {});
+      // Hand off to the images step (photos auto-attach there), and record this post as in-flight
+      // so publish-detection can attribute the eventual publish to this car across CL's page loads.
+      const clKey = draftKey(draft);
+      chrome.storage.local.set({
+        ezlistClPendingPhotos: clKey,
+        ezlistInFlight: { key: clKey, platform: 'craigslist', path: location.pathname, step: 'form' },
+      }).catch(() => {});
       setBtn(missed.length ? `Filled ✓ · add: ${missed.join(', ')}` : 'Filled ✓ — continue to photos');
       postStatus(missed.length ? `Filled ✓ · add manually: ${missed.join(', ')}` : 'Craigslist filled ✓');
     } catch (e) {
@@ -295,10 +299,82 @@
     }
   }
 
+  // ---- publish detection (confirmed publish only) ----
+  // Craigslist's post flow is a chain of full-page navigations on one /k/<hash>/<hash> base, with
+  // the step in a ?s= param: ?s=edit (form) → ?s=editimage (images) → ?s=preview (preview) → then
+  // PUBLISH lands on the SAME path with NO ?s param. We persist the in-flight car + last step
+  // across those loads; when we hit the bare path having last seen ?s=preview, that car published.
+  // Conservative like Facebook: only greens on a real preview→publish transition, never on fill.
+  const listedPlatforms = (entry) => {
+    if (!entry || typeof entry !== 'object') return {};
+    if ('listedAt' in entry) return { fb: { listedAt: entry.listedAt } };
+    return entry;
+  };
+
+  async function markPublished(key) {
+    if (!key) return;
+    const s = await chrome.storage.local.get(['ezlistListedVins']);
+    const listed = s.ezlistListedVins || {};
+    const entry = listedPlatforms(listed[key]);
+    if (entry.craigslist) return; // already recorded
+    entry.craigslist = { listedAt: new Date().toISOString() };
+    listed[key] = entry;
+    await chrome.storage.local.set({ ezlistListedVins: listed });
+    chrome.runtime.sendMessage({ type: 'EZLIST_ENQUEUE_EVENT', event: { type: 'publish_detected', clientKey: key, data: { platform: 'craigslist' } } }).catch(() => {});
+    postStatus('✓ Listed on Craigslist.');
+  }
+
+  async function trackStepAndPublish() {
+    const s = await chrome.storage.local.get(['ezlistInFlight']);
+    const inf = s.ezlistInFlight;
+    if (!inf || inf.platform !== 'craigslist') return;
+    if (location.pathname !== inf.path) return; // a different post — ignore
+    const step = new URLSearchParams(location.search).get('s'); // edit | editimage | preview | null
+    const known = { edit: 'form', editimage: 'images', preview: 'preview' };
+    if (step && known[step]) {
+      if (inf.step !== known[step]) { inf.step = known[step]; chrome.storage.local.set({ ezlistInFlight: inf }).catch(() => {}); }
+      return;
+    }
+    // Bare path (no ?s): a publish only if the last step we recorded for this post was the preview.
+    if (!step && inf.step === 'preview') {
+      await markPublished(inf.key);
+      chrome.storage.local.set({ ezlistInFlight: null }).catch(() => {});
+    }
+  }
+
+  // ---- pre-form picker steps (auto-advance for a Carxpert-initiated CL post) ----
+  // The post flow opens with two radio pickers before the vehicle form:
+  //   ?s=type → "for sale by dealer" (radio name="id" value="fsd")
+  //   category → "cars & trucks" (radio name="id", label "cars & trucks")
+  // Both are <form class="picker"> with a "continue" submit and DON'T auto-advance. We tick the
+  // right radio and click continue — but ONLY when the platform-tagged autoFill flag says this is
+  // a Carxpert-initiated CL post, so we never hijack a manual post the user started themselves.
+  let pickerAdvanced = false;
+  const pickRadio = (matchFn) => [...document.querySelectorAll('form.picker input[type="radio"][name="id"]')].find(matchFn) || null;
+  const radioLabelText = (r) => { const l = r.closest('label'); return (l ? l.textContent : '').replace(/\s+/g, ' ').trim().toLowerCase(); };
+  function selectAndContinue(radio) {
+    radio.checked = true;
+    radio.dispatchEvent(new Event('input', { bubbles: true }));
+    radio.dispatchEvent(new Event('change', { bubbles: true }));
+    const form = radio.closest('form');
+    const btn = form && form.querySelector('button[type="submit"], button[name="go"], .pickbutton');
+    if (btn) btn.click(); else if (form) form.submit();
+  }
+  async function maybeAdvancePicker() {
+    if (pickerAdvanced) return;
+    const s = await chrome.storage.local.get(['ezlistAutoFill']);
+    const af = s.ezlistAutoFill;
+    if (!af || af.platform !== 'craigslist') return; // only a Carxpert-initiated CL post
+    const typeRadio = pickRadio((r) => r.value === 'fsd') || pickRadio((r) => radioLabelText(r).includes('for sale by dealer'));
+    if (typeRadio) { pickerAdvanced = true; selectAndContinue(typeRadio); return; }
+    const catRadio = pickRadio((r) => radioLabelText(r).includes('cars & trucks'));
+    if (catRadio) { pickerAdvanced = true; selectAndContinue(catRadio); }
+  }
+
   chrome.runtime.onMessage.addListener((msg) => {
     if (!msg) return;
     if (msg.type === 'EZLIST_FILL') doFill();
-    else if (msg.type === 'EZLIST_DRAFT_UPDATED') { maybeShowButton(); maybeAuto(); }
+    else if (msg.type === 'EZLIST_DRAFT_UPDATED') { maybeShowButton(); maybeAuto(); maybeAdvancePicker(); }
   });
 
   // CL renders each step via full navigations; poll briefly so the right button appears (and any
@@ -308,8 +384,11 @@
     tries += 1;
     maybeShowButton();
     maybeAuto();
-    if ((btnEl && autoTried) || tries > 60) clearInterval(timer); // ~30s
+    maybeAdvancePicker();
+    if ((btnEl && autoTried) || pickerAdvanced || tries > 60) clearInterval(timer); // ~30s
   }, 500);
   maybeShowButton();
   maybeAuto();
+  maybeAdvancePicker(); // auto-select "for sale by dealer" / "cars & trucks" and continue
+  trackStepAndPublish(); // record this step / detect a completed publish
 })();

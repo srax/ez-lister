@@ -172,18 +172,28 @@
   // Conservative: we only mark a VIN "listed" when, AFTER we filled it, the page leaves
   // /marketplace/create/vehicle for a created-listing or your-listings URL. An abandoned
   // form never produces that transition, so we never mark green on a form the user bailed on.
+  // ezlistListedVins entries are per-platform: { fb?:{listedAt}, craigslist?:{...} }. Legacy
+  // entries were flat { listedAt } (all Facebook) — normalize them so old data reads as { fb }.
+  const listedPlatforms = (entry) => {
+    if (!entry || typeof entry !== 'object') return {};
+    if ('listedAt' in entry) return { fb: { listedAt: entry.listedAt } };
+    return entry;
+  };
+
   async function markListed(key) {
     if (!key) return;
     const s = await chrome.storage.local.get(['ezlistListedVins', 'ezlistListings', 'ezlistDraft']);
     const listed = s.ezlistListedVins || {};
     const listings = s.ezlistListings || {};
     const now = new Date().toISOString();
-    const alreadyGreen = !!listed[key];
+    const entry = listedPlatforms(listed[key]);
+    const alreadyGreen = !!entry.fb;
     const alreadyActive = listings[key] && listings[key].status === 'active';
     if (alreadyGreen && alreadyActive) return;
 
-    // ezlistListedVins stays the source of truth for the dealer-page green button.
-    if (!alreadyGreen) listed[key] = { listedAt: now };
+    // ezlistListedVins is the source of truth for the dealer-page green button — per platform.
+    if (!alreadyGreen) entry.fb = { listedAt: now };
+    listed[key] = entry;
 
     // ezlistListings is the richer, stats-facing record. Capture the vehicle fields
     // from the draft we just filled (keys match unless the user switched cars mid-flow).
