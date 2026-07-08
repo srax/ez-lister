@@ -14,6 +14,7 @@
   "host_permissions": [
     "https://www.alexandriatoyota.com/*",
     "https://*.facebook.com/*",
+    "https://post.craigslist.org/*",
     "http://127.0.0.1:3737/*",
     "http://localhost:3737/*",
     "https://carxpert-tools-backend-staging.up.railway.app/*"
@@ -45,7 +46,7 @@
         "https://www.alexandriatoyota.com/*"
       ],
       "js": [
-        "lib/mappers.js",
+        "lib/mappers.core.js",
         "dealerContent.js"
       ],
       "run_at": "document_idle"
@@ -56,10 +57,34 @@
         "https://web.facebook.com/*"
       ],
       "js": [
-        "lib/mappers.js",
+        "lib/mappers.core.js",
+        "lib/mappers.fb.js",
+        "lib/fillkit.js",
         "facebookContent.js"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://post.craigslist.org/*"
+      ],
+      "js": [
+        "lib/mappers.core.js",
+        "lib/mappers.craigslist.js",
+        "lib/fillkit.js",
+        "craigslistContent.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://post.craigslist.org/*"
+      ],
+      "js": [
+        "craigslistUpload.js"
+      ],
+      "run_at": "document_idle",
+      "world": "MAIN"
     }
   ]
 }

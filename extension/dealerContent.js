@@ -18,8 +18,8 @@
     }
   }).catch(() => {});
 
-  // Pure helpers shared with the FB filler (lib/mappers.js, loaded first via manifest).
-  const M = globalThis.CarxpertShared;
+  // Pure decoders shared across platforms (lib/mappers.core.js, loaded first via manifest).
+  const M = globalThis.CarxpertCore;
 
   const DEALER = {
     // Default Marketplace listing location for this dealer.
@@ -190,12 +190,15 @@
   }
 
   // ---- button + click flow ----
+  // "Where to post" selection (ezlistPrefs.platform, set in the side panel); FB is the default.
+  let platform = 'fb';
   // Pre-warm the FB create tab on first hover (intent signal) so its heavy load overlaps the user's click.
   let prewarmed = false;
   function maybePrewarm() {
-    if (prewarmed) return;
+    // Prewarm only helps Facebook's single-page create form; Craigslist's multi-page flow can't be prewarmed.
+    if (prewarmed || platform !== 'fb') return;
     prewarmed = true;
-    chrome.runtime.sendMessage({ type: 'EZLIST_PREWARM' }).catch(() => {});
+    chrome.runtime.sendMessage({ type: 'EZLIST_PREWARM', platform: 'fb' }).catch(() => {});
   }
 
   // ---- listed-state (green "✓ Added") ----
@@ -212,8 +215,12 @@
       .then((r) => { const next = !!(r && r.ok && r.auth && r.auth.entitled); if (next !== entitled) { entitled = next; repaintAll(); } })
       .catch(() => {});
   }
-  chrome.storage.local.get(['ezlistListedVins'])
-    .then((s) => { listedKeys = s.ezlistListedVins || {}; repaintAll(); })
+  chrome.storage.local.get(['ezlistListedVins', 'ezlistPrefs'])
+    .then((s) => {
+      listedKeys = s.ezlistListedVins || {};
+      platform = (s.ezlistPrefs && s.ezlistPrefs.platform) || 'fb';
+      repaintAll();
+    })
     .catch(() => {});
   refreshEntitled();
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -223,6 +230,7 @@
       repaintAll();
     }
     if (changes.ezlistMe || changes.ezlistAuthToken) refreshEntitled();
+    if (changes.ezlistPrefs) platform = (changes.ezlistPrefs.newValue && changes.ezlistPrefs.newValue.platform) || 'fb';
   });
   function cardKey(card, vdpUrl) {
     const vin = (card.getAttribute('data-vin') || '').toUpperCase();
@@ -277,16 +285,21 @@
     try {
       const draft = extractVehicle(scope, sourceUrl);
       if (!draft.vin) throw new Error('no VIN found on this card');
-      await chrome.runtime.sendMessage({ type: 'EZLIST_SAVE_DRAFT', draft, autoFill: true });
+      await chrome.runtime.sendMessage({ type: 'EZLIST_SAVE_DRAFT', draft, autoFill: true, platform, key: (draft.vin || '').toUpperCase() });
       // Overlap: start downloading photos now, in parallel with the FB tab opening + form fill.
-      if (draft.photoBaseUrl) {
+      // (FB uploads photos during the fill; Craigslist adds them on a later step, so skip there.)
+      if (draft.photoBaseUrl && platform === 'fb') {
         chrome.runtime.sendMessage({ type: 'EZLIST_PREFETCH_IMAGES', baseUrl: draft.photoBaseUrl, ext: draft.photoExt }).catch(() => {});
       }
-      await chrome.runtime.sendMessage({ type: 'EZLIST_OPEN_FACEBOOK' });
-      btn.textContent = '✓ Opened FB';
+      await chrome.runtime.sendMessage({ type: 'EZLIST_OPEN_PLATFORM', platform });
+      btn.textContent = platform === 'fb' ? '✓ Opened FB' : '✓ Opened';
       prewarmed = false; // allow warming a fresh tab for the next car
     } catch (e) {
-      btn.textContent = 'Error';
+      // "Extension context invalidated" = this tab's content script is stale after an
+      // extension reload; a page refresh re-injects a fresh one. Guide the user rather than
+      // showing a bare "Error".
+      const stale = /context invalidated/i.test((e && e.message) || '');
+      btn.textContent = stale ? '↻ Refresh page' : 'Error';
       console.error('[ezlist] list failed:', e);
     } finally {
       // Restore the correct steady state (green if since published, else "⚡ List").
@@ -376,8 +389,8 @@
     try {
       const draft = extractVehicle(vdpVehicleEl(), location.href);
       if (!draft.vin) { sendResponse({ ok: false, error: 'No vehicle data found on this page.' }); return false; }
-      chrome.runtime.sendMessage({ type: 'EZLIST_SAVE_DRAFT', draft }, () => {
-        chrome.runtime.sendMessage({ type: 'EZLIST_OPEN_FACEBOOK' });
+      chrome.runtime.sendMessage({ type: 'EZLIST_SAVE_DRAFT', draft, autoFill: true, platform, key: (draft.vin || '').toUpperCase() }, () => {
+        chrome.runtime.sendMessage({ type: 'EZLIST_OPEN_PLATFORM', platform });
         sendResponse({ ok: true, draft });
       });
       return true; // async sendResponse

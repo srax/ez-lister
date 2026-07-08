@@ -1,21 +1,27 @@
 'use strict';
 
-importScripts('lib/lease.js'); // offline ES256 lease verifier (globalThis.CarxpertLease)
+importScripts('lib/lease.js', 'lib/platforms.js'); // ES256 lease verifier + platform registry
+
+const { getPlatform } = globalThis.CarxpertPlatforms;
 
 const BACKEND_URL = 'http://127.0.0.1:3737';
 // Shared secret for the gated production backend (sent as the x-carxpert-token header).
 // Empty in dev — the local backend is open; the store build injects the real value.
 // See scripts/build-extension.js.
 const BACKEND_TOKEN = '';
-const MARKETPLACE_VEHICLE_CREATE_URL = 'https://www.facebook.com/marketplace/create/vehicle';
 const DEALER_SEEN_TTL_MS = 30 * 60 * 1000;
 const CHECKOUT_WATCH_MS = 2 * 60 * 1000;
 const CHECKOUT_POLL_MS = 3000;
 const CHECKOUT_SYNC_EVERY_MS = 30 * 1000;
 
-// A single pre-warmed FB "create vehicle" tab so the heavy page load happens before the user clicks List.
+// A single pre-warmed "create listing" tab so the heavy page load happens before the user
+// clicks List. Tagged with the platform it was opened for, so it's only reused for that
+// platform's fill (Facebook today; Craigslist/OfferUp reuse the same slot as they ship).
 let prewarmTabId = null;
-chrome.tabs.onRemoved.addListener((id) => { if (id === prewarmTabId) prewarmTabId = null; });
+let prewarmPlatform = null;
+chrome.tabs.onRemoved.addListener((id) => {
+  if (id === prewarmTabId) { prewarmTabId = null; prewarmPlatform = null; }
+});
 
 // Clicking the toolbar icon opens the docked side panel (Chrome 114+).
 function enableSidePanelOnActionClick() {
@@ -62,24 +68,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'EZLIST_SAVE_DRAFT':
+      // Platform-tagged one-shot: { platform, key } when auto-fill is requested, else false.
+      // Each platform's content script only fires on a flag that names it, so an open FB tab
+      // never auto-fills a draft meant for Craigslist and vice versa. Dealer/legacy callers
+      // send no platform → defaults to 'fb'.
       chrome.storage.local.set({
         ezlistDraft: message.draft,
-        ezlistAutoFill: !!message.autoFill,
+        ezlistAutoFill: message.autoFill ? { platform: message.platform || 'fb', key: message.key || '' } : false,
         ezlistLastExtractedAt: new Date().toISOString()
       }, () => sendResponse({ ok: true }));
       return true;
 
     case 'EZLIST_PREWARM':
-      prewarm().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      prewarm(message.platform).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
+    // EZLIST_OPEN_FACEBOOK kept for the FB-only dealer/panel callers; platform defaults to fb.
     case 'EZLIST_OPEN_FACEBOOK':
-      openOrReuseFacebook().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+    case 'EZLIST_OPEN_PLATFORM':
+      openOrReusePlatformTab(message.platform).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
     // Side panel asked to (re)fill the form with the current stored draft.
     case 'EZLIST_FILL_NOW':
-      fillFacebook(message.key).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      fillPlatform(message.platform, message.key).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
     case 'EZLIST_PREFETCH_IMAGES':
@@ -174,43 +186,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-// ---- pre-warm / reuse the FB create tab ----
-async function prewarm() {
-  if (prewarmTabId != null) {
+// ---- pre-warm / reuse a platform's create tab ----
+function clearPrewarm() { prewarmTabId = null; prewarmPlatform = null; }
+
+async function prewarm(platformId) {
+  const platform = getPlatform(platformId);
+  // Only reuse an existing prewarm tab if it's for the same platform.
+  if (prewarmTabId != null && prewarmPlatform === platform.id) {
     try { await chrome.tabs.get(prewarmTabId); return { ok: true, already: true }; }
-    catch { prewarmTabId = null; }
+    catch { clearPrewarm(); }
   }
   await chrome.storage.local.set({ ezlistAutoFill: false }); // don't auto-fill a stale draft on prewarm load
-  const tab = await chrome.tabs.create({ url: MARKETPLACE_VEHICLE_CREATE_URL, active: false });
+  const tab = await chrome.tabs.create({ url: platform.createUrl, active: false });
   prewarmTabId = tab.id;
+  prewarmPlatform = platform.id;
   return { ok: true, tabId: tab.id };
 }
 
-async function openOrReuseFacebook() {
-  if (prewarmTabId != null) {
+async function openOrReusePlatformTab(platformId) {
+  const platform = getPlatform(platformId);
+  if (prewarmTabId != null && prewarmPlatform === platform.id) {
     try {
       const tab = await chrome.tabs.get(prewarmTabId);
-      if (tab && /\/marketplace\/create\/vehicle/.test(tab.url || tab.pendingUrl || '')) {
+      if (tab && platform.isCreateUrl(tab.url || tab.pendingUrl || '')) {
         await chrome.tabs.update(prewarmTabId, { active: true });
         if (tab.windowId != null) chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
         chrome.tabs.sendMessage(prewarmTabId, { type: 'EZLIST_DRAFT_UPDATED' }).catch(() => {});
         const id = prewarmTabId;
-        prewarmTabId = null; // consumed
+        clearPrewarm(); // consumed
         return { ok: true, tabId: id, reused: true };
       }
     } catch { /* fall through to new tab */ }
-    prewarmTabId = null;
+    clearPrewarm();
   }
-  const tab = await chrome.tabs.create({ url: MARKETPLACE_VEHICLE_CREATE_URL, active: true });
+  const tab = await chrome.tabs.create({ url: platform.createUrl, active: true });
   return { ok: true, tabId: tab.id, reused: false };
 }
 
-// Ensure a create/vehicle tab is open and tell it to fill with the latest stored draft.
+// Ensure the platform's create tab is open and tell it to fill with the latest stored draft.
 // A freshly-created tab fills itself on load (via the ezlistAutoFill flag the panel set);
-// an already-open tab needs the explicit nudge.
-async function fillFacebook(key) {
-  const res = await openOrReuseFacebook();
-  if (!res || !res.tabId) return { ok: false, error: 'no Facebook tab' };
+// an already-open tab needs the explicit nudge. The right platform's content script is the
+// only one on that tab, so a plain EZLIST_FILL routes correctly without platform branching.
+async function fillPlatform(platformId, key) {
+  const res = await openOrReusePlatformTab(platformId);
+  if (!res || !res.tabId) return { ok: false, error: 'no target tab' };
   try { await chrome.tabs.sendMessage(res.tabId, { type: 'EZLIST_FILL', key }); }
   catch { /* tab still loading — it will auto-fill once the content script boots */ }
   return { ok: true, tabId: res.tabId, reused: res.reused };

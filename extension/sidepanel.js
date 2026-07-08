@@ -4,7 +4,11 @@
 // tune the listing (description, emoji, unit, toggles), then hands off to the
 // Facebook content script to fill the form. The user always reviews + Publishes.
 
-const DEFAULT_PREFS = { emoji: '', unit: 'mi', category: '', dealerDesc: true, mileage: true, lang: 'en', aiDesc: false };
+const DEFAULT_PREFS = { emoji: '', unit: 'mi', category: '', dealerDesc: true, mileage: true, lang: 'en', aiDesc: false, platform: 'fb' };
+
+// Where-to-post labels for status copy (must match the #platform <option> values).
+const PLATFORM_LABEL = { fb: 'Facebook Marketplace', craigslist: 'Craigslist', offerup: 'OfferUp', cars: 'Cars.com' };
+const platformLabel = (p) => PLATFORM_LABEL[p] || 'Facebook Marketplace';
 
 const el = (id) => document.getElementById(id);
 const ui = {
@@ -168,6 +172,7 @@ function updateCharCount() {
 function applyPrefsToUI() {
   ui.emoji.value = state.prefs.emoji;
   ui.category.value = state.prefs.category;
+  ui.platform.value = state.prefs.platform || 'fb';
   ui.lang.value = state.prefs.lang || 'en';
   ui.unitMi.classList.toggle('on', state.prefs.unit === 'mi');
   ui.unitKm.classList.toggle('on', state.prefs.unit === 'km');
@@ -464,7 +469,8 @@ function wireEvents() {
     const btn = e.target.closest('.lst-sold-btn');
     if (btn && btn.dataset.key) markSold(btn.dataset.key);
   });
-  ui.openfb.addEventListener('click', () => chrome.runtime.sendMessage({ type: 'EZLIST_OPEN_FACEBOOK' }));
+  ui.openfb.addEventListener('click', () => chrome.runtime.sendMessage({ type: 'EZLIST_OPEN_PLATFORM', platform: ui.platform.value || 'fb' }));
+  ui.platform.addEventListener('change', () => savePref('platform', ui.platform.value, false));
   ui.fill.addEventListener('click', onFill);
   ui.aiDraft.addEventListener('click', onAiDraft);
   ui.translate.addEventListener('click', onTranslate);
@@ -540,18 +546,26 @@ async function onFill() {
   state.filling = true;
   ui.fill.disabled = true;
   const original = ui.fill.textContent;
+  const platform = ui.platform.value || 'fb';
+  const name = platformLabel(platform);
   ui.fill.textContent = 'Filling…';
   setStatus('Saving listing…');
   try {
     const fillDraft = { ...state.draft, description: ui.desc.value };
     if (!state.prefs.mileage) delete fillDraft.mileage;            // "Add mileage" off → leave blank
-    if (state.prefs.category) fillDraft.bodyType = state.prefs.category; // category override → mapped by FB filler
-    await chrome.runtime.sendMessage({ type: 'EZLIST_SAVE_DRAFT', draft: fillDraft, autoFill: true });
-    setStatus('Opening Facebook & filling…');
-    const res = await chrome.runtime.sendMessage({ type: 'EZLIST_FILL_NOW', key: keyForDraft(fillDraft) });
-    if (!res || !res.ok) throw new Error((res && res.error) || 'Could not reach the Facebook form.');
-    // The FB content script streams per-field progress and the final result back
-    // via EZLIST_FILL_STATUS, so we don't claim completion prematurely here.
+    if (state.prefs.category) fillDraft.bodyType = state.prefs.category; // category override → mapped by the filler
+    const key = keyForDraft(fillDraft);
+    await chrome.runtime.sendMessage({ type: 'EZLIST_SAVE_DRAFT', draft: fillDraft, autoFill: true, platform, key });
+    // Facebook deep-links straight to the create form so it fills immediately. Craigslist's
+    // post flow is multi-page (sign in → area → category), so we open it and the vehicle form
+    // auto-fills once the user reaches it (driven by the platform-tagged autoFill flag).
+    setStatus(platform === 'craigslist'
+      ? 'Opening Craigslist — sign in, pick your area & category, and the vehicle form fills automatically.'
+      : `Opening ${name} & filling…`);
+    const res = await chrome.runtime.sendMessage({ type: 'EZLIST_FILL_NOW', platform, key });
+    if (!res || !res.ok) throw new Error((res && res.error) || `Could not reach the ${name} form.`);
+    // The content script streams per-field progress and the final result back via
+    // EZLIST_FILL_STATUS, so we don't claim completion prematurely here.
   } catch (e) {
     setStatus(e.message || 'Something went wrong.', true);
   } finally {
