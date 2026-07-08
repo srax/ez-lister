@@ -21,3 +21,4 @@ dist/*.zip
 
 # stray subagent scratch notes (kept locally, not source)
 research.md/
+.docs/
