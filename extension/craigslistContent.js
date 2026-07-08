@@ -105,10 +105,17 @@
     log.push(fillSel(SEL.titleStatus, clmap.mapTitleStatus(draft.titleStatus), 'Title status'));
     log.push(fillText(SEL.geographicArea, draft.location, 'City/area'));
     log.push(fillText(SEL.body, draft.description, 'Description'));
-    // ZIP is required by CL but isn't in the neutral draft (only a city string) — flag it.
-    const postalEl = q(SEL.postal);
-    if (postalEl && !String(postalEl.value || '').trim()) {
-      log.push({ name: 'ZIP code', ok: false, msg: 'enter manually (required)' });
+    // ZIP: fill it when the scraped data carries one — an explicit draft.postal, or a 5-digit ZIP
+    // embedded in the location string (e.g. "Alexandria, VA 22305"). Otherwise leave it for manual
+    // entry (CL requires it; today's location is just a city string with no ZIP).
+    const zip = draft.postal || (String(draft.location || '').match(/\b\d{5}(?:-\d{4})?\b/) || [])[0];
+    if (zip) {
+      log.push(fillText(SEL.postal, zip, 'ZIP code'));
+    } else {
+      const postalEl = q(SEL.postal);
+      if (postalEl && !String(postalEl.value || '').trim()) {
+        log.push({ name: 'ZIP code', ok: false, msg: 'enter manually (required)' });
+      }
     }
     return log;
   }
