@@ -94,6 +94,7 @@ test('mapTransmission: only /manual/ maps to Manual', () => {
 // ---- optionCandidates: US canonical first, UK composer spelling as fallback ----
 test('optionCandidates: locale-different values get the UK fallback second', () => {
   assert.deepEqual(M.optionCandidates('Car/Truck'), ['Car/Truck', 'Car/van']);
+  assert.deepEqual(M.optionCandidates('Car/van'), ['Car/Truck', 'Car/van']);
   assert.deepEqual(M.optionCandidates('SUV'), ['SUV', '4x4']);
   assert.deepEqual(M.optionCandidates('Truck'), ['Truck', '4x4']);
   assert.deepEqual(M.optionCandidates('Sedan'), ['Sedan', 'Saloon']);

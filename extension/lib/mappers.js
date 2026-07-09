@@ -37,8 +37,11 @@
     Wagon: 'Estate', Minivan: 'MPV/People carrier', Gasoline: 'Petrol', Gray: 'Grey'
   };
   // Ordered option candidates for a canonical (US) value: try US first, UK spelling second.
+  // Accept the legacy UK vehicle-type draft too; older extracted drafts stored "Car/van",
+  // and a US composer only offers "Car/Truck".
   const optionCandidates = (value) => {
     if (!value) return [];
+    if (value === 'Car/van') return ['Car/Truck', 'Car/van'];
     const uk = UK_FALLBACK[value];
     return uk ? [value, uk] : [value];
   };

@@ -192,7 +192,7 @@
 
     // 1) Vehicle type first — it gates every downstream field (they don't exist in the
     // DOM until it's chosen). US composer says "Car/Truck", UK says "Car/van".
-    await step(selectDropdown('Vehicle type', draft.vehicleType ? [draft.vehicleType] : ['Car/Truck', 'Car/van']));
+    await step(selectDropdown('Vehicle type', draft.vehicleType || 'Car/Truck'));
     await waitForLabel('Year'); // dependent fields render after Vehicle type is chosen
 
     // 2) the rest
