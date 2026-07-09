@@ -1,3 +1,13 @@
+/* Manrope bundled locally (variable, 200–800, latin subset) — no Google Fonts round-trip,
+   no FOUT on panel open, works offline. Non-latin glyphs fall back to system-ui as before. */
+@font-face{
+  font-family:'Manrope';
+  font-style:normal;
+  font-weight:200 800;
+  font-display:swap;
+  src:url('assets/manrope-latin.woff2') format('woff2');
+}
+
 :root{
   /* Single knob to shrink/grow the whole panel UI. 1 = 100%; lower = more compact. */
   --ui-scale:0.8;
@@ -39,8 +49,10 @@ body{
 .brand-name{ font-size:15px; font-weight:800; color:#191b29; letter-spacing:-0.3px; line-height:1.05; }
 .brand-tag{ display:flex; align-items:center; gap:5px; margin-top:3px; }
 .brand-tag span{ font-size:11.5px; font-weight:700; color:#6f7257; letter-spacing:0.1px; }
-.icon-btn{ width:30px; height:30px; border:none; background:transparent; border-radius:8px; color:#9a9caa; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+.icon-btn{ width:30px; height:30px; border:none; background:transparent; border-radius:8px; color:#9a9caa; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;
+  transition:transform .14s cubic-bezier(0.23,1,0.32,1), background .14s ease, color .14s ease; }
 .icon-btn:hover:not(:disabled){ background:#f3f4f7; color:#5b5e6e; }
+.icon-btn:active:not(:disabled){ transform:scale(0.93); }
 .icon-btn:disabled{ opacity:.45; cursor:default; }
 
 /* body */
@@ -56,7 +68,10 @@ body{
 .veh-photo{ flex-shrink:0; width:92px; height:69px; object-fit:cover; border-radius:10px; background:#f0f1f4; box-shadow:0 1px 2px rgba(15,18,40,0.08); }
 .veh-top{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .veh-title{ font-size:15px; font-weight:800; color:#191b29; letter-spacing:-0.2px; }
-.veh-listed{ font-size:11px; font-weight:800; color:#178a3f; background:#e6f6ec; border:1px solid #bfe6cd; padding:2px 8px; border-radius:999px; white-space:nowrap; }
+/* pops when it appears — a real publish is a rare success moment worth a beat of delight */
+.veh-listed{ font-size:11px; font-weight:800; color:#178a3f; background:#e6f6ec; border:1px solid #bfe6cd; padding:2px 8px; border-radius:999px; white-space:nowrap;
+  animation:badgePop .25s cubic-bezier(0.23,1,0.32,1); }
+@keyframes badgePop{ from{ opacity:0; transform:scale(.8); } to{ opacity:1; transform:none; } }
 .veh-meta{ margin-top:5px; font-size:13px; font-weight:700; color:var(--ink); }
 .veh-meta .price{ color:#191b29; }
 .veh-vin{ margin-top:3px; font-size:11.5px; font-weight:600; color:#9b9eac; font-variant-numeric:tabular-nums; }
@@ -99,6 +114,9 @@ body{
   list-style:none; background:#fff; border:1px solid var(--input-border); border-radius:12px;
   box-shadow:0 10px 30px rgba(20,24,55,.14); max-height:264px; overflow-y:auto; animation:cselIn .13s ease; }
 @keyframes cselIn{ from{ opacity:0; transform:translateY(-4px); } to{ opacity:1; transform:none; } }
+/* exit — quicker than the entry, so closing never feels laggy (JS removes it after ~90ms) */
+.csel-menu.closing{ opacity:0; transform:translateY(-3px); pointer-events:none;
+  transition:opacity 90ms ease, transform 90ms ease; animation:none; }
 .csel-opt{ display:flex; align-items:center; gap:9px; padding:8px 10px; border-radius:8px;
   font-size:13px; font-weight:600; color:var(--text); cursor:pointer; }
 .csel-lg .csel-opt{ font-size:14.5px; }
@@ -120,7 +138,9 @@ body{
 /* segmented */
 .unit-field{ margin-top:11px; }
 .seg{ display:flex; gap:4px; background:#f3f4f7; border:1px solid #ebecf1; border-radius:11px; padding:3px; }
-.seg-btn{ flex:1; padding:8px; font-size:13px; font-weight:700; border:none; border-radius:8px; cursor:pointer; font-family:inherit; background:transparent; color:#8a8d9b; transition:all .12s; }
+.seg-btn{ flex:1; padding:8px; font-size:13px; font-weight:700; border:none; border-radius:8px; cursor:pointer; font-family:inherit; background:transparent; color:#8a8d9b;
+  transition:background .12s ease, color .12s ease, box-shadow .12s ease, transform .12s cubic-bezier(0.23,1,0.32,1); }
+.seg-btn:active{ transform:scale(0.96); }
 .seg-btn.on{ background:var(--accent); color:var(--ink); font-weight:800; box-shadow:0 1px 3px rgba(20,24,55,0.12); }
 
 .divider{ height:1px; background:var(--line); margin:18px 0; }
@@ -132,25 +152,30 @@ body{
 .vsl-in{ width:100%; min-height:180px; resize:vertical; padding:13px 14px; font-size:15px; font-weight:500; line-height:1.55;
   color:var(--text); background:var(--input-bg); border:1px solid var(--input-border); border-radius:14px; font-family:inherit;
   letter-spacing:0.1px; }
-.vsl-in:focus{ outline:none; border-color:#cfd1dd; }
+.vsl-in:focus{ outline:none; border-color:var(--accent-border); box-shadow:0 0 0 3px var(--accent-soft); }
 .vsl-in::placeholder{ color:#aeb0bd; }
 
-/* buttons */
+/* buttons — every pressable acknowledges the press (scale) and eases its hover */
 .ghost-btn{ margin-top:9px; width:100%; padding:10px; font-size:13px; font-weight:700; color:var(--label);
   background:#fff; border:1px solid var(--input-border); border-radius:11px; cursor:pointer; font-family:inherit;
-  display:flex; align-items:center; justify-content:center; gap:7px; }
+  display:flex; align-items:center; justify-content:center; gap:7px;
+  transition:transform .14s cubic-bezier(0.23,1,0.32,1), border-color .14s ease, background .14s ease; }
 .ghost-btn:hover:not(:disabled){ border-color:#d6d8e0; background:#fafafc; }
+.ghost-btn:active:not(:disabled){ transform:scale(0.97); }
 .ghost-btn:disabled{ opacity:.6; cursor:default; }
 .ghost-btn.compact{ margin-top:0; flex:0 0 auto; padding:11px 14px; width:auto; white-space:nowrap; }
 
 /* "Draft with A.I." — elevated a notch above a plain ghost button */
-#ai-draft{ background:var(--accent-soft); border-color:var(--accent-border); color:var(--ink); font-weight:800; transition:background .14s ease, border-color .14s ease, box-shadow .14s ease; }
+#ai-draft{ background:var(--accent-soft); border-color:var(--accent-border); color:var(--ink); font-weight:800;
+  transition:transform .14s cubic-bezier(0.23,1,0.32,1), background .14s ease, border-color .14s ease, box-shadow .14s ease; }
 #ai-draft:hover:not(:disabled){ background:rgba(231,248,82,0.30); border-color:var(--accent); box-shadow:0 1px 5px -2px var(--accent-shadow); }
 #ai-draft svg{ stroke:var(--ink); }
 
 .accent-btn{ background:var(--accent); color:var(--ink); border:none; border-radius:11px; cursor:pointer;
-  font-family:inherit; font-weight:800; font-size:13px; padding:11px 16px; box-shadow:0 6px 16px -6px var(--accent-shadow); }
+  font-family:inherit; font-weight:800; font-size:13px; padding:11px 16px; box-shadow:0 6px 16px -6px var(--accent-shadow);
+  transition:transform .14s cubic-bezier(0.23,1,0.32,1), filter .14s ease; }
 .accent-btn:hover:not(:disabled){ filter:brightness(0.96); }
+.accent-btn:active:not(:disabled){ transform:scale(0.97); }
 .accent-btn:disabled{ opacity:.55; cursor:default; box-shadow:none; }
 .accent-btn.sm{ padding:9px 16px; white-space:nowrap; }
 .accent-btn.primary{ flex:1; padding:13px 16px; font-size:14px; }
@@ -171,9 +196,12 @@ body{
 .toggle:disabled .toggle-label{ color:#9a9caa; }
 .toggle-hint{ font-size:10.5px; font-weight:600; color:#aeb0bd; }
 .track{ display:inline-flex; align-items:center; width:38px; height:22px; border-radius:999px; padding:2px; flex-shrink:0;
-  transition:background .15s; background:#d9dae2; justify-content:flex-start; }
-.toggle.on .track{ background:var(--accent); justify-content:flex-end; }
-.knob{ width:18px; height:18px; border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,0.2); }
+  transition:background .18s ease; background:#d9dae2; }
+.toggle.on .track{ background:var(--accent); }
+/* knob slides via transform (justify-content can't animate — the knob used to teleport) */
+.knob{ width:18px; height:18px; border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,0.2);
+  transition:transform .18s cubic-bezier(0.23,1,0.32,1); }
+.toggle.on .knob{ transform:translateX(16px); }
 .hairline{ height:1px; background:#f4f5f7; }
 
 /* queue */
@@ -186,13 +214,17 @@ body{
 .queue-count{ background:var(--ink); color:var(--accent); font-size:12px; font-weight:800; padding:3px 9px; border-radius:999px; font-variant-numeric:tabular-nums; }
 
 /* ===== views (lister ⇄ stats) ===== */
-.view{ display:flex; flex-direction:column; flex:1; min-height:0; }
+/* re-triggers each time a view is unhidden — the "flip card" switch gets a soft fade+rise */
+.view{ display:flex; flex-direction:column; flex:1; min-height:0; animation:viewIn .18s cubic-bezier(0.23,1,0.32,1); }
 .view[hidden]{ display:none; }
+@keyframes viewIn{ from{ opacity:0; transform:translateY(6px); } to{ opacity:1; transform:none; } }
 
 /* header Stats button */
 .stats-btn{ display:flex; align-items:center; gap:6px; height:30px; padding:0 11px 0 9px; border:1px solid var(--input-border);
-  background:var(--input-bg); border-radius:9px; color:#23263a; cursor:pointer; font-family:inherit; font-size:12.5px; font-weight:700; flex-shrink:0; }
+  background:var(--input-bg); border-radius:9px; color:#23263a; cursor:pointer; font-family:inherit; font-size:12.5px; font-weight:700; flex-shrink:0;
+  transition:transform .14s cubic-bezier(0.23,1,0.32,1), border-color .14s ease, background .14s ease; }
 .stats-btn:hover{ border-color:var(--ink); background:#fff; }
+.stats-btn:active{ transform:scale(0.96); }
 .stats-btn svg{ stroke:var(--ink); }
 
 /* ===== stats view ===== */
@@ -276,13 +308,15 @@ body{
 .vin-label{ font-weight:800; color:#6b7280; }
 .listing-actions{ display:flex; flex-direction:column; gap:6px; flex-shrink:0; }
 .lst-sold-btn, .lst-view-btn{ font-size:11.5px; font-weight:700; color:#5d6070; background:#fff; border:1px solid var(--input-border);
-  border-radius:9px; padding:7px 11px; cursor:pointer; font-family:inherit; white-space:nowrap; text-align:center; }
+  border-radius:9px; padding:7px 11px; cursor:pointer; font-family:inherit; white-space:nowrap; text-align:center;
+  transition:transform .14s cubic-bezier(0.23,1,0.32,1), border-color .14s ease, color .14s ease; }
 .lst-sold-btn:hover, .lst-view-btn:hover{ border-color:var(--ink); color:var(--ink); }
+.lst-sold-btn:active:not(:disabled), .lst-view-btn:active:not(:disabled){ transform:scale(0.96); }
 .lst-sold-btn.undo{ color:#a4a6b2; }
 .lst-view-btn[disabled]{ opacity:.45; cursor:default; }
 .lst-view-btn[disabled]:hover{ border-color:var(--input-border); color:#5d6070; }
 .lst-menu{ position:fixed; z-index:200; min-width:160px; background:#fff; border:1px solid var(--input-border);
-  border-radius:10px; box-shadow:0 8px 24px rgba(20,24,55,.16); padding:4px; }
+  border-radius:10px; box-shadow:0 8px 24px rgba(20,24,55,.16); padding:4px; animation:cselIn .13s ease; }
 .lst-menu-item{ display:block; width:100%; text-align:left; font-size:12.5px; font-weight:600; color:var(--text);
   background:none; border:0; border-radius:7px; padding:8px 10px; cursor:pointer; font-family:inherit; }
 .lst-menu-item:hover{ background:var(--line); }
@@ -380,7 +414,23 @@ body{
 .dealer-request textarea{ width:100%; border:1px solid var(--input-border); border-radius:10px; background:var(--input-bg); color:var(--text); font:600 13px 'Manrope',sans-serif; padding:9px 10px; }
 .dealer-request textarea{ resize:vertical; min-height:72px; line-height:1.4; }
 .dealer-request input:focus,
-.dealer-request textarea:focus{ outline:none; border-color:#cfd1dd; background:#fff; }
+.dealer-request textarea:focus{ outline:none; border-color:var(--accent-border); background:#fff; box-shadow:0 0 0 3px var(--accent-soft); }
 .dealer-request-actions{ display:flex; gap:8px; align-items:center; margin-top:2px; }
 .dealer-request-actions .ghost-btn{ flex:1; }
 .dealer-request-actions .accent-btn{ flex:1; }
+
+/* ===== keyboard focus — one consistent accent ring, only for keyboard navigation ===== */
+button:focus-visible,
+.csel-trigger:focus-visible,
+.toggle:focus-visible{ outline:none; box-shadow:0 0 0 3px var(--accent-soft), 0 0 0 1px var(--accent-border); }
+
+/* ===== reduced motion — keep state changes instant, drop movement ===== */
+@media (prefers-reduced-motion: reduce){
+  .view, .veh-listed, .csel-menu, .lst-menu{ animation:none; }
+  .knob, .csel-menu.closing{ transition:none; }
+  .accent-btn, .ghost-btn, .seg-btn, .stats-btn, .icon-btn,
+  .lst-sold-btn, .lst-view-btn, .csel-trigger, .csel-chev{ transition:none; }
+  .accent-btn:active:not(:disabled), .ghost-btn:active:not(:disabled), .seg-btn:active,
+  .stats-btn:active, .icon-btn:active:not(:disabled),
+  .lst-sold-btn:active:not(:disabled), .lst-view-btn:active:not(:disabled){ transform:none; }
+}

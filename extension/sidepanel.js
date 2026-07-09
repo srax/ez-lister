@@ -291,15 +291,20 @@ function enhanceSelect(select) {
       li.classList.toggle('is-selected', on);
     });
   };
+  let closeTimer = null;
   const close = () => {
-    if (menu.hidden) return;
-    menu.hidden = true;
+    if (menu.hidden || menu.classList.contains('closing')) return;
     root.classList.remove('open');
     trigger.setAttribute('aria-expanded', 'false');
     setActive(-1);
+    // Exit beat: fade out (~90ms, quicker than the entry) before actually hiding.
+    menu.classList.add('closing');
+    closeTimer = setTimeout(() => { menu.hidden = true; menu.classList.remove('closing'); }, 90);
   };
   const open = () => {
-    if (!menu.hidden) return;
+    if (!menu.hidden && !menu.classList.contains('closing')) return;
+    clearTimeout(closeTimer); // reopening mid-close retargets cleanly
+    menu.classList.remove('closing');
     closeAllCsel(entry);
     menu.hidden = false;
     root.classList.add('open');
@@ -326,9 +331,10 @@ function enhanceSelect(select) {
     }
   };
 
-  trigger.addEventListener('click', () => (menu.hidden ? open() : close()));
+  const isOpen = () => !menu.hidden && !menu.classList.contains('closing');
+  trigger.addEventListener('click', () => (isOpen() ? close() : open()));
   trigger.addEventListener('keydown', (e) => {
-    if (menu.hidden) {
+    if (!isOpen()) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
       return;
     }
