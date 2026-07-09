@@ -58,13 +58,23 @@
     return (l.textContent || '').trim();
   };
 
-  const getLabel = (name) => [...document.querySelectorAll('label')]
-    .find((l) => fieldName(l).toLowerCase() === name.toLowerCase());
+  // Field labels differ per composer locale ("Exterior color" US vs "Exterior colour" UK),
+  // so lookups take one name or an ordered candidate list (US first — the market).
+  const getLabel = (names) => {
+    const list = Array.isArray(names) ? names : [names];
+    const labels = [...document.querySelectorAll('label')];
+    for (const n of list) {
+      const hit = labels.find((l) => fieldName(l).toLowerCase() === n.toLowerCase());
+      if (hit) return hit;
+    }
+    return undefined;
+  };
+  const displayName = (names) => (Array.isArray(names) ? names[0] : names);
 
-  const waitForLabel = async (name, timeout = 8000) => {
+  const waitForLabel = async (names, timeout = 8000) => {
     const t0 = Date.now();
     while (Date.now() - t0 < timeout) {
-      if (getLabel(name)) return true;
+      if (getLabel(names)) return true;
       await sleep(60);
     }
     return false;
@@ -104,43 +114,64 @@
   };
 
   async function fillTextField(name, value) {
-    if (value === undefined || value === null || value === '') return { name, ok: false, msg: 'no value' };
+    const disp = displayName(name);
+    if (value === undefined || value === null || value === '') return { name: disp, ok: false, msg: 'no value' };
     const label = getLabel(name);
-    if (!label) return { name, ok: false, msg: 'field not found' };
+    if (!label) return { name: disp, ok: false, msg: 'field not found' };
     const input = label.querySelector('input, textarea');
-    if (!input) return { name, ok: false, msg: 'no input in field' };
+    if (!input) return { name: disp, ok: false, msg: 'no input in field' };
     input.focus();
     setNativeValue(input, String(value));
     await sleep(50); // let FB's controlled-input reformat (e.g. price -> $54,970) settle
     const digits = (s) => String(s).replace(/\D/g, '');
     const ok = norm(input.value) === norm(value) || (!!digits(value) && digits(input.value) === digits(value));
-    return { name, ok, msg: ok ? `"${input.value}"` : `got "${input.value}"` };
+    // Region guard: a non-US Marketplace region renders the price in local currency
+    // (live case: "$35,995" typed on a PK-region account became "Rs35,995" — a $130 car).
+    // The digits match, so without this check the fill would report success.
+    if (ok && disp === 'Price') {
+      const symbol = String(input.value).replace(/[\d.,\s]/g, '');
+      if (symbol && symbol !== '$') {
+        return { name: disp, ok: false, msg: `entered as "${input.value}" — Marketplace region isn't US, fix the price/currency before publishing` };
+      }
+    }
+    return { name: disp, ok, msg: ok ? `"${input.value}"` : `got "${input.value}"` };
   }
 
   async function selectDropdown(name, value) {
-    if (value === undefined || value === null || value === '') return { name, ok: false, msg: 'no value' };
+    const disp = displayName(name);
+    // A value may arrive as a canonical US string (expanded to [US, UK] candidates here)
+    // or as an explicit pre-ordered candidate list.
+    const values = (Array.isArray(value) ? value : globalThis.CarxpertShared.optionCandidates(value)).filter(Boolean);
+    if (!values.length) return { name: disp, ok: false, msg: 'no value' };
     const label = getLabel(name);
-    if (!label) return { name, ok: false, msg: 'field not found' };
+    if (!label) return { name: disp, ok: false, msg: 'field not found' };
     realClick(label);
-    // wait for the option portal to render, then match
+    // wait for the option portal to render, then try each locale candidate in order
     await waitUntil(() => readOptions().length > 0, 3000);
-    let hit = matchOption(readOptions(), value);
+    let hit = null;
+    for (const v of values) {
+      hit = matchOption(readOptions(), v);
+      if (hit) break;
+    }
     if (!hit) {
       // searchable dropdown (e.g. Make): type to filter, then wait for a match to appear
       const focused = document.activeElement;
       if (focused && focused.tagName === 'INPUT') {
-        setNativeValue(focused, String(value));
-        hit = await waitUntil(() => matchOption(readOptions(), value), 2500);
+        for (const v of values) {
+          setNativeValue(focused, String(v));
+          hit = await waitUntil(() => matchOption(readOptions(), v), 2500);
+          if (hit) break;
+        }
       }
     }
     if (!hit) {
       await closeAnyDropdown();
-      return { name, ok: false, msg: `no option matched "${value}"` };
+      return { name: disp, ok: false, msg: `no option matched ${values.map((v) => `"${v}"`).join(' / ')}` };
     }
     realClick(hit.el);
     // wait for the listbox to close (selection committed) before the next field opens its own
     await waitUntil(() => readOptions().length === 0, 1500);
-    return { name, ok: true, msg: `picked "${hit.txt}"` };
+    return { name: disp, ok: true, msg: `picked "${hit.txt}"` };
   }
 
   // ---------- dealer term -> Facebook option mapping ----------
@@ -159,8 +190,9 @@
       return r;
     };
 
-    // 1) Vehicle type first — it gates every downstream field.
-    await step(selectDropdown('Vehicle type', draft.vehicleType || 'Car/van'));
+    // 1) Vehicle type first — it gates every downstream field (they don't exist in the
+    // DOM until it's chosen). US composer says "Car/Truck", UK says "Car/van".
+    await step(selectDropdown('Vehicle type', draft.vehicleType || 'Car/Truck'));
     await waitForLabel('Year'); // dependent fields render after Vehicle type is chosen
 
     // 2) the rest
@@ -175,8 +207,9 @@
     await step(selectDropdown('Body style', mapBody(draft.bodyType)));
     // Marketing name first; DealerOn's coarse generic bucket ("Gray") as fallback when
     // the name doesn't map ("Other" maps to blank, so the fallback can't mis-color).
-    await step(selectDropdown('Exterior colour', mapColor(draft.exteriorColor) || mapColor(draft.exteriorColorGeneric)));
-    await step(selectDropdown('Interior colour', mapColor(draft.interiorColor)));
+    // Label spelling differs per composer: "color" (US) / "colour" (UK).
+    await step(selectDropdown(['Exterior color', 'Exterior colour'], mapColor(draft.exteriorColor) || mapColor(draft.exteriorColorGeneric)));
+    await step(selectDropdown(['Interior color', 'Interior colour'], mapColor(draft.interiorColor)));
     await step(selectDropdown('Vehicle condition', draft.condition || 'Excellent'));
     await step(selectDropdown('Fuel type', mapFuel(draft.fuelType)));
     await step(selectDropdown('Transmission', mapTransmission(draft.transmission)));
@@ -197,6 +230,10 @@
     if (!label) return { name: 'Location', ok: false, msg: 'not found' };
     const input = label.querySelector('input');
     if (!input) return { name: 'Location', ok: false, msg: 'no input' };
+    // A leftover portal from a failed dropdown must never feed this picker (live case:
+    // Location "picked" the vehicle-type option Car/Truck). Start from a clean slate so
+    // any options that appear belong to the location autocomplete.
+    await closeAnyDropdown();
     input.focus();
     setNativeValue(input, '');
     setNativeValue(input, String(value));
@@ -303,9 +340,22 @@
       const log = await fillForm(draft, (line) => postStatus(line));
       const missed = log.filter((r) => !r.ok).map((r) => r.name);
       // Per-field fill report → sync queue (feeds the backend fill-accuracy metric). C5.
+      // variant/lang identify which composer locale this machine got — the first question
+      // of every "fields don't fill on HIS machine" report, answered from telemetry.
+      const vt = log.find((r) => r.name === 'Vehicle type');
+      const variant = vt && /Car\/Truck/i.test(vt.msg) ? 'us'
+        : vt && /Car\/van/i.test(vt.msg) ? 'uk' : 'unknown';
       chrome.runtime.sendMessage({
         type: 'EZLIST_ENQUEUE_EVENT',
-        event: { type: 'fill_completed', clientKey: lastFilledKey, data: { fields: log.map((r) => ({ name: r.name, ok: r.ok, msg: r.msg })) } }
+        event: {
+          type: 'fill_completed',
+          clientKey: lastFilledKey,
+          data: {
+            variant,
+            lang: document.documentElement.lang || '',
+            fields: log.map((r) => ({ name: r.name, ok: r.ok, msg: r.msg }))
+          }
+        }
       }).catch(() => {});
       postStatus(missed.length ? `Filled ✓ · add manually: ${missed.join(', ')}` : 'Listing filled ✓');
     } catch (e) {

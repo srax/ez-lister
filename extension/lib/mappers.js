@@ -14,25 +14,42 @@
   const cleanAttr = (raw) => String(raw == null ? '' : raw).split('<')[0].replace(/\s+/g, ' ').trim();
 
   // ---- dealer term -> Facebook option mapping ----
-  // FB UK body options: Coupé, Van, Saloon, Hatchback, 4x4, Convertible, Estate, MPV/People carrier, Small car, Other
+  // Canonical values are the US-English composer's options (the market, and the language
+  // the dealer feed already speaks). The UK composer spells several differently — see
+  // UK_FALLBACK below; the fill engine tries [US, UK] in order via optionCandidates().
+  // FB US body options: Convertible, Coupe, Hatchback, Minivan, SUV, Sedan, Truck, Van, Wagon, Other
   const FB_BODY = {
-    suv: '4x4', 'sport utility': '4x4', crossover: '4x4', '4x4': '4x4', pickup: '4x4', truck: '4x4',
-    sedan: 'Saloon', saloon: 'Saloon', coupe: 'Coupé', 'coupé': 'Coupé', convertible: 'Convertible',
-    hatchback: 'Hatchback', wagon: 'Estate', estate: 'Estate', minivan: 'MPV/People carrier',
-    van: 'Van', mpv: 'MPV/People carrier'
+    suv: 'SUV', 'sport utility': 'SUV', crossover: 'SUV', '4x4': 'SUV', pickup: 'Truck', truck: 'Truck',
+    sedan: 'Sedan', saloon: 'Sedan', coupe: 'Coupe', 'coupé': 'Coupe', convertible: 'Convertible',
+    hatchback: 'Hatchback', wagon: 'Wagon', estate: 'Wagon', minivan: 'Minivan',
+    van: 'Van', mpv: 'Minivan'
   };
-  // FB fuel options: Diesel, Electric, Petrol, Flex, Hybrid, Plug-in hybrid, Other
+  // FB US fuel options: Diesel, Electric, Gasoline, Flex, Hybrid, Plug-in hybrid, Other
   const FB_FUEL = {
-    gasoline: 'Petrol', gas: 'Petrol', petrol: 'Petrol', diesel: 'Diesel', electric: 'Electric',
+    gasoline: 'Gasoline', gas: 'Gasoline', petrol: 'Gasoline', diesel: 'Diesel', electric: 'Electric',
     ev: 'Electric', 'plug-in hybrid': 'Plug-in hybrid', phev: 'Plug-in hybrid', hybrid: 'Hybrid',
     flex: 'Flex', e85: 'Flex'
   };
-  const FB_COLORS = ['Black', 'Blue', 'Brown', 'Gold', 'Green', 'Grey', 'Pink', 'Purple', 'Red', 'Silver', 'Orange', 'White', 'Yellow', 'Charcoal', 'Off white', 'Tan', 'Beige', 'Burgundy', 'Turquoise'];
+  const FB_COLORS = ['Black', 'Blue', 'Brown', 'Gold', 'Green', 'Gray', 'Pink', 'Purple', 'Red', 'Silver', 'Orange', 'White', 'Yellow', 'Charcoal', 'Off white', 'Tan', 'Beige', 'Burgundy', 'Turquoise'];
+  // US option string -> its UK-composer spelling. Only entries that actually differ.
+  const UK_FALLBACK = {
+    'Car/Truck': 'Car/van', SUV: '4x4', Truck: '4x4', Sedan: 'Saloon', Coupe: 'Coupé',
+    Wagon: 'Estate', Minivan: 'MPV/People carrier', Gasoline: 'Petrol', Gray: 'Grey'
+  };
+  // Ordered option candidates for a canonical (US) value: try US first, UK spelling second.
+  // Accept the legacy UK vehicle-type draft too; older extracted drafts stored "Car/van",
+  // and a US composer only offers "Car/Truck".
+  const optionCandidates = (value) => {
+    if (!value) return [];
+    if (value === 'Car/van') return ['Car/Truck', 'Car/van'];
+    const uk = UK_FALLBACK[value];
+    return uk ? [value, uk] : [value];
+  };
   // marketing color -> FB palette keyword fallbacks (covers Toyota names like Celestite, Magnetic Gray, Wind Chill Pearl)
   const COLOR_KEYWORDS = [
     // Short tokens (ash/sky/tan) need \b guards: /tan/ matched "ocTANe", /ash/ "flASH",
     // /sky/ "whiSKY" — a wrong colour is worse than a blank one.
-    [/charcoal/i, 'Charcoal'], [/silver|alumin/i, 'Silver'], [/grey|gray|magnetic|graphite|gunmetal|cement|lunar rock|\bash\b|slate/i, 'Grey'],
+    [/charcoal/i, 'Charcoal'], [/silver|alumin/i, 'Silver'], [/grey|gray|magnetic|graphite|gunmetal|cement|lunar rock|\bash\b|slate/i, 'Gray'],
     [/black|midnight|ebony|onyx|attitude/i, 'Black'], [/white|pearl|snow|frost|ice cap|blizzard|super white|alpine/i, 'White'],
     [/celestite|blue|navy|\bsky\b|cavalry|blueprint|sapphire/i, 'Blue'], [/red|barcelona|ruby|scarlet|crimson|supersonic/i, 'Red'],
     [/green|army|cypress/i, 'Green'], [/brown|mocha|espresso|coffee|smoked|bronze/i, 'Brown'],
@@ -88,7 +105,7 @@
       ?? pick(/^msrp$/);
   }
 
-  const api = { norm, cleanAttr, mapColor, mapBody, mapFuel, mapTransmission, plausiblePrice, decodePriceLib };
+  const api = { norm, cleanAttr, mapColor, mapBody, mapFuel, mapTransmission, optionCandidates, plausiblePrice, decodePriceLib };
   root.CarxpertShared = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(globalThis);

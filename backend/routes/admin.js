@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { requireAdmin } from '../admin.js';
-import { fillAccuracy } from '../listings-admin.js';
+import { fillAccuracy, recentFills } from '../listings-admin.js';
 import { runScanCycle } from '../worker/soldScan.js';
 import {
   listDealerRequests, createDealership, adminLink, adminUnlink, recentScans, compGrant, compRevoke,
@@ -15,6 +15,12 @@ router.use('/api/admin', requireAdmin);
 router.get('/api/admin/overview', async (req, res, next) => {
   try {
     res.json({ ok: true, ...(await overview()) });
+  } catch (err) { next(err); }
+});
+
+router.get('/api/admin/fills', async (req, res, next) => {
+  try {
+    res.json({ ok: true, fills: await recentFills(Number(req.query.days) || 7) });
   } catch (err) { next(err); }
 });
 
