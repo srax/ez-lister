@@ -144,8 +144,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       billingPlan().then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
       return true;
 
-    case 'EZLIST_CONNECT_DEALER':
-      connectRecentDealer().then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+    // Detect (resolve) only — NEVER links. Optional message.url resolves a user-entered site
+    // instead of the device's last-seen dealer, so a new account can pick its own dealership.
+    case 'EZLIST_DETECT_DEALER':
+      detectDealer(message.url).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    // Explicit link — only ever called after the user confirms the detected dealership.
+    case 'EZLIST_LINK_DEALER':
+      linkDealer(message.dealershipId).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
       return true;
 
     case 'EZLIST_REQUEST_DEALER':
@@ -399,18 +406,26 @@ async function recentDealerSeen() {
   return findSupportedDealerTab();
 }
 
-function supportedDealerTabPatterns() {
+async function supportedDealerTabPatterns() {
   const manifest = chrome.runtime.getManifest();
-  return (manifest.host_permissions || []).filter((pattern) =>
+  const staticPatterns = (manifest.host_permissions || []).filter((pattern) =>
     /^https:\/\/[^/]+\/\*/i.test(pattern)
       && !/facebook\.com/i.test(pattern)
+      && !/craigslist\.org/i.test(pattern)
       && !/railway\.app/i.test(pattern)
       && !/localhost|127\.0\.0\.1/i.test(pattern)
   );
+  // Dynamically-registered dealer origins (connected dealerships beyond the static manifest).
+  let dynamic = [];
+  try {
+    const scripts = await chrome.scripting.getRegisteredContentScripts({ ids: ['cx-dealer-dynamic'] });
+    dynamic = scripts.flatMap((s) => s.matches || []);
+  } catch { /* scripting unavailable — static only */ }
+  return [...new Set([...staticPatterns, ...dynamic])];
 }
 
 async function findSupportedDealerTab() {
-  const patterns = supportedDealerTabPatterns();
+  const patterns = await supportedDealerTabPatterns();
   for (const pattern of patterns) {
     let tabs = [];
     try { tabs = await chrome.tabs.query({ url: pattern }); } catch { tabs = []; }
@@ -425,21 +440,32 @@ async function findSupportedDealerTab() {
   return null;
 }
 
-async function resolveSeenDealer() {
-  const seen = await recentDealerSeen();
-  if (!seen) {
-    const err = new Error('Open your dealership inventory page, then tap Detect again.');
-    err.reason = 'no_recent_dealer';
-    throw err;
+// Resolve a dealership WITHOUT linking it. With `urlOverride` (user-entered site) that URL is
+// resolved; otherwise the device's last-seen / open dealer tab is used as the suggestion. The
+// panel shows the result and the user explicitly confirms before EZLIST_LINK_DEALER runs —
+// auto-linking the machine's last-seen dealer once bound a new account to the wrong dealership.
+async function detectDealer(urlOverride) {
+  let payload;
+  if (urlOverride) {
+    let u = String(urlOverride).trim();
+    if (!/^https?:\/\//i.test(u)) u = `https://${u}`;
+    let host = '';
+    try { host = new URL(u).hostname.toLowerCase(); } catch { /* fall through */ }
+    if (!host) return { ok: false, error: 'That doesn’t look like a valid website address.' };
+    payload = { url: u, fingerprints: { source: 'extension_manual', host } };
+  } else {
+    const seen = await recentDealerSeen();
+    if (!seen) {
+      const err = new Error('Open your dealership inventory page, then tap Detect again.');
+      err.reason = 'no_recent_dealer';
+      throw err;
+    }
+    payload = {
+      url: seen.url || `https://${seen.host}`,
+      fingerprints: { source: 'extension_seen', host: seen.host, platform: seen.platform || null }
+    };
   }
-  return postBackend('/api/dealerships/resolve', {
-    url: seen.url || `https://${seen.host}`,
-    fingerprints: { source: 'extension_seen', host: seen.host, platform: seen.platform || null }
-  });
-}
-
-async function connectRecentDealer() {
-  const resolved = await resolveSeenDealer();
+  const resolved = await postBackend('/api/dealerships/resolve', payload);
   if (!resolved.supported || !resolved.dealership || !resolved.dealership.id) {
     return {
       ok: false,
@@ -449,9 +475,14 @@ async function connectRecentDealer() {
       detectedPlatform: resolved.detectedPlatform || null
     };
   }
-  await postBackend('/api/dealerships/link', { dealershipId: resolved.dealership.id });
+  return { ok: true, supported: true, dealership: resolved.dealership };
+}
+
+async function linkDealer(dealershipId) {
+  if (!dealershipId) return { ok: false, error: 'No dealership selected.' };
+  await postBackend('/api/dealerships/link', { dealershipId });
   const auth = await getAuthState({ refresh: true });
-  return { ok: true, linked: true, dealership: resolved.dealership, auth };
+  return { ok: true, linked: true, auth };
 }
 
 async function requestDealerSupport(payload) {
@@ -551,8 +582,53 @@ async function refreshMe() {
   }
   await chrome.storage.local.set(patch);
   if (!data.lease) await chrome.storage.local.remove('ezlistLease');
+  // Keep the dealer content scripts registered for whatever dealership is now linked.
+  ensureDealerScripts(me).catch(() => {});
   return me;
 }
+
+// ==================== dynamic dealer content scripts ====================
+// The dealer scripts (⚡ List buttons + extraction) inject on whatever dealership the user
+// connected — any DealerOn site, not just the manifest's static host. The panel requests the
+// host permission at Connect (user gesture); here we (re)register one scripting registration
+// covering the linked dealership's granted domains. Registration persists across restarts,
+// but we re-sync on every /me refresh + startup so a dealership switch swaps the scripts.
+const DEALER_SCRIPT_ID = 'cx-dealer-dynamic';
+
+function dealerOriginPatterns(dealership) {
+  const domains = (dealership && dealership.domains) || [];
+  return [...new Set(domains.map((d) => `https://${String(d).toLowerCase()}/*`))];
+}
+
+async function ensureDealerScripts(me) {
+  if (!chrome.scripting || !chrome.scripting.registerContentScripts) return;
+  const patterns = dealerOriginPatterns(me && me.dealership);
+  const granted = [];
+  for (const p of patterns) {
+    try { if (await chrome.permissions.contains({ origins: [p] })) granted.push(p); }
+    catch { /* invalid pattern — skip */ }
+  }
+  const existing = await chrome.scripting.getRegisteredContentScripts({ ids: [DEALER_SCRIPT_ID] }).catch(() => []);
+  if (!granted.length) {
+    if (existing.length) await chrome.scripting.unregisterContentScripts({ ids: [DEALER_SCRIPT_ID] }).catch(() => {});
+    return;
+  }
+  const script = {
+    id: DEALER_SCRIPT_ID,
+    matches: granted,
+    js: ['lib/mappers.core.js', 'dealerContent.js'],
+    runAt: 'document_idle',
+    persistAcrossSessions: true
+  };
+  if (existing.length) await chrome.scripting.updateContentScripts([script]).catch(() => {});
+  else await chrome.scripting.registerContentScripts([script]).catch(() => {});
+}
+
+// Re-sync on worker boot (covers browser restarts and extension reloads).
+(async () => {
+  const me = (await chrome.storage.local.get('ezlistMe')).ezlistMe;
+  if (me) ensureDealerScripts(me).catch(() => {});
+})();
 
 // Cached JWKS; refetch on force (unknown kid → rotation) and cache.
 async function getJwks(force) {

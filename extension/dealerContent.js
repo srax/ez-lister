@@ -21,10 +21,18 @@
   // Pure decoders shared across platforms (lib/mappers.core.js, loaded first via manifest).
   const M = globalThis.CarxpertCore;
 
-  const DEALER = {
-    // Default Marketplace listing location for this dealer.
-    location: 'Alexandria, VA'
+  // Per-dealer config comes from the backend dealership row (served in /api/me, cached as
+  // ezlistMe) — this script runs on ANY connected DealerOn site, so nothing is hardcoded.
+  // Missing location just leaves the marketplace location field for the user to fill.
+  const DEALER = { location: '' };
+  const applyDealerConfig = (me) => {
+    const cfg = me && me.dealership && me.dealership.config;
+    DEALER.location = (cfg && cfg.location) || '';
   };
+  chrome.storage.local.get('ezlistMe').then((s) => applyDealerConfig(s.ezlistMe)).catch(() => {});
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.ezlistMe) applyDealerConfig(changes.ezlistMe.newValue);
+  });
 
   const num = (s) => {
     const m = String(s == null ? '' : s).replace(/,/g, '').match(/\d+(?:\.\d+)?/);

@@ -403,6 +403,7 @@ body{
 @keyframes gate-spin{ to{ transform:rotate(360deg); } }
 .gate-tick{ display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border-radius:50%; background:#178a3f; color:#fff; font-size:18px; font-weight:800; animation:gate-pop .22s ease-out; }
 @keyframes gate-pop{ from{ transform:scale(.4); opacity:0; } to{ transform:scale(1); opacity:1; } }
+.gate-change-dealer{ margin:-9px 0 14px; }
 .gate-price{ margin:0 0 16px; }
 .gate-price-amt{ font-size:22px; font-weight:800; color:#191b29; }
 .gate-price-per{ font-size:12.5px; font-weight:600; color:#8a8d9b; }
@@ -412,6 +413,10 @@ body{
 .gate-link{ margin-top:16px; border:0; background:transparent; color:#9b9eac; font:600 12px 'Manrope',sans-serif; cursor:pointer; text-decoration:underline; }
 .gate-link:hover{ color:#5d6070; }
 .dealer-connect{ width:100%; margin-top:13px; }
+.dealer-url-row{ display:flex; gap:8px; margin:12px 0 4px; }
+.dealer-url-row input{ flex:1; min-width:0; border:1px solid var(--input-border); border-radius:10px; background:var(--input-bg);
+  color:var(--text); font:600 13px 'Manrope',sans-serif; padding:9px 10px; }
+.dealer-url-row input:focus{ outline:none; border-color:var(--accent-border); background:#fff; box-shadow:0 0 0 3px var(--accent-soft); }
 .dealer-pending{ margin-bottom:10px; padding:9px 11px; border:1px solid #dfe1ea; border-radius:11px; background:#fbfbfd; color:#5d6070; font-size:12px; font-weight:650; line-height:1.4; text-align:left; }
 .dealer-request-toggle{ margin-top:0; }
 .dealer-request{ width:100%; margin-top:12px; text-align:left; display:flex; flex-direction:column; gap:9px; }

@@ -46,6 +46,9 @@ const ui = {
   gateErr: el('gate-err'), gateSignout: el('gate-signout'),
   dealerConnect: el('dealer-connect'), dealerPending: el('dealer-pending'),
   dealerRequestToggle: el('dealer-request-toggle'), dealerRequest: el('dealer-request'),
+  dealerSwitchToggle: el('dealer-switch-toggle'), dealerUrlRow: el('dealer-url-row'),
+  dealerConnectUrl: el('dealer-connect-url'), dealerConnectDetect: el('dealer-connect-detect'),
+  gateChangeDealer: el('gate-change-dealer'), dealerKeep: el('dealer-keep'),
   dealerUrl: el('dealer-url'), dealerName: el('dealer-name'), dealerEmail: el('dealer-email'),
   dealerPhone: el('dealer-phone'), dealerNotes: el('dealer-notes'),
   dealerRequestCancel: el('dealer-request-cancel'), dealerRequestSubmit: el('dealer-request-submit'),
@@ -65,6 +68,9 @@ const state = {
   plan: null,
   dealerRequestOpen: false,
   autoDealerConnectTried: false,
+  detectedDealer: null,   // resolved-but-NOT-linked dealership awaiting the user's confirmation
+  dealerUrlOpen: false,   // "enter your website" row visible
+  changingDealer: false,  // pre-payment "change dealership": show the connect step despite a link
   linkFlash: null,
   authResolved: false,     // first /api/me answer landed — until then the gate shows "checking"
   checkoutPending: false,  // Stripe tab is open — show the "finish in checkout" beat
@@ -831,6 +837,36 @@ function wireEvents() {
   ui.gateSecondary.addEventListener('click', () => gateAction(ui.gateSecondary.dataset.action, ui.gateSecondary));
   ui.dealerRequestToggle.addEventListener('click', () => { state.dealerRequestOpen = true; renderGate(); });
   ui.dealerRequestCancel.addEventListener('click', () => { state.dealerRequestOpen = false; renderGate(); });
+  ui.dealerSwitchToggle.addEventListener('click', () => {
+    state.dealerUrlOpen = true;
+    state.detectedDealer = null; // user rejected the suggestion — clear it
+    renderGate();
+    ui.dealerConnectUrl.focus();
+  });
+  // Subscribe/expired screen → re-enter the connect step to pick a different dealership.
+  // Skip the auto-detect suggestion (it would just re-suggest the current dealer) and open
+  // the website field directly.
+  ui.gateChangeDealer.addEventListener('click', () => {
+    state.changingDealer = true;
+    state.detectedDealer = null;
+    state.dealerUrlOpen = true;
+    state.autoDealerConnectTried = true;
+    renderGate();
+    ui.dealerConnectUrl.focus();
+  });
+  ui.dealerKeep.addEventListener('click', () => {
+    state.changingDealer = false;
+    state.detectedDealer = null;
+    state.dealerUrlOpen = false;
+    renderGate(); // back to the subscribe/renew screen with the current dealership
+  });
+  ui.dealerConnectDetect.addEventListener('click', () => {
+    const v = ui.dealerConnectUrl.value.trim();
+    if (v) detectDealership({ url: v });
+  });
+  ui.dealerConnectUrl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); ui.dealerConnectDetect.click(); }
+  });
   ui.dealerRequest.addEventListener('submit', submitDealerRequest);
   ui.gateSignout.addEventListener('click', doSignOut);
   ui.accountBtn.addEventListener('click', (e) => { e.stopPropagation(); ui.accountMenu.hidden = !ui.accountMenu.hidden; });
@@ -970,7 +1006,7 @@ const GATE_SVG = {
 };
 const GATE = {
   signed_out: { step: 1, benefits: true, title: 'Welcome to CarXprt', msg: 'Sign in with Google to start listing your dealership’s inventory — Facebook Marketplace, Craigslist, and more.', primary: 'Sign in with Google', action: 'signin' },
-  no_dealership: { svg: GATE_SVG.store, step: 2, title: 'Connect your dealership', msg: 'Open your dealership’s inventory page in a tab, then detect it here. Supported dealers connect instantly.', primary: 'Detect dealership', action: 'connectDealer' },
+  no_dealership: { svg: GATE_SVG.store, step: 2, title: 'Connect your dealership', msg: 'Open your dealership’s inventory page in a tab and detect it here — or enter your dealership’s website. You confirm before anything is connected.', primary: 'Detect dealership', action: 'detectDealer' },
   no_subscription: { svg: GATE_SVG.card, step: 3, title: 'Start your subscription', msg: 'Unlimited one-click listings, AI descriptions & translations, and automatic sold tracking.', primary: 'Subscribe', action: 'checkout', price: true },
   expired: { svg: GATE_SVG.card, title: 'Renew your subscription', msg: 'Your subscription has ended. Renew to keep listing your inventory to your marketplaces.', primary: 'Renew', action: 'checkout', price: true },
   unknown: { svg: GATE_SVG.alert, title: 'Couldn’t load your account', msg: 'We couldn’t reach the server. Check your connection and try again.', primary: 'Retry', action: 'recheck' }
@@ -1026,6 +1062,9 @@ function gateScreen(auth) {
   if (state.linkFlash && auth.signedIn) return 'linkflash';
   const key = gateStateKey(auth);
   if (state.welcome && key === null) return 'welcome';
+  // Pre-payment "change dealership": re-enter the connect step even though a dealership is
+  // linked. Only possible before a live subscription (the backend enforces the same lock).
+  if (state.changingDealer && (key === 'no_subscription' || key === 'expired')) return 'no_dealership';
   if (state.checkoutPending && (key === 'no_subscription' || key === 'expired')) return 'checkout_pending';
   return key;
 }
@@ -1063,7 +1102,7 @@ function renderGate() {
   }
   const changed = screen !== state.lastGateScreen;
   state.lastGateScreen = screen;
-  if (!screen) { ui.gate.hidden = true; return; }
+  if (!screen) { state.changingDealer = false; ui.gate.hidden = true; return; } // entitled → mode over
   ui.gate.hidden = false;
   if (changed) restartGateEnter();
 
@@ -1072,6 +1111,8 @@ function renderGate() {
   ui.gateIcon.hidden = false;
   ui.gateBenefits.hidden = true;
   ui.gateDealer.hidden = true;
+  ui.gateChangeDealer.hidden = true;
+  ui.dealerKeep.hidden = true;
   ui.gatePrice.hidden = true;
   ui.gatePrimary.hidden = true;
   ui.gateSecondary.hidden = true;
@@ -1091,7 +1132,7 @@ function renderGate() {
   if (screen === 'checkout_pending') { renderCheckoutPending(); return; }
 
   const g = GATE[screen];
-  if (screen === 'signed_out') { state.checkoutPending = false; state.welcome = false; }
+  if (screen === 'signed_out') { state.checkoutPending = false; state.welcome = false; state.changingDealer = false; }
   renderSteps(g.step || null);
   if (g.svg) ui.gateIcon.innerHTML = `<span class="gate-disc">${g.svg}</span>`;
   else ui.gateIcon.hidden = true;
@@ -1186,6 +1227,9 @@ function renderVerifiedDealer(key, auth) {
   ui.gateDealer.hidden = !show;
   if (!show) return;
   ui.gateDealer.innerHTML = `${esc(dealer.name || 'Dealership verified')}<small>Verified by CarXprt backend</small>`;
+  // Pre-payment only: the wrong dealership is fixable here. After payment this screen never
+  // shows, and the backend locks the link anyway (409 dealership_locked).
+  ui.gateChangeDealer.hidden = false;
 }
 
 function renderDealerConnect(key, auth) {
@@ -1194,6 +1238,8 @@ function renderDealerConnect(key, auth) {
   if (!active) {
     state.dealerRequestOpen = false;
     state.autoDealerConnectTried = false;
+    state.detectedDealer = null;
+    state.dealerUrlOpen = false;
     return;
   }
 
@@ -1206,6 +1252,32 @@ function renderDealerConnect(key, auth) {
     ui.dealerPending.hidden = true;
   }
 
+  // A detected dealership is shown for CONFIRMATION — never auto-linked. (Auto-linking the
+  // machine's last-seen dealer once bound a brand-new account to the wrong dealership.)
+  if (state.detectedDealer) {
+    const d = state.detectedDealer;
+    const domain = (Array.isArray(d.domains) && d.domains[0]) || '';
+    ui.gateDealer.hidden = false;
+    ui.gateDealer.innerHTML = `${esc(d.name || 'Dealership')}<small>${domain ? `${esc(domain)} · ` : ''}detected — confirm it’s yours</small>`;
+    ui.gatePrimary.textContent = `Connect ${d.name || 'dealership'}`;
+    ui.gatePrimary.dataset.action = 'linkDetected';
+  }
+
+  ui.dealerUrlRow.hidden = !state.dealerUrlOpen;
+  ui.dealerSwitchToggle.hidden = state.dealerUrlOpen;
+  ui.dealerSwitchToggle.textContent = state.detectedDealer
+    ? 'Not my dealership? Enter your website'
+    : 'Enter your dealership’s website';
+
+  // "Change dealership" mode: name the escape hatch back to the current connection, and make
+  // the copy say what this step is doing.
+  if (state.changingDealer && auth && auth.dealership) {
+    ui.dealerKeep.hidden = false;
+    ui.dealerKeep.textContent = `Keep ${auth.dealership.name || 'current dealership'}`;
+    ui.gateTitle.textContent = 'Change your dealership';
+    ui.gateMsg.textContent = 'Detect or enter the right dealership and confirm — your current connection stays until you confirm a new one.';
+  }
+
   if (auth && auth.user) {
     if (ui.dealerName && !ui.dealerName.value) ui.dealerName.value = auth.user.name || '';
     if (ui.dealerEmail && !ui.dealerEmail.value) ui.dealerEmail.value = auth.user.email || '';
@@ -1213,9 +1285,10 @@ function renderDealerConnect(key, auth) {
   ui.dealerRequest.hidden = !state.dealerRequestOpen;
   ui.dealerRequestToggle.hidden = state.dealerRequestOpen;
 
+  // Silent auto-DETECT (suggestion only — linking always waits for the user's click).
   if (!state.autoDealerConnectTried && !pending) {
     state.autoDealerConnectTried = true;
-    setTimeout(() => connectDealer({ silent: true }), 50);
+    setTimeout(() => detectDealership({ silent: true }), 50);
   }
 }
 
@@ -1240,6 +1313,8 @@ async function gateAction(action, btnEl) {
   // Instant local screen switches — no network, no button-state dance.
   if (action === 'dismissWelcome') { state.welcome = false; renderGate(); return; }
   if (action === 'checkoutBack') { state.checkoutPending = false; renderGate(); return; }
+  if (action === 'detectDealer') { detectDealership(); return; }   // manages its own button state
+  if (action === 'linkDetected') { linkDetectedDealership(); return; }
   if (action === 'openInventory') {
     const url = dealerInventoryUrl(state.auth);
     if (url) chrome.tabs.create({ url }).catch(() => window.open(url, '_blank'));
@@ -1256,8 +1331,6 @@ async function gateAction(action, btnEl) {
       const res = await chrome.runtime.sendMessage({ type: 'EZLIST_SIGN_IN' });
       if (!res || !res.ok) throw new Error((res && res.error) || 'Sign-in failed.');
       state.auth = res.auth; renderGate();
-    } else if (action === 'connectDealer') {
-      await connectDealer();
     } else if (action === 'checkout') {
       btn.textContent = 'Opening checkout…';
       const res = await chrome.runtime.sendMessage({ type: 'EZLIST_CHECKOUT' });
@@ -1290,14 +1363,16 @@ async function gateAction(action, btnEl) {
   }
 }
 
-async function connectDealer(opts = {}) {
+// Resolve a dealership (device-seen, or a user-entered URL) and show it for CONFIRMATION.
+// Never links — that only happens in linkDetectedDealership after an explicit click.
+async function detectDealership(opts = {}) {
   if (!opts.silent) {
     ui.gateErr.hidden = true;
     ui.gatePrimary.disabled = true;
     ui.gatePrimary.textContent = 'Detecting…';
   }
   try {
-    const res = await chrome.runtime.sendMessage({ type: 'EZLIST_CONNECT_DEALER' });
+    const res = await chrome.runtime.sendMessage({ type: 'EZLIST_DETECT_DEALER', url: opts.url });
     if (!res || !res.ok) {
       if (res && res.reason === 'unsupported_dealer') {
         if (res.normalizedDomain && !ui.dealerUrl.value) ui.dealerUrl.value = `https://${res.normalizedDomain}`;
@@ -1309,19 +1384,56 @@ async function connectDealer(opts = {}) {
       if (opts.silent && res && res.reason === 'no_recent_dealer') return;
       throw new Error((res && res.error) || 'Could not detect a supported dealership.');
     }
+    state.detectedDealer = res.dealership;
+    state.dealerUrlOpen = false;
     state.dealerRequestOpen = false;
-    // Start the flash before refreshAuth repaints, so the user sees the link happen
-    // instead of jumping straight to the subscribe screen.
-    if (!(state.auth && state.auth.dealership)) {
-      startLinkFlash(res.auth && res.auth.dealership);
-    }
-    state.auth = res.auth || await refreshAuth({ refresh: true });
-    await refreshAuth({ refresh: true });
+    renderGate(); // shows the "confirm it's yours" card; primary becomes "Connect <name>"
   } catch (e) {
-    if (!opts.silent) showGateError(e.message || 'Could not connect dealership.');
+    if (!opts.silent) showGateError(e.message || 'Could not detect dealership.');
   } finally {
     ui.gatePrimary.disabled = false;
-    if (gateStateKey(state.auth) === 'no_dealership') ui.gatePrimary.textContent = GATE.no_dealership.primary;
+    if (!state.detectedDealer && gateStateKey(state.auth) === 'no_dealership') {
+      ui.gatePrimary.textContent = GATE.no_dealership.primary;
+    }
+  }
+}
+
+// The explicit consent moment: link the dealership the user just confirmed. The same click
+// carries the Chrome host-permission request (user gesture required) so the dealer content
+// scripts can be registered for the dealership's own domains — any DealerOn site, not just
+// the manifest's static host.
+async function linkDetectedDealership() {
+  const d = state.detectedDealer;
+  if (!d || !d.id) return;
+  ui.gateErr.hidden = true;
+  ui.gatePrimary.disabled = true;
+  try {
+    const origins = (Array.isArray(d.domains) ? d.domains : []).map((dom) => `https://${String(dom).toLowerCase()}/*`);
+    if (origins.length) {
+      let granted = false;
+      try { granted = await chrome.permissions.request({ origins }); }
+      catch (permErr) { throw new Error(`Couldn’t request site access: ${permErr.message}`); }
+      if (!granted) {
+        throw new Error(`CarXprt needs access to ${d.domains[0]} to read your inventory. Click Connect again and choose Allow.`);
+      }
+    }
+    // Start the flash before refreshAuth repaints, so the user sees the link happen
+    // instead of jumping straight to the subscribe screen.
+    startLinkFlash(d);
+    const res = await chrome.runtime.sendMessage({ type: 'EZLIST_LINK_DEALER', dealershipId: d.id });
+    if (!res || !res.ok) {
+      state.linkFlash = null;
+      throw new Error((res && res.error) || 'Could not connect dealership.');
+    }
+    state.detectedDealer = null;
+    state.changingDealer = false; // switch complete — resume the normal gate flow
+    if (res.auth) state.auth = res.auth;
+    await refreshAuth({ refresh: true });
+  } catch (e) {
+    renderGate();
+    showGateError(e.message || 'Could not connect dealership.');
+  } finally {
+    ui.gatePrimary.disabled = false;
   }
 }
 
