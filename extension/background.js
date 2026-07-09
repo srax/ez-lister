@@ -569,7 +569,16 @@ async function refreshMe() {
   if (me.user && me.user.id) {
     const prevOwner = (await chrome.storage.local.get('ezlistOwnerId')).ezlistOwnerId;
     if (prevOwner && prevOwner !== me.user.id) {
-      await chrome.storage.local.remove(['ezlistListings', 'ezlistListedVins', 'ezlistEventQueue']);
+      // Everything car- or account-scoped goes: history AND the current selection. Leaving
+      // ezlistDraft behind handed a new sign-up the previous user's selected vehicle (from a
+      // different dealership); a stale ezlistAutoFill could even auto-fill it on the next
+      // marketplace tab. ezlistDealerSeen goes too so the connect step doesn't suggest the
+      // previous user's dealership.
+      await chrome.storage.local.remove([
+        'ezlistListings', 'ezlistListedVins', 'ezlistEventQueue',
+        'ezlistDraft', 'ezlistAutoFill', 'ezlistLastExtractedAt',
+        'ezlistInFlight', 'ezlistClPendingPhotos', 'ezlistDealerSeen'
+      ]);
     }
     if (prevOwner !== me.user.id) await chrome.storage.local.set({ ezlistOwnerId: me.user.id });
   }
