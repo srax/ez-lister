@@ -192,7 +192,8 @@
     if (alreadyGreen && alreadyActive) return;
 
     // ezlistListedVins is the source of truth for the dealer-page green button — per platform.
-    if (!alreadyGreen) entry.fb = { listedAt: now };
+    // Capture the published URL (we're on /marketplace/item/<id> or /you) for "View listing".
+    if (!alreadyGreen) entry.fb = { listedAt: now, url: location.href };
     listed[key] = entry;
 
     // ezlistListings is the richer, stats-facing record. Capture the vehicle fields

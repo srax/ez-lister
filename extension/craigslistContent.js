@@ -155,7 +155,16 @@
       const clKey = draftKey(draft);
       chrome.storage.local.set({
         ezlistClPendingPhotos: clKey,
-        ezlistInFlight: { key: clKey, platform: 'craigslist', path: location.pathname, step: 'form' },
+        ezlistInFlight: {
+          key: clKey, platform: 'craigslist', path: location.pathname, step: 'form',
+          // Vehicle basics so the "Your listings" view can show this car even though CL listings
+          // aren't in the (FB-side) ezlistListings record this phase.
+          meta: {
+            title: [draft.year, draft.make, draft.model].filter(Boolean).join(' '),
+            year: draft.year, make: draft.make, model: draft.model,
+            price: Number(draft.price) || undefined, vin: draft.vin,
+          },
+        },
       }).catch(() => {});
       setBtn(missed.length ? `Filled ✓ · add: ${missed.join(', ')}` : 'Filled ✓ — continue to photos');
       postStatus(missed.length ? `Filled ✓ · add manually: ${missed.join(', ')}` : 'Craigslist filled ✓');
@@ -311,13 +320,18 @@
     return entry;
   };
 
-  async function markPublished(key) {
+  async function markPublished(key, meta) {
     if (!key) return;
     const s = await chrome.storage.local.get(['ezlistListedVins']);
     const listed = s.ezlistListedVins || {};
     const entry = listedPlatforms(listed[key]);
     if (entry.craigslist) return; // already recorded
-    entry.craigslist = { listedAt: new Date().toISOString() };
+    // "View listing" URL = the post-manage page: /manage/<hash1> derived from /k/<hash1>/<hash2>.
+    const h1 = (location.pathname.match(/^\/k\/([^/]+)/) || [])[1];
+    const url = h1 ? `https://post.craigslist.org/manage/${h1}` : undefined;
+    // Store the vehicle basics + manage URL alongside the timestamp so the listings view can
+    // render this car and open it later.
+    entry.craigslist = { listedAt: new Date().toISOString(), ...(meta || {}), url };
     listed[key] = entry;
     await chrome.storage.local.set({ ezlistListedVins: listed });
     chrome.runtime.sendMessage({ type: 'EZLIST_ENQUEUE_EVENT', event: { type: 'publish_detected', clientKey: key, data: { platform: 'craigslist' } } }).catch(() => {});
@@ -337,7 +351,7 @@
     }
     // Bare path (no ?s): a publish only if the last step we recorded for this post was the preview.
     if (!step && inf.step === 'preview') {
-      await markPublished(inf.key);
+      await markPublished(inf.key, inf.meta);
       chrome.storage.local.set({ ezlistInFlight: null }).catch(() => {});
     }
   }

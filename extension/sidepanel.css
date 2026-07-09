@@ -267,10 +267,22 @@ body{
 .lst-pill.live{ color:#178a3f; background:#e6f6ec; }
 .lst-pill.sold{ color:#8a8d9b; background:#eceef2; }
 .lst-days{ color:#aeb0bd; font-weight:600; white-space:nowrap; }
-.lst-sold-btn{ flex-shrink:0; font-size:11.5px; font-weight:700; color:#5d6070; background:#fff; border:1px solid var(--input-border);
-  border-radius:9px; padding:7px 11px; cursor:pointer; font-family:inherit; }
-.lst-sold-btn:hover{ border-color:var(--ink); color:var(--ink); }
+.listing-badges{ display:flex; align-items:center; gap:4px; margin-top:5px; }
+.lst-badge{ font-size:9.5px; font-weight:800; letter-spacing:.2px; color:#fff; padding:2px 6px; border-radius:5px; line-height:1.4; }
+.listing-vin{ font-size:11px; font-weight:600; color:#8a8d9b; margin-top:2px; }
+.vin-label{ font-weight:800; color:#6b7280; }
+.listing-actions{ display:flex; flex-direction:column; gap:6px; flex-shrink:0; }
+.lst-sold-btn, .lst-view-btn{ font-size:11.5px; font-weight:700; color:#5d6070; background:#fff; border:1px solid var(--input-border);
+  border-radius:9px; padding:7px 11px; cursor:pointer; font-family:inherit; white-space:nowrap; text-align:center; }
+.lst-sold-btn:hover, .lst-view-btn:hover{ border-color:var(--ink); color:var(--ink); }
 .lst-sold-btn.undo{ color:#a4a6b2; }
+.lst-view-btn[disabled]{ opacity:.45; cursor:default; }
+.lst-view-btn[disabled]:hover{ border-color:var(--input-border); color:#5d6070; }
+.lst-menu{ position:fixed; z-index:200; min-width:160px; background:#fff; border:1px solid var(--input-border);
+  border-radius:10px; box-shadow:0 8px 24px rgba(20,24,55,.16); padding:4px; }
+.lst-menu-item{ display:block; width:100%; text-align:left; font-size:12.5px; font-weight:600; color:var(--text);
+  background:none; border:0; border-radius:7px; padding:8px 10px; cursor:pointer; font-family:inherit; }
+.lst-menu-item:hover{ background:var(--line); }
 
 /* footer */
 .foot{ flex-shrink:0; border-top:1px solid var(--line); padding:12px 16px 14px; background:#fff; }

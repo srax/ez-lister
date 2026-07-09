@@ -9,6 +9,9 @@ const DEFAULT_PREFS = { emoji: '', unit: 'mi', category: '', dealerDesc: true, m
 // Where-to-post labels for status copy (must match the #platform <option> values).
 const PLATFORM_LABEL = { fb: 'Facebook Marketplace', craigslist: 'Craigslist', offerup: 'OfferUp', cars: 'Cars.com' };
 const platformLabel = (p) => PLATFORM_LABEL[p] || 'Facebook Marketplace';
+// Short badge (abbrev + brand colour) shown per platform on each "Your listings" row.
+const PLATFORM_BADGE = { fb: ['FB', '#1877f2'], craigslist: ['CL', '#5c2d91'], offerup: ['OU', '#12b76a'], cars: ['Cars', '#6b7280'] };
+const platformBadgeHtml = (p) => (PLATFORM_BADGE[p] ? `<span class="lst-badge" style="background:${PLATFORM_BADGE[p][1]}">${esc(PLATFORM_BADGE[p][0])}</span>` : '');
 
 const el = (id) => document.getElementById(id);
 const ui = {
@@ -447,7 +450,7 @@ function withinRange(iso, range) {
 // scraping. Views/leads stay a locked placeholder until the FB sync lands. Everything is
 // scoped to the selected range so the hero, tiles and platform rows all tell one story.
 function computeStats(range) {
-  const all = listingsArray();
+  const all = unifiedListings(); // unique cars across ALL platforms (a car on FB+CL counts once)
   const active = all.filter((l) => l.status === 'active');
   const soldAll = all.filter((l) => l.status === 'sold');
   const soldInRange = soldAll.filter((l) => withinRange(l.soldAt, range));
@@ -484,7 +487,7 @@ function monthlyActivity() {
     const d = new Date(iso);
     return buckets.find((x) => x.y === d.getFullYear() && x.m === d.getMonth());
   };
-  for (const l of listingsArray()) {
+  for (const l of unifiedListings()) {
     const lb = bucketFor(l.listedAt);
     if (lb) lb.listed += 1;
     if (l.status === 'sold') {
@@ -541,30 +544,25 @@ function renderTrend() {
 
 function renderPlatforms(range) {
   if (!ui.stPlatforms) return;
-  const all = listingsArray();
-  // Facebook is server-backed (synced across devices) → count from the listings records.
-  const fb = all.filter((l) => (l.platform || 'fb') === 'fb');
-  const fbLive = fb.filter((l) => l.status === 'active').length;
-  const fbSold = fb.filter((l) => l.status === 'sold' && withinRange(l.soldAt, range)).length;
-
-  // Craigslist/OfferUp are local-only this phase → count from the per-platform ezlistListedVins
-  // slots, cross-referencing sold state (a property of the car) from the listings records by key.
-  const soldByKey = {};
-  for (const l of all) if (l.status === 'sold') soldByKey[l.key] = l;
-  const localCount = (platform) => {
+  const all = unifiedListings();
+  // Per platform: "live" = cars listed there and not sold; "sold" = cars whose sale was credited
+  // to that platform (soldPlatform attribution). A car sold via FB isn't "live" on CL anymore,
+  // and its sale counts only under FB.
+  const count = (platform) => {
     let live = 0; let sold = 0;
-    for (const [key, entry] of Object.entries(state.listed || {})) {
-      if (!listedPlatforms(entry)[platform]) continue;
-      const s = soldByKey[key];
-      if (s && withinRange(s.soldAt, range)) sold += 1; else live += 1;
+    for (const l of all) {
+      if (!l.platforms.has(platform)) continue;
+      if (l.status === 'sold') {
+        if (l.soldPlatform === platform && withinRange(l.soldAt, range)) sold += 1;
+      } else live += 1;
     }
     return { live, sold };
   };
-  const cl = localCount('craigslist');
-  const ou = localCount('offerup');
-
+  const fb = count('fb');
+  const cl = count('craigslist');
+  const ou = count('offerup');
   ui.stPlatforms.innerHTML = [
-    platformRow('FB Marketplace', fbLive, fbSold, range),
+    platformRow('FB Marketplace', fb.live, fb.sold, range),
     (cl.live || cl.sold) ? platformRow('Craigslist', cl.live, cl.sold, range) : platformSoon('Craigslist'),
     (ou.live || ou.sold) ? platformRow('OfferUp', ou.live, ou.sold, range) : platformSoon('OfferUp'),
   ].join('');
@@ -584,53 +582,158 @@ function platformSoon(name) {
     + `<div class="platform-bar"><div class="platform-fill" style="width:0%"></div></div></div>`;
 }
 
+// One unique row per car, merging the FB/server listings with the per-platform ezlistListedVins
+// slots, so each car appears once and carries a badge for every marketplace it's published on.
+function unifiedListings() {
+  const rows = {};
+  for (const l of listingsArray()) {
+    rows[l.key] = { ...l, platforms: new Set([l.platform || 'fb']), urls: {} };
+  }
+  for (const [key, entry] of Object.entries(state.listed || {})) {
+    const plats = listedPlatforms(entry); // { fb?:{...url}, craigslist?:{...meta,url} }
+    let row = rows[key];
+    if (!row) {
+      row = { key, vin: key.length === 17 ? key : undefined, status: 'active', platforms: new Set(), urls: {} };
+      rows[key] = row;
+    }
+    for (const [p, meta] of Object.entries(plats)) {
+      row.platforms.add(p);
+      if (meta && meta.url) row.urls[p] = meta.url; // "View listing" target for this platform
+      // Backfill display fields from a slot when the FB record didn't provide them (CL-only cars).
+      if (!row.listedAt && meta && meta.listedAt) row.listedAt = meta.listedAt;
+      if (!row.title && meta && meta.title) row.title = meta.title;
+      if (row.price == null && meta && meta.price != null) row.price = meta.price;
+      if (!row.vin && meta && meta.vin) row.vin = meta.vin;
+      if (!row.year && meta && meta.year) { row.year = meta.year; row.make = meta.make; row.model = meta.model; }
+    }
+  }
+  return Object.values(rows).sort((a, b) => new Date(b.listedAt || 0) - new Date(a.listedAt || 0));
+}
+
 function renderListingList() {
   if (!ui.stListings) return;
-  const all = listingsArray().sort((a, b) => new Date(b.listedAt || 0) - new Date(a.listedAt || 0));
+  const all = unifiedListings();
   if (!all.length) {
     ui.stListings.innerHTML = '<div class="listing-empty">No listings tracked yet. Cars you publish with Carxpert show up here.</div>';
     return;
   }
   const dayCount = (from, to) => Math.max(1, Math.round((new Date(to) - new Date(from)) / 864e5));
   ui.stListings.innerHTML = all.map((l) => {
-    const title = esc(l.title || l.vin || l.key || 'Vehicle');
+    const title = esc(l.title || [l.year, l.make, l.model].filter(Boolean).join(' ') || 'Vehicle');
+    const vin = l.vin || (l.key && l.key.length === 17 ? l.key : '');
     const sold = l.status === 'sold';
     const price = l.price || l.soldPrice ? '$' + Number((sold && l.soldPrice) || l.price).toLocaleString('en-US') : '';
     const pill = sold ? '<span class="lst-pill sold">Sold</span>' : '<span class="lst-pill live">Live</span>';
     const days = sold
       ? (l.soldAt && l.listedAt ? `sold in ${dayCount(l.listedAt, l.soldAt)}d` : '')
       : (l.listedAt ? `live ${dayCount(l.listedAt, Date.now())}d` : '');
-    const bits = [price, pill, days ? `<span class="lst-days">${days}</span>` : ''].filter(Boolean).join(' · ');
+    const badges = [...l.platforms].map(platformBadgeHtml).join('');
+    const row3 = [price, pill, days ? `<span class="lst-days">${days}</span>` : '', badges].filter(Boolean).join(' · ');
+    const hasUrl = Object.keys(l.urls || {}).length > 0;
     return `<div class="listing-row"><div class="listing-main">`
       + `<div class="listing-title">${title}</div>`
-      + `<div class="listing-sub">${bits}</div></div>`
-      + `<button class="lst-sold-btn${sold ? ' undo' : ''}" data-key="${esc(l.key)}">${sold ? 'Undo' : 'Mark sold'}</button></div>`;
+      + (vin ? `<div class="listing-vin"><span class="vin-label">VIN#</span> ${esc(vin)}</div>` : '')
+      + `<div class="listing-sub">${row3}</div>`
+      + `</div><div class="listing-actions">`
+      + `<button class="lst-sold-btn${sold ? ' undo' : ''}" data-key="${esc(l.key)}">${sold ? 'Undo' : 'Mark sold'}</button>`
+      + `<button class="lst-view-btn" data-key="${esc(l.key)}"${hasUrl ? '' : ' disabled title="No saved link yet — publish to capture it"'}>View listing</button>`
+      + `</div></div>`;
   }).join('');
 }
 
-// Manual sold signal — the reliable MVP source of truth for sale outcomes.
-function markSold(key) {
+// Manual sold signal — the reliable MVP source of truth for sale outcomes. `platform` records
+// WHICH marketplace the sale came through (attribution); the car itself is sold everywhere.
+function markSold(key, platform) {
   let l = state.listings[key];
   if (!l) {
     // Server-only listing (synced from another device) — materialise a local record so the
     // change persists locally and syncs back.
     const s = state.serverListings[key];
-    if (!s) return;
-    l = { ...s };
+    if (s) {
+      l = { ...s };
+    } else {
+      // A car published only on a non-FB platform (e.g. Craigslist) — not in the FB/server
+      // listings, so build a record from its per-platform slot metadata.
+      const plats = listedPlatforms(state.listed[key]);
+      const platform = Object.keys(plats)[0];
+      const meta = platform ? plats[platform] : null;
+      if (!meta) return;
+      l = {
+        key, platform, status: 'active', listedAt: meta.listedAt,
+        vin: meta.vin || (key.length === 17 ? key : undefined),
+        title: meta.title, year: meta.year, make: meta.make, model: meta.model, price: meta.price,
+      };
+    }
     state.listings[key] = l;
   }
   let type;
   if (l.status === 'sold') {
-    l.status = 'active'; delete l.soldAt; delete l.soldPrice; type = 'marked_sold_undo';
+    l.status = 'active'; delete l.soldAt; delete l.soldPrice; delete l.soldPlatform; type = 'marked_sold_undo';
   } else {
-    l.status = 'sold'; l.soldAt = new Date().toISOString(); l.soldPrice = l.price; type = 'marked_sold';
+    l.status = 'sold'; l.soldAt = new Date().toISOString(); l.soldPrice = l.price;
+    l.soldPlatform = platform || l.platform || 'fb'; // which marketplace the sale is credited to
+    type = 'marked_sold';
   }
   chrome.storage.local.set({ ezlistListings: state.listings }); // triggers background auto-sync
   chrome.runtime.sendMessage({
     type: 'EZLIST_ENQUEUE_EVENT',
-    event: { type, clientKey: key, occurredAt: new Date().toISOString(), data: type === 'marked_sold' ? { soldPrice: l.soldPrice } : null }
+    event: { type, clientKey: key, occurredAt: new Date().toISOString(), data: type === 'marked_sold' ? { soldPrice: l.soldPrice, soldPlatform: l.soldPlatform } : null }
   }).catch(() => {});
   renderStats();
+}
+
+// Open a saved listing URL in a new tab (side-panel context).
+function openListingUrl(url) {
+  if (!url) return;
+  if (chrome.tabs && chrome.tabs.create) chrome.tabs.create({ url }).catch(() => window.open(url, '_blank'));
+  else window.open(url, '_blank');
+}
+
+// Lightweight popover anchored to a button — used to pick a platform (for multi-platform cars)
+// when marking sold or choosing which listing to view. Closes on outside click / Escape.
+function showListMenu(anchor, items) {
+  document.getElementById('lst-menu')?.remove();
+  const menu = document.createElement('div');
+  menu.id = 'lst-menu';
+  menu.className = 'lst-menu';
+  menu.innerHTML = items.map((it, i) => `<button type="button" class="lst-menu-item" data-i="${i}">${esc(it.label)}</button>`).join('');
+  const r = anchor.getBoundingClientRect();
+  menu.style.top = `${r.bottom + 4}px`;
+  menu.style.left = `${Math.max(8, r.right - 168)}px`;
+  document.body.appendChild(menu);
+  menu.addEventListener('click', (e) => {
+    const b = e.target.closest('.lst-menu-item');
+    if (!b) return;
+    const it = items[parseInt(b.dataset.i, 10)];
+    menu.remove();
+    if (it && it.onClick) it.onClick();
+  });
+  const close = (e) => { if (!menu.contains(e.target) && e.target !== anchor) { menu.remove(); document.removeEventListener('mousedown', close); } };
+  setTimeout(() => document.addEventListener('mousedown', close), 0);
+  document.addEventListener('keydown', function esckey(e) { if (e.key === 'Escape') { menu.remove(); document.removeEventListener('keydown', esckey); } });
+}
+
+// "Mark sold" click: single-platform → mark directly (attributed to that platform); multi-platform
+// (and not already sold) → ask which marketplace the sale came from.
+function onSoldClick(btn) {
+  const key = btn.dataset.key;
+  const row = unifiedListings().find((r) => r.key === key);
+  if (!row) return;
+  if (row.status === 'sold') { markSold(key, null); return; } // undo
+  const plats = [...row.platforms];
+  if (plats.length <= 1) { markSold(key, plats[0] || 'fb'); return; }
+  showListMenu(btn, plats.map((p) => ({ label: `Sold on ${platformLabel(p)}`, onClick: () => markSold(key, p) })));
+}
+
+// "View listing" click: open the saved URL; if the car is on several platforms, offer a chooser.
+function onViewClick(btn) {
+  const key = btn.dataset.key;
+  const row = unifiedListings().find((r) => r.key === key);
+  if (!row) return;
+  const entries = Object.entries(row.urls || {});
+  if (!entries.length) return;
+  if (entries.length === 1) { openListingUrl(entries[0][1]); return; }
+  showListMenu(btn, entries.map(([p, url]) => ({ label: `View on ${platformLabel(p)}`, onClick: () => openListingUrl(url) })));
 }
 
 function rangeShort(v) {
@@ -654,8 +757,10 @@ function wireEvents() {
   ui.statsBack.addEventListener('click', () => showView('lister'));
   ui.statsRange.addEventListener('change', () => { ui.statsRangeLabel.textContent = rangeLabel(ui.statsRange.value); renderStats(); });
   ui.stListings.addEventListener('click', (e) => {
-    const btn = e.target.closest('.lst-sold-btn');
-    if (btn && btn.dataset.key) markSold(btn.dataset.key);
+    const soldBtn = e.target.closest('.lst-sold-btn');
+    if (soldBtn && soldBtn.dataset.key) { onSoldClick(soldBtn); return; }
+    const viewBtn = e.target.closest('.lst-view-btn');
+    if (viewBtn && viewBtn.dataset.key && !viewBtn.disabled) onViewClick(viewBtn);
   });
   ui.openfb.addEventListener('click', () => chrome.runtime.sendMessage({ type: 'EZLIST_OPEN_PLATFORM', platform: ui.platform.value || 'fb' }));
   ui.platform.addEventListener('change', () => {
