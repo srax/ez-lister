@@ -782,7 +782,11 @@ async function restoreListedFromServer() {
   const listed = {};
   for (const l of res.listings) {
     if (l.status === 'listed' && l.client_key) {
-      listed[l.client_key] = { listedAt: l.listed_at || new Date().toISOString(), restored: true };
+      // Per-platform shape ({ fb: {...}, craigslist: {...} }) keyed by the row's platform —
+      // a flat entry would be read as Facebook and wrongly green a Craigslist-only car.
+      const entry = listed[l.client_key] || {};
+      entry[l.platform || 'fb'] = { listedAt: l.listed_at || new Date().toISOString(), restored: true };
+      listed[l.client_key] = entry;
     }
   }
   if (Object.keys(listed).length) await chrome.storage.local.set({ ezlistListedVins: listed });
