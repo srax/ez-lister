@@ -57,3 +57,24 @@ test('incoming manual sold on a listed car sets sold fields', () => {
   assert.equal(r.sold_source, 'manual');
   assert.equal(r.sold_price, 4200);
 });
+
+// ---- sold_platform attribution (multi-platform, migration 007) ----
+
+test('incoming sold carries soldPlatform; listed clears it', () => {
+  const sold = mergeStatus({ status: 'listed' }, { status: 'sold', soldSource: 'manual', soldPlatform: 'craigslist' });
+  assert.equal(sold.sold_platform, 'craigslist');
+  const listed = mergeStatus(null, { status: 'listed' });
+  assert.equal(listed.sold_platform, null);
+});
+
+test('sticky manual sold keeps its existing sold_platform', () => {
+  const existing = { status: 'sold', sold_source: 'manual', sold_at: '2026-01-01T00:00:00Z', sold_platform: 'fb' };
+  const r = mergeStatus(existing, { status: 'listed' });
+  assert.equal(r.sold_platform, 'fb');
+});
+
+test('incoming sold without soldPlatform preserves the existing attribution', () => {
+  const existing = { status: 'sold', sold_source: 'scan', sold_platform: 'craigslist' };
+  const r = mergeStatus(existing, { status: 'sold', soldSource: 'manual' });
+  assert.equal(r.sold_platform, 'craigslist');
+});

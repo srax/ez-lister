@@ -3,13 +3,16 @@ import { pool } from '../db.js';
 import { isEntitled } from '../entitlement/index.js';
 import { pruneUsageEvents } from '../listings-admin.js';
 import { pruneExpiredAuthCodes } from '../auth-codes.js';
-import { fetchRoster } from './adapters/dealeron.js';
+import { fetchRoster, checkVdpAlive } from './adapters/dealeron.js';
 
 const HOUR_MS = 3600 * 1000;
-const SOLD_AFTER_MS = 20 * HOUR_MS; // 20h since first miss (two misses on different days)
-const RESUME_STALE_MS = 48 * HOUR_MS; // clear misses older than this on entitlement resume
+const SCAN_INTERVAL_MS = 30 * 60 * 1000; // roster check cadence
+const CONFIRM_GAP_MS = 25 * 60 * 1000; // second gone-confirmation must be ≥25min after the first
+const RESUME_STALE_MS = 48 * HOUR_MS; // clear miss/confirm clocks older than this (worker pause)
+const PROBE_BUDGET = 10; // VDP ground-truth fetches per dealership per cycle (politeFetch spaces them ≥2s)
 
 const ADAPTERS = { dealeron: fetchRoster };
+const VDP_CHECKERS = { dealeron: checkVdpAlive };
 
 // ---- pure: is a completed scan plausible enough to act on? ----
 // Counts only if it ran without error AND the VIN count is plausible: ≥30% of the last
@@ -24,13 +27,17 @@ export function isPlausibleScan({ ok, vinCount, prevCount }) {
 }
 
 // ---- pure: decide one listing's next state given roster membership ----
-// Returns the mutation to apply (or null for "no change"). `now` is ms.
-// resumedFromPause: caller clears stale first_missed_at (>48h) BEFORE calling.
+// Returns the mutation/probe request to apply (or null for "no change"). `now` is ms.
+// The roster NEVER sells on its own anymore — absence only starts telemetry and requests
+// a VDP ground-truth probe. Selling is exclusively resolveWithVdp's call (two confirmed-
+// gone probes ≥ CONFIRM_GAP_MS apart), which is what caps detection at ~30–60 min while
+// staying immune to stale-CDN rosters (the 2026-07-05 false positive).
 export function judgeListing(listing, present, now) {
   const firstMissed = listing.first_missed_at ? new Date(listing.first_missed_at).getTime() : null;
+  const goneConfirmed = listing.gone_confirmed_at ? new Date(listing.gone_confirmed_at).getTime() : null;
 
   if (present) {
-    const out = { lastSeen: now, clearFirstMissed: firstMissed != null };
+    const out = { lastSeen: now, clearFirstMissed: firstMissed != null || goneConfirmed != null };
     // Reappearance of a scanner-sold car → revive. NEVER touch a manual sold.
     if (listing.status === 'sold' && listing.sold_source === 'scan') {
       out.revive = true;
@@ -38,20 +45,43 @@ export function judgeListing(listing, present, now) {
     return out;
   }
 
-  // Absent. An already-sold car has nothing to advance — re-judging it would drift
-  // sold_at forward on every scan. Only 'listed' cars run the miss clock.
-  if (listing.status === 'sold') return null;
-  if (firstMissed == null) {
-    return { setFirstMissed: now };
+  // Absent. Manual solds are final; scanner-solds get a revival probe (roster blind spots
+  // must self-heal); 'listed' cars start the miss telemetry and request ground truth.
+  if (listing.status === 'sold') {
+    return listing.sold_source === 'scan' ? { probe: true } : null;
   }
-  if (now - firstMissed >= SOLD_AFTER_MS) {
-    return { markSold: true, soldAt: now };
+  return { probe: true, setFirstMissed: firstMissed == null ? now : null };
+}
+
+// ---- pure: merge the roster verdict with VDP ground truth ----
+// The roster is a secondary source (a sitemap behind a CDN that can serve days-stale
+// copies); the car's own page is primary. A live VDP always wins — it clears every clock,
+// and it revives a scanner-sold car whose roster source went stale. A sale requires TWO
+// gone-confirmations ≥ confirmGapMs apart (a slug change or transient 404 can't sell in
+// one shot). Unknown (bot wall / 5xx / network) never sells and never confirms.
+export function resolveWithVdp({ decision, listing, alive, now, confirmGapMs = CONFIRM_GAP_MS, staleMs = RESUME_STALE_MS }) {
+  if (alive === true) {
+    if (listing.status === 'sold' && listing.sold_source === 'scan') return { revive: true };
+    return { lastSeen: now, clearFirstMissed: listing.first_missed_at != null || listing.gone_confirmed_at != null };
   }
-  return null; // missed, but not long enough yet
+  if (alive === false && listing.status === 'listed') {
+    const prev = listing.gone_confirmed_at ? new Date(listing.gone_confirmed_at).getTime() : null;
+    if (prev == null || now - prev > staleMs) {
+      // First confirmation (or a stale one from around a worker pause — restart the pair).
+      return { setFirstMissed: (decision && decision.setFirstMissed) || null, setGoneConfirmed: now };
+    }
+    if (now - prev >= confirmGapMs) return { markSold: true, soldAt: now };
+    return keepTelemetry(decision); // confirmed twice but too close together — next cycle decides
+  }
+  return keepTelemetry(decision); // unknown, or a scan-sold car still gone → no state change
+}
+
+function keepTelemetry(decision) {
+  return decision && decision.setFirstMissed ? { setFirstMissed: decision.setFirstMissed } : null;
 }
 
 // ---- DB-driven scan of one dealership ----
-async function scanDealership(dealership, { db = pool, now = Date.now(), adapters = ADAPTERS, condStates = new Map(), isEntitledFn = isEntitled } = {}) {
+async function scanDealership(dealership, { db = pool, now = Date.now(), adapters = ADAPTERS, vdpCheckers = VDP_CHECKERS, condStates = new Map(), isEntitledFn = isEntitled } = {}) {
   const adapter = adapters[dealership.platform];
   const scanId = crypto.randomUUID();
   const startedAt = new Date(now).toISOString();
@@ -76,11 +106,14 @@ async function scanDealership(dealership, { db = pool, now = Date.now(), adapter
   // Never assume "all present": that would revive scanner-sold cars and reset miss clocks
   // for VINs that are in fact still absent. With no cached roster (fresh process), we can't
   // know membership — record the scan and change no listing state.
+  const vdpCheck = vdpCheckers[dealership.platform] || null;
+
   if (roster.notModified) {
     const vinCount = roster.vins ? roster.vins.length : prevCount;
-    await recordScan(db, { scanId, dealershipId: dealership.id, startedAt, ok: true, vinCount, source: roster.source, error: null });
+    await recordScan(db, { scanId, dealershipId: dealership.id, startedAt, ok: true, vinCount, source: roster.source, error: null, meta: { cache: { revalidated: true } } });
     if (!roster.vins) return { ok: true, notModified: true, skipped: 'no cached roster' };
-    await applyPresence(db, dealership.id, new Set(roster.vins), now, { isEntitledFn });
+    const counters = await applyPresence(db, dealership.id, new Set(roster.vins), now, { isEntitledFn, vdpCheck });
+    await updateScanMeta(db, scanId, { cache: { revalidated: true }, counters });
     return { ok: true, notModified: true, vinCount };
   }
 
@@ -88,29 +121,39 @@ async function scanDealership(dealership, { db = pool, now = Date.now(), adapter
 
   const vinCount = roster.ok ? roster.vins.length : null;
   const plausible = isPlausibleScan({ ok: roster.ok, vinCount, prevCount });
+  const meta = { cache: roster.cacheMeta || null };
   await recordScan(db, {
     scanId, dealershipId: dealership.id, startedAt,
-    ok: plausible, vinCount, source: roster.source,
+    ok: plausible, vinCount, source: roster.source, meta,
     error: plausible ? null : (roster.error || `implausible vin count ${vinCount} (prev ${prevCount})`)
   });
   if (!plausible) return { ok: false, reason: 'implausible', vinCount };
 
-  await applyPresence(db, dealership.id, new Set(roster.vins), now, { isEntitledFn });
-  return { ok: true, vinCount };
+  const counters = await applyPresence(db, dealership.id, new Set(roster.vins), now, { isEntitledFn, vdpCheck });
+  await updateScanMeta(db, scanId, { ...meta, counters });
+  return { ok: true, vinCount, ...counters };
 }
 
 // Apply presence/absence to every tracked listing of a dealership whose owner is entitled.
-async function applyPresence(db, dealershipId, rosterSet, now, { isEntitledFn = isEntitled } = {}) {
+// Returns decision counters for the scan record — the trace that makes a false positive
+// diagnosable from logs instead of forensics.
+async function applyPresence(db, dealershipId, rosterSet, now, { isEntitledFn = isEntitled, vdpCheck = null } = {}) {
   const { rows } = await db.query(
-    `select l.id, l.owner_id, l.vin, l.status, l.sold_source, l.first_missed_at
+    `select l.id, l.owner_id, l.client_key, l.vin, l.status, l.sold_source,
+            l.first_missed_at, l.gone_confirmed_at, l.source_url
      from listings l
      where l.dealership_id = $1 and l.vin is not null
        and (l.status = 'listed' or (l.status = 'sold' and l.sold_source = 'scan'))`,
     [dealershipId]
   );
 
+  const counters = { tracked: rows.length, absent: 0, probed: 0, vetoAlive: 0, goneConfirmed: 0, sold: 0, revived: 0, probeUnknown: 0, probeSkipped: 0 };
+  const logEvent = (listing, event, extra = '') =>
+    console.log(`sold-scan[${dealershipId}] vin=${listing.vin} owner=${listing.owner_id} event=${event}${extra ? ' ' + extra : ''}`);
+
   // Entitlement is per-owner; skip paused users. On resume, clear stale misses (>48h).
   const entCache = new Map();
+  let probeBudget = PROBE_BUDGET;
   for (const listing of rows) {
     let ent = entCache.get(listing.owner_id);
     if (!ent) { ent = await isEntitledFn(listing.owner_id); entCache.set(listing.owner_id, ent); }
@@ -123,10 +166,43 @@ async function applyPresence(db, dealershipId, rosterSet, now, { isEntitledFn = 
       effective = { ...listing, first_missed_at: null };
     }
 
-    const decision = judgeListing(effective, rosterSet.has(listing.vin), now);
+    const present = rosterSet.has(listing.vin);
+    if (!present) counters.absent += 1;
+    let decision = judgeListing(effective, present, now);
+
+    if (decision && decision.probe) {
+      const canProbe = vdpCheck && listing.source_url;
+      if (canProbe && probeBudget > 0) {
+        probeBudget -= 1;
+        counters.probed += 1;
+        const alive = await vdpCheck(listing.source_url, listing.vin).catch(() => null);
+        decision = resolveWithVdp({ decision, listing: effective, alive, now });
+        if (alive === true) { counters.vetoAlive += 1; logEvent(listing, decision && decision.revive ? 'revive' : 'alive_veto'); }
+        else if (alive === null) { counters.probeUnknown += 1; logEvent(listing, 'probe_unknown'); }
+        else if (decision && decision.markSold) { counters.sold += 1; logEvent(listing, 'sold', 'evidence=vdp_gone_x2'); }
+        else if (decision && decision.setGoneConfirmed) { counters.goneConfirmed += 1; logEvent(listing, 'gone_confirmed_1'); }
+      } else {
+        // No checker / no source_url / budget spent: keep the telemetry clock, never sell blind.
+        counters.probeSkipped += 1;
+        decision = keepTelemetry(decision);
+      }
+    }
+
     if (!decision) continue;
+    if (decision.revive) { counters.revived += 1; logEvent(listing, 'revive'); }
     await applyDecision(db, effective, decision, now);
+
+    // Scan decisions that change what the salesperson sees become user-visible events too.
+    if (decision.markSold || decision.revive) {
+      await db.query(
+        `insert into usage_events (id, user_id, type, client_key, data, occurred_at)
+         values ($1,$2,$3,$4,$5,now()) on conflict (id) do nothing`,
+        [crypto.randomUUID(), listing.owner_id, decision.markSold ? 'scan_marked_sold' : 'scan_revived',
+         listing.client_key, JSON.stringify({ vin: listing.vin, dealershipId })]
+      ).catch(() => {});
+    }
   }
+  return counters;
 }
 
 async function applyDecision(db, listing, d, now) {
@@ -134,26 +210,35 @@ async function applyDecision(db, listing, d, now) {
   if (d.revive) {
     await db.query(
       `update listings set status='listed', sold_source=null, sold_at=null, sold_price=null,
-         first_missed_at=null, last_seen_in_inventory_at=$2, updated_at=now() where id=$1`,
+         first_missed_at=null, gone_confirmed_at=null, last_seen_in_inventory_at=$2, updated_at=now() where id=$1`,
       [listing.id, nowIso]
     );
     return;
   }
   if (d.markSold) {
-    // Clear the miss clock so a later revive → re-miss starts fresh.
+    // Clear both clocks so a later revive → re-miss starts fresh.
     await db.query(
-      `update listings set status='sold', sold_source='scan', sold_at=$2, first_missed_at=null, updated_at=now() where id=$1`,
+      `update listings set status='sold', sold_source='scan', sold_at=$2, first_missed_at=null, gone_confirmed_at=null, updated_at=now() where id=$1`,
       [listing.id, new Date(d.soldAt).toISOString()]
     );
     return;
   }
-  if (d.setFirstMissed) {
-    await db.query('update listings set first_missed_at=$2, updated_at=now() where id=$1', [listing.id, new Date(d.setFirstMissed).toISOString()]);
+  if (d.setFirstMissed || d.setGoneConfirmed) {
+    await db.query(
+      `update listings set
+         first_missed_at = coalesce($2, first_missed_at),
+         gone_confirmed_at = coalesce($3, gone_confirmed_at),
+         updated_at = now()
+       where id = $1`,
+      [listing.id,
+       d.setFirstMissed ? new Date(d.setFirstMissed).toISOString() : null,
+       d.setGoneConfirmed ? new Date(d.setGoneConfirmed).toISOString() : null]
+    );
     return;
   }
   if (d.lastSeen) {
     if (d.clearFirstMissed) {
-      await db.query('update listings set first_missed_at=null, last_seen_in_inventory_at=$2, updated_at=now() where id=$1', [listing.id, nowIso]);
+      await db.query('update listings set first_missed_at=null, gone_confirmed_at=null, last_seen_in_inventory_at=$2, updated_at=now() where id=$1', [listing.id, nowIso]);
     } else {
       await db.query('update listings set last_seen_in_inventory_at=$2 where id=$1', [listing.id, nowIso]);
     }
@@ -162,10 +247,15 @@ async function applyDecision(db, listing, d, now) {
 
 async function recordScan(db, s) {
   await db.query(
-    `insert into dealer_inventory_scans (id, dealership_id, started_at, finished_at, ok, vin_count, source, error)
-     values ($1,$2,$3, now(), $4,$5,$6,$7)`,
-    [s.scanId, s.dealershipId, s.startedAt, s.ok, s.vinCount, s.source, s.error]
+    `insert into dealer_inventory_scans (id, dealership_id, started_at, finished_at, ok, vin_count, source, error, meta)
+     values ($1,$2,$3, now(), $4,$5,$6,$7,$8)`,
+    [s.scanId, s.dealershipId, s.startedAt, s.ok, s.vinCount, s.source, s.error, s.meta ? JSON.stringify(s.meta) : null]
   );
+}
+
+// Decision counters land after applyPresence so the scan row carries its full trace.
+async function updateScanMeta(db, scanId, meta) {
+  await db.query('update dealer_inventory_scans set meta = $2 where id = $1', [scanId, JSON.stringify(meta)]).catch(() => {});
 }
 
 async function previousSuccessfulCount(db, dealershipId) {
@@ -202,9 +292,10 @@ export async function runScanCycle({ db = pool, now = Date.now(), condStates = n
   return results;
 }
 
-// ---- the hourly in-process loop ----
+// ---- the in-process loop (every 30 min; sale needs two gone-confirms ≥25 min apart,
+// so real-world sold detection lands ~30–60 min after the car leaves the dealer site) ----
 let timer = null;
-export function startWorker({ intervalMs = HOUR_MS } = {}) {
+export function startWorker({ intervalMs = SCAN_INTERVAL_MS } = {}) {
   if (timer) return;
   const condStates = new Map();
   const tick = async () => {
@@ -218,7 +309,7 @@ export function startWorker({ intervalMs = HOUR_MS } = {}) {
   // Jittered first run (±5 min) so restarts don't stampede a dealer host. Deterministic
   // jitter (no Math.random dependency): based on the process start clock.
   const jitter = (Date.now() % (10 * 60 * 1000)) - 5 * 60 * 1000;
-  const firstDelay = Math.max(60 * 1000, HOUR_MS + jitter);
+  const firstDelay = Math.max(60 * 1000, intervalMs + jitter);
   timer = setTimeout(function loop() {
     tick().finally(() => { timer = setTimeout(loop, intervalMs); });
   }, firstDelay);

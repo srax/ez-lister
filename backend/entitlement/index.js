@@ -15,34 +15,35 @@ const LEASE_TTL_SECONDS = 90 * 60;
 // AND the user has linked a supported dealership. The reason lets the extension render the
 // right gate step: sign in → link dealership → subscribe → ready.
 // → { entitled, reason: 'ok'|'no_subscription'|'expired'|'no_dealership', periodEnd: Date|null }
+// Is there a LIVE paid subscription? active/trialing with no period end (or one still in the
+// future); a stale 'active' row whose period already passed counts as expired (belt-and-braces).
+// Shared by entitlement AND the dealership-switch lock so the two can never drift apart.
+export async function activeSubscription(userId, db = pool) {
+  const { rows } = await db.query(
+    `select "periodEnd" from "subscription"
+      where "referenceId" = $1 and status in ('active', 'trialing')
+      order by "periodEnd" desc nulls last
+      limit 1`,
+    [userId]
+  );
+  if (!rows.length) return { active: false, hadRow: false, periodEnd: null };
+  const periodEnd = rows[0].periodEnd ? new Date(rows[0].periodEnd) : null;
+  return { active: !periodEnd || periodEnd.getTime() > Date.now(), hadRow: true, periodEnd };
+}
+
 export async function isEntitled(userId, db = pool) {
-  const [dealerRes, compRes, subRes] = await Promise.all([
+  const [dealerRes, compRes, sub] = await Promise.all([
     db.query('select 1 from user_dealerships where user_id = $1 limit 1', [userId]),
     db.query(
       'select 1 from comp_grants where user_id = $1 and (expires_at is null or expires_at > now()) limit 1',
       [userId]
     ),
-    db.query(
-      `select "periodEnd" from "subscription"
-        where "referenceId" = $1 and status in ('active', 'trialing')
-        order by "periodEnd" desc nulls last
-        limit 1`,
-      [userId]
-    )
+    activeSubscription(userId, db)
   ]);
 
   const hasDealership = dealerRes.rows.length > 0;
   const hasComp = compRes.rows.length > 0;
-
-  let periodEnd = null;
-  let subActive = false;
-  const hadSubRow = subRes.rows.length > 0;
-  if (hadSubRow) {
-    periodEnd = subRes.rows[0].periodEnd ? new Date(subRes.rows[0].periodEnd) : null;
-    // active/trialing with no period end (or one still in the future) counts as live; a stale
-    // 'active' row whose period already passed is treated as expired (belt-and-braces).
-    subActive = !periodEnd || periodEnd.getTime() > Date.now();
-  }
+  const { active: subActive, hadRow: hadSubRow, periodEnd } = sub;
 
   if (!hasDealership) {
     return { entitled: false, reason: 'no_dealership', periodEnd };

@@ -10,7 +10,8 @@
     "check": "node scripts/check-syntax.js",
     "test": "node --test",
     "build:ext:staging": "node scripts/build-extension.js staging",
-    "build:ext:prod": "node scripts/build-extension.js prod"
+    "build:ext:prod": "node scripts/build-extension.js prod",
+    "ops": "bash scripts/ops-overview.sh"
   },
   "engines": {
     "node": ">=20"

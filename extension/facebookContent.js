@@ -1,153 +1,31 @@
 'use strict';
 
 // ezlist — Facebook Marketplace "Vehicle for sale" auto-filler.
-// All field-interaction logic below was validated live against the real form via CDP:
-//  - dropdowns are <label role="combobox"> that open a portal [role="listbox"] of [role="option"]
-//  - text fields are bare <input>/<textarea> wrapped in a <label> (no id/aria)
-//  - field name resolves from aria-labelledby (dropdowns) else textContent (text fields)
-//  - photos upload via DataTransfer -> input.files -> dispatch('change')
+// The generic DOM-driving primitives now live in lib/fillkit.js (globalThis.CarxpertFill),
+// loaded first per the manifest. This file is Facebook adapter #1: it owns the field list,
+// UK-English labels, the "n / 20" photo counter, and publish detection.
+//   - dropdowns are <label role="combobox"> that open a portal [role="listbox"] of [role="option"]
+//   - text fields are bare <input>/<textarea> wrapped in a <label> (no id/aria)
+//   - field name resolves from aria-labelledby (dropdowns) else textContent (text fields)
+//   - photos upload via DataTransfer -> input.files -> dispatch('change')
 
 (() => {
   const isFacebook = /(\.|^)facebook\.com$/i.test(location.hostname) || /(\.|^)web\.facebook\.com$/i.test(location.hostname);
   if (!isFacebook) return;
   if (document.getElementById('ezlist-facebook-host')) return;
 
-  // ---------- low-level DOM helpers (validated) ----------
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const norm = (s) => (s || '').toString().trim().toLowerCase();
-
-  // Poll a predicate; resolve with its first truthy value, or its last value on timeout.
-  const waitUntil = async (fn, timeout = 2500, interval = 30) => {
-    const t0 = Date.now();
-    for (;;) {
-      const v = fn();
-      if (v) return v;
-      if (Date.now() - t0 >= timeout) return v;
-      await sleep(interval);
-    }
-  };
-
-  const realClick = (el) => {
-    el.scrollIntoView({ block: 'center', inline: 'center' });
-    const o = { bubbles: true, cancelable: true, view: window };
-    el.dispatchEvent(new PointerEvent('pointerdown', o));
-    el.dispatchEvent(new MouseEvent('mousedown', o));
-    el.dispatchEvent(new PointerEvent('pointerup', o));
-    el.dispatchEvent(new MouseEvent('mouseup', o));
-    el.dispatchEvent(new MouseEvent('click', o));
-  };
-
-  const setNativeValue = (el, value) => {
-    const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-    if (desc && desc.set) desc.set.call(el, value);
-    else el.value = value;
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-  };
-
-  const fieldName = (l) => {
-    const lb = l.getAttribute('aria-labelledby');
-    if (lb) {
-      const t = lb.split(/\s+/).map((id) => document.getElementById(id)).filter(Boolean)
-        .map((n) => (n.textContent || '').trim()).join(' ').trim();
-      if (t) return t;
-    }
-    const al = (l.getAttribute('aria-label') || '').trim();
-    if (al) return al;
-    return (l.textContent || '').trim();
-  };
-
-  const getLabel = (name) => [...document.querySelectorAll('label')]
-    .find((l) => fieldName(l).toLowerCase() === name.toLowerCase());
-
-  const waitForLabel = async (name, timeout = 8000) => {
-    const t0 = Date.now();
-    while (Date.now() - t0 < timeout) {
-      if (getLabel(name)) return true;
-      await sleep(60);
-    }
-    return false;
-  };
-
-  const readOptions = () => [...document.querySelectorAll('[role="option"]')]
-    .map((o) => ({ el: o, txt: (o.getAttribute('aria-label') || o.textContent || '').trim() }))
-    .filter((o) => o.txt);
-
-  const matchOption = (opts, value) => {
-    const v = norm(value);
-    if (!v) return null;
-    return opts.find((o) => norm(o.txt) === v)
-      || opts.find((o) => norm(o.txt).startsWith(v))
-      || opts.find((o) => v.startsWith(norm(o.txt)) && o.txt.length > 2)
-      || opts.find((o) => norm(o.txt).includes(v) && v.length > 2);
-  };
-
-  const closeAnyDropdown = async () => {
-    const h1 = document.querySelector('h1');
-    for (let i = 0; i < 3 && document.querySelectorAll('[role="option"]').length; i += 1) {
-      if (h1) realClick(h1);
-      if (document.activeElement) {
-        document.activeElement.dispatchEvent(
-          new KeyboardEvent('keydown', { bubbles: true, key: 'Escape', code: 'Escape', keyCode: 27 }));
-      }
-      await sleep(150);
-    }
-  };
-
-  // After the fill, leave the form looking finished, not mid-edit: dismiss any
-  // lingering suggestion portal (esp. the Location autocomplete) and drop the caret.
-  const settleUi = async () => {
-    await closeAnyDropdown();
-    const a = document.activeElement;
-    if (a && typeof a.blur === 'function') a.blur();
-  };
-
-  async function fillTextField(name, value) {
-    if (value === undefined || value === null || value === '') return { name, ok: false, msg: 'no value' };
-    const label = getLabel(name);
-    if (!label) return { name, ok: false, msg: 'field not found' };
-    const input = label.querySelector('input, textarea');
-    if (!input) return { name, ok: false, msg: 'no input in field' };
-    input.focus();
-    setNativeValue(input, String(value));
-    await sleep(50); // let FB's controlled-input reformat (e.g. price -> $54,970) settle
-    const digits = (s) => String(s).replace(/\D/g, '');
-    const ok = norm(input.value) === norm(value) || (!!digits(value) && digits(input.value) === digits(value));
-    return { name, ok, msg: ok ? `"${input.value}"` : `got "${input.value}"` };
-  }
-
-  async function selectDropdown(name, value) {
-    if (value === undefined || value === null || value === '') return { name, ok: false, msg: 'no value' };
-    const label = getLabel(name);
-    if (!label) return { name, ok: false, msg: 'field not found' };
-    realClick(label);
-    // wait for the option portal to render, then match
-    await waitUntil(() => readOptions().length > 0, 3000);
-    let hit = matchOption(readOptions(), value);
-    if (!hit) {
-      // searchable dropdown (e.g. Make): type to filter, then wait for a match to appear
-      const focused = document.activeElement;
-      if (focused && focused.tagName === 'INPUT') {
-        setNativeValue(focused, String(value));
-        hit = await waitUntil(() => matchOption(readOptions(), value), 2500);
-      }
-    }
-    if (!hit) {
-      await closeAnyDropdown();
-      return { name, ok: false, msg: `no option matched "${value}"` };
-    }
-    realClick(hit.el);
-    // wait for the listbox to close (selection committed) before the next field opens its own
-    await waitUntil(() => readOptions().length === 0, 1500);
-    return { name, ok: true, msg: `picked "${hit.txt}"` };
-  }
+  // ---------- shared DOM primitives (lib/fillkit.js, loaded first per manifest) ----------
+  const {
+    sleep, norm, waitUntil, getLabel, waitForLabel, readOptions,
+    settleUi, fillTextField, selectDropdown, fillAutocomplete,
+    attachPhotos, waitForCount,
+  } = globalThis.CarxpertFill;
 
   // ---------- dealer term -> Facebook option mapping ----------
-  // Shared with dealerContent via lib/mappers.js (loaded first per manifest); unit-tested
-  // in lib/mappers.test.js. Includes sanitization: HTML stripped from feed values,
+  // Facebook's value taxonomy (lib/mappers.fb.js, loaded first per manifest); unit-tested
+  // in lib/mappers.fb.test.js. Includes sanitization: HTML stripped from feed values,
   // upholstery material words dropped before matching, unknown names -> blank for review.
-  const { mapColor, mapBody, mapFuel, mapTransmission } = globalThis.CarxpertShared;
+  const { mapColor, mapBody, mapFuel, mapTransmission } = globalThis.CarxpertFb;
 
   // ---------- main fill routine ----------
   async function fillForm(draft, onStatus) {
@@ -183,30 +61,13 @@
     await step(fillTextField('Description', draft.description));
 
     // 3) Location (autocomplete: type then pick first suggestion)
-    if (draft.location) await step(setLocation(draft.location));
+    if (draft.location) await step(fillAutocomplete('Location', draft.location));
 
     // 4) Photos (fetched by the background worker to bypass FB CSP/CORS)
     await step(uploadPhotos(draft, onStatus));
 
     await settleUi();
     return log;
-  }
-
-  async function setLocation(value) {
-    const label = getLabel('Location');
-    if (!label) return { name: 'Location', ok: false, msg: 'not found' };
-    const input = label.querySelector('input');
-    if (!input) return { name: 'Location', ok: false, msg: 'no input' };
-    input.focus();
-    setNativeValue(input, '');
-    setNativeValue(input, String(value));
-    const opt = await waitUntil(() => readOptions()[0], 2500);
-    if (opt) {
-      realClick(opt.el);
-      await waitUntil(() => readOptions().length === 0, 1200);
-      return { name: 'Location', ok: true, msg: `picked "${opt.txt}"` };
-    }
-    return { name: 'Location', ok: false, msg: 'no suggestion (left default)' };
   }
 
   async function uploadPhotos(draft, onStatus) {
@@ -224,18 +85,11 @@
     const before = currentPhotoCount() || 0;
     const remaining = 20 - before; // FB caps vehicle listings at 20 photos
     if (remaining <= 0) return { name: 'Photos', ok: true, msg: `already has ${before}` };
-    const dt = new DataTransfer();
-    for (const img of resp.images.slice(0, remaining)) {
-      const file = dataUrlToFile(img.dataUrl, img.name);
-      if (file) dt.items.add(file);
-    }
-    if (!dt.files.length) return { name: 'Photos', ok: false, msg: 'no files built' };
-    input.files = dt.files;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    const target = before + dt.files.length;
-    const got = await waitForPhotoCount(target, 25000);
-    if (got == null) return { name: 'Photos', ok: true, msg: `attached ${dt.files.length} (count unverified)` };
+    const added = attachPhotos(input, resp.images, remaining);
+    if (!added) return { name: 'Photos', ok: false, msg: 'no files built' };
+    const target = before + added;
+    const got = await waitForCount(currentPhotoCount, target, 25000);
+    if (got == null) return { name: 'Photos', ok: true, msg: `attached ${added} (count unverified)` };
     const ok = got >= target;
     return { name: 'Photos', ok, msg: `${got} uploaded${ok ? '' : ` of ${target} (some may still be processing)`}` };
   }
@@ -244,27 +98,6 @@
     const el = [...document.querySelectorAll('*')]
       .find((n) => n.children.length === 0 && /^\d+\s*\/\s*20$/.test((n.textContent || '').trim()));
     return el ? parseInt(el.textContent, 10) : null;
-  }
-
-  async function waitForPhotoCount(target, timeout) {
-    const t0 = Date.now();
-    while (Date.now() - t0 < timeout) {
-      const c = currentPhotoCount();
-      if (c != null && c >= target) return c;
-      await sleep(500);
-    }
-    return currentPhotoCount();
-  }
-
-  function dataUrlToFile(dataUrl, name) {
-    try {
-      const [meta, b64] = dataUrl.split(',');
-      const mime = (meta.match(/data:([^;]+)/) || [])[1] || 'image/jpeg';
-      const bin = atob(b64);
-      const arr = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i += 1) arr[i] = bin.charCodeAt(i);
-      return new File([arr], name || 'photo.jpg', { type: mime });
-    } catch { return null; }
   }
 
   // ---------- controller (no injected UI — the Carxpert side panel drives this) ----------
@@ -287,7 +120,7 @@
       // Entitlement guard (belt-and-braces; the panel/dealer path gates first). No host —
       // just "is the user entitled to fill"; lease-first with /api/me fallback in the worker.
       const gate = await chrome.runtime.sendMessage({ type: 'EZLIST_CAN_LIST' }).catch(() => null);
-      if (!gate || !gate.ok) { postStatus('Sign in to Carxpert to fill listings.', true); return; }
+      if (!gate || !gate.ok) { postStatus('Sign in to CarXprt to fill listings.', true); return; }
       const resp = await getStored();
       const draft = resp && resp.ezlistDraft;
       if (!draft) { postStatus('No vehicle draft found.', true); return; }
@@ -315,11 +148,15 @@
     }
   }
 
-  // Auto-fill once when the draft was just set by a "List" click (one-shot flag).
+  // Auto-fill once when the draft was just set by a "List" click (one-shot flag). The flag is
+  // platform-tagged ({platform,key}); Facebook only fires on its own tag (or a legacy `true`),
+  // so a Craigslist-targeted List never fills an open FB create tab.
   async function maybeAutoFill() {
     if (!isCreatePage()) return;
     const resp = await getStored();
-    if (resp && resp.ezlistDraft && resp.ezlistAutoFill && !filling) {
+    const af = resp && resp.ezlistAutoFill;
+    const forFb = af === true || (af && af.platform === 'fb');
+    if (resp && resp.ezlistDraft && forFb && !filling) {
       chrome.storage.local.set({ ezlistAutoFill: false }); // one-shot; manual reloads won't re-fire
       doFill();
     }
@@ -335,18 +172,29 @@
   // Conservative: we only mark a VIN "listed" when, AFTER we filled it, the page leaves
   // /marketplace/create/vehicle for a created-listing or your-listings URL. An abandoned
   // form never produces that transition, so we never mark green on a form the user bailed on.
+  // ezlistListedVins entries are per-platform: { fb?:{listedAt}, craigslist?:{...} }. Legacy
+  // entries were flat { listedAt } (all Facebook) — normalize them so old data reads as { fb }.
+  const listedPlatforms = (entry) => {
+    if (!entry || typeof entry !== 'object') return {};
+    if ('listedAt' in entry) return { fb: { listedAt: entry.listedAt } };
+    return entry;
+  };
+
   async function markListed(key) {
     if (!key) return;
     const s = await chrome.storage.local.get(['ezlistListedVins', 'ezlistListings', 'ezlistDraft']);
     const listed = s.ezlistListedVins || {};
     const listings = s.ezlistListings || {};
     const now = new Date().toISOString();
-    const alreadyGreen = !!listed[key];
+    const entry = listedPlatforms(listed[key]);
+    const alreadyGreen = !!entry.fb;
     const alreadyActive = listings[key] && listings[key].status === 'active';
     if (alreadyGreen && alreadyActive) return;
 
-    // ezlistListedVins stays the source of truth for the dealer-page green button.
-    if (!alreadyGreen) listed[key] = { listedAt: now };
+    // ezlistListedVins is the source of truth for the dealer-page green button — per platform.
+    // Capture the published URL (we're on /marketplace/item/<id> or /you) for "View listing".
+    if (!alreadyGreen) entry.fb = { listedAt: now, url: location.href };
+    listed[key] = entry;
 
     // ezlistListings is the richer, stats-facing record. Capture the vehicle fields
     // from the draft we just filled (keys match unless the user switched cars mid-flow).
@@ -379,7 +227,14 @@
       const left = lastPath;
       lastPath = path;
       if (!lastFilledKey) return;
-      const published = /\/marketplace\/item\/\d+/.test(path) || /\/marketplace\/you(\/|$)/.test(path);
+      // Post-publish FB lands on the new item, "your listings", or (observed live 2026-07)
+      // plain marketplace home. Home is accepted only right after OUR fill (lastFilledKey set):
+      // the create tab is opened directly with no history, so bailing out of the form almost
+      // never produces a create→home SPA transition — publishing does.
+      const published = /\/marketplace\/item\/\d+/.test(path)
+        || /\/marketplace\/you(\/|$)/.test(path)
+        || /\/marketplace\/?$/.test(path)
+        || /\/marketplace\/selling(\/|$)/.test(path);
       if (published && /\/marketplace\/create\/vehicle/.test(left)) {
         markListed(lastFilledKey);
         lastFilledKey = '';

@@ -1,21 +1,27 @@
 'use strict';
 
-importScripts('lib/lease.js'); // offline ES256 lease verifier (globalThis.CarxpertLease)
+importScripts('lib/lease.js', 'lib/platforms.js'); // ES256 lease verifier + platform registry
+
+const { getPlatform } = globalThis.CarxpertPlatforms;
 
 const BACKEND_URL = 'http://127.0.0.1:3737';
 // Shared secret for the gated production backend (sent as the x-carxpert-token header).
 // Empty in dev — the local backend is open; the store build injects the real value.
 // See scripts/build-extension.js.
 const BACKEND_TOKEN = '';
-const MARKETPLACE_VEHICLE_CREATE_URL = 'https://www.facebook.com/marketplace/create/vehicle';
 const DEALER_SEEN_TTL_MS = 30 * 60 * 1000;
 const CHECKOUT_WATCH_MS = 2 * 60 * 1000;
 const CHECKOUT_POLL_MS = 3000;
 const CHECKOUT_SYNC_EVERY_MS = 30 * 1000;
 
-// A single pre-warmed FB "create vehicle" tab so the heavy page load happens before the user clicks List.
+// A single pre-warmed "create listing" tab so the heavy page load happens before the user
+// clicks List. Tagged with the platform it was opened for, so it's only reused for that
+// platform's fill (Facebook today; Craigslist/OfferUp reuse the same slot as they ship).
 let prewarmTabId = null;
-chrome.tabs.onRemoved.addListener((id) => { if (id === prewarmTabId) prewarmTabId = null; });
+let prewarmPlatform = null;
+chrome.tabs.onRemoved.addListener((id) => {
+  if (id === prewarmTabId) { prewarmTabId = null; prewarmPlatform = null; }
+});
 
 // Clicking the toolbar icon opens the docked side panel (Chrome 114+).
 function enableSidePanelOnActionClick() {
@@ -62,24 +68,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'EZLIST_SAVE_DRAFT':
+      // Platform-tagged one-shot: { platform, key } when auto-fill is requested, else false.
+      // Each platform's content script only fires on a flag that names it, so an open FB tab
+      // never auto-fills a draft meant for Craigslist and vice versa. Dealer/legacy callers
+      // send no platform → defaults to 'fb'.
       chrome.storage.local.set({
         ezlistDraft: message.draft,
-        ezlistAutoFill: !!message.autoFill,
+        ezlistAutoFill: message.autoFill ? { platform: message.platform || 'fb', key: message.key || '' } : false,
         ezlistLastExtractedAt: new Date().toISOString()
       }, () => sendResponse({ ok: true }));
       return true;
 
     case 'EZLIST_PREWARM':
-      prewarm().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      prewarm(message.platform).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
+    // EZLIST_OPEN_FACEBOOK kept for the FB-only dealer/panel callers; platform defaults to fb.
     case 'EZLIST_OPEN_FACEBOOK':
-      openOrReuseFacebook().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+    case 'EZLIST_OPEN_PLATFORM':
+      openOrReusePlatformTab(message.platform).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
     // Side panel asked to (re)fill the form with the current stored draft.
     case 'EZLIST_FILL_NOW':
-      fillFacebook(message.key).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      fillPlatform(message.platform, message.key).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
     case 'EZLIST_PREFETCH_IMAGES':
@@ -132,8 +144,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       billingPlan().then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
       return true;
 
-    case 'EZLIST_CONNECT_DEALER':
-      connectRecentDealer().then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+    // Detect (resolve) only — NEVER links. Optional message.url resolves a user-entered site
+    // instead of the device's last-seen dealer, so a new account can pick its own dealership.
+    case 'EZLIST_DETECT_DEALER':
+      detectDealer(message.url).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    // Explicit link — only ever called after the user confirms the detected dealership.
+    case 'EZLIST_LINK_DEALER':
+      linkDealer(message.dealershipId).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
       return true;
 
     case 'EZLIST_REQUEST_DEALER':
@@ -174,43 +193,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-// ---- pre-warm / reuse the FB create tab ----
-async function prewarm() {
-  if (prewarmTabId != null) {
+// ---- pre-warm / reuse a platform's create tab ----
+function clearPrewarm() { prewarmTabId = null; prewarmPlatform = null; }
+
+async function prewarm(platformId) {
+  const platform = getPlatform(platformId);
+  // Only reuse an existing prewarm tab if it's for the same platform.
+  if (prewarmTabId != null && prewarmPlatform === platform.id) {
     try { await chrome.tabs.get(prewarmTabId); return { ok: true, already: true }; }
-    catch { prewarmTabId = null; }
+    catch { clearPrewarm(); }
   }
   await chrome.storage.local.set({ ezlistAutoFill: false }); // don't auto-fill a stale draft on prewarm load
-  const tab = await chrome.tabs.create({ url: MARKETPLACE_VEHICLE_CREATE_URL, active: false });
+  const tab = await chrome.tabs.create({ url: platform.createUrl, active: false });
   prewarmTabId = tab.id;
+  prewarmPlatform = platform.id;
   return { ok: true, tabId: tab.id };
 }
 
-async function openOrReuseFacebook() {
-  if (prewarmTabId != null) {
+async function openOrReusePlatformTab(platformId) {
+  const platform = getPlatform(platformId);
+  if (prewarmTabId != null && prewarmPlatform === platform.id) {
     try {
       const tab = await chrome.tabs.get(prewarmTabId);
-      if (tab && /\/marketplace\/create\/vehicle/.test(tab.url || tab.pendingUrl || '')) {
+      if (tab && platform.isCreateUrl(tab.url || tab.pendingUrl || '')) {
         await chrome.tabs.update(prewarmTabId, { active: true });
         if (tab.windowId != null) chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
         chrome.tabs.sendMessage(prewarmTabId, { type: 'EZLIST_DRAFT_UPDATED' }).catch(() => {});
         const id = prewarmTabId;
-        prewarmTabId = null; // consumed
+        clearPrewarm(); // consumed
         return { ok: true, tabId: id, reused: true };
       }
     } catch { /* fall through to new tab */ }
-    prewarmTabId = null;
+    clearPrewarm();
   }
-  const tab = await chrome.tabs.create({ url: MARKETPLACE_VEHICLE_CREATE_URL, active: true });
+  const tab = await chrome.tabs.create({ url: platform.createUrl, active: true });
   return { ok: true, tabId: tab.id, reused: false };
 }
 
-// Ensure a create/vehicle tab is open and tell it to fill with the latest stored draft.
+// Ensure the platform's create tab is open and tell it to fill with the latest stored draft.
 // A freshly-created tab fills itself on load (via the ezlistAutoFill flag the panel set);
-// an already-open tab needs the explicit nudge.
-async function fillFacebook(key) {
-  const res = await openOrReuseFacebook();
-  if (!res || !res.tabId) return { ok: false, error: 'no Facebook tab' };
+// an already-open tab needs the explicit nudge. The right platform's content script is the
+// only one on that tab, so a plain EZLIST_FILL routes correctly without platform branching.
+async function fillPlatform(platformId, key) {
+  const res = await openOrReusePlatformTab(platformId);
+  if (!res || !res.tabId) return { ok: false, error: 'no target tab' };
   try { await chrome.tabs.sendMessage(res.tabId, { type: 'EZLIST_FILL', key }); }
   catch { /* tab still loading — it will auto-fill once the content script boots */ }
   return { ok: true, tabId: res.tabId, reused: res.reused };
@@ -380,18 +406,26 @@ async function recentDealerSeen() {
   return findSupportedDealerTab();
 }
 
-function supportedDealerTabPatterns() {
+async function supportedDealerTabPatterns() {
   const manifest = chrome.runtime.getManifest();
-  return (manifest.host_permissions || []).filter((pattern) =>
+  const staticPatterns = (manifest.host_permissions || []).filter((pattern) =>
     /^https:\/\/[^/]+\/\*/i.test(pattern)
       && !/facebook\.com/i.test(pattern)
+      && !/craigslist\.org/i.test(pattern)
       && !/railway\.app/i.test(pattern)
       && !/localhost|127\.0\.0\.1/i.test(pattern)
   );
+  // Dynamically-registered dealer origins (connected dealerships beyond the static manifest).
+  let dynamic = [];
+  try {
+    const scripts = await chrome.scripting.getRegisteredContentScripts({ ids: ['cx-dealer-dynamic'] });
+    dynamic = scripts.flatMap((s) => s.matches || []);
+  } catch { /* scripting unavailable — static only */ }
+  return [...new Set([...staticPatterns, ...dynamic])];
 }
 
 async function findSupportedDealerTab() {
-  const patterns = supportedDealerTabPatterns();
+  const patterns = await supportedDealerTabPatterns();
   for (const pattern of patterns) {
     let tabs = [];
     try { tabs = await chrome.tabs.query({ url: pattern }); } catch { tabs = []; }
@@ -406,21 +440,32 @@ async function findSupportedDealerTab() {
   return null;
 }
 
-async function resolveSeenDealer() {
-  const seen = await recentDealerSeen();
-  if (!seen) {
-    const err = new Error('Open your dealership inventory page, then tap Detect again.');
-    err.reason = 'no_recent_dealer';
-    throw err;
+// Resolve a dealership WITHOUT linking it. With `urlOverride` (user-entered site) that URL is
+// resolved; otherwise the device's last-seen / open dealer tab is used as the suggestion. The
+// panel shows the result and the user explicitly confirms before EZLIST_LINK_DEALER runs —
+// auto-linking the machine's last-seen dealer once bound a new account to the wrong dealership.
+async function detectDealer(urlOverride) {
+  let payload;
+  if (urlOverride) {
+    let u = String(urlOverride).trim();
+    if (!/^https?:\/\//i.test(u)) u = `https://${u}`;
+    let host = '';
+    try { host = new URL(u).hostname.toLowerCase(); } catch { /* fall through */ }
+    if (!host) return { ok: false, error: 'That doesn’t look like a valid website address.' };
+    payload = { url: u, fingerprints: { source: 'extension_manual', host } };
+  } else {
+    const seen = await recentDealerSeen();
+    if (!seen) {
+      const err = new Error('Open your dealership inventory page, then tap Detect again.');
+      err.reason = 'no_recent_dealer';
+      throw err;
+    }
+    payload = {
+      url: seen.url || `https://${seen.host}`,
+      fingerprints: { source: 'extension_seen', host: seen.host, platform: seen.platform || null }
+    };
   }
-  return postBackend('/api/dealerships/resolve', {
-    url: seen.url || `https://${seen.host}`,
-    fingerprints: { source: 'extension_seen', host: seen.host, platform: seen.platform || null }
-  });
-}
-
-async function connectRecentDealer() {
-  const resolved = await resolveSeenDealer();
+  const resolved = await postBackend('/api/dealerships/resolve', payload);
   if (!resolved.supported || !resolved.dealership || !resolved.dealership.id) {
     return {
       ok: false,
@@ -430,9 +475,14 @@ async function connectRecentDealer() {
       detectedPlatform: resolved.detectedPlatform || null
     };
   }
-  await postBackend('/api/dealerships/link', { dealershipId: resolved.dealership.id });
+  return { ok: true, supported: true, dealership: resolved.dealership };
+}
+
+async function linkDealer(dealershipId) {
+  if (!dealershipId) return { ok: false, error: 'No dealership selected.' };
+  await postBackend('/api/dealerships/link', { dealershipId });
   const auth = await getAuthState({ refresh: true });
-  return { ok: true, linked: true, dealership: resolved.dealership, auth };
+  return { ok: true, linked: true, auth };
 }
 
 async function requestDealerSupport(payload) {
@@ -523,6 +573,8 @@ async function refreshMe() {
     }
     if (prevOwner !== me.user.id) await chrome.storage.local.set({ ezlistOwnerId: me.user.id });
   }
+  // Best-effort: repopulate green-button state from the server (no-op unless local is empty).
+  if (me.entitled) restoreListedFromServer().catch(() => {});
   const patch = { ezlistMe: me };
   if (data.lease) {
     try { patch.ezlistLease = { jws: data.lease, claims: CarxpertLease.decodeJwt(data.lease).payload }; }
@@ -530,8 +582,53 @@ async function refreshMe() {
   }
   await chrome.storage.local.set(patch);
   if (!data.lease) await chrome.storage.local.remove('ezlistLease');
+  // Keep the dealer content scripts registered for whatever dealership is now linked.
+  ensureDealerScripts(me).catch(() => {});
   return me;
 }
+
+// ==================== dynamic dealer content scripts ====================
+// The dealer scripts (⚡ List buttons + extraction) inject on whatever dealership the user
+// connected — any DealerOn site, not just the manifest's static host. The panel requests the
+// host permission at Connect (user gesture); here we (re)register one scripting registration
+// covering the linked dealership's granted domains. Registration persists across restarts,
+// but we re-sync on every /me refresh + startup so a dealership switch swaps the scripts.
+const DEALER_SCRIPT_ID = 'cx-dealer-dynamic';
+
+function dealerOriginPatterns(dealership) {
+  const domains = (dealership && dealership.domains) || [];
+  return [...new Set(domains.map((d) => `https://${String(d).toLowerCase()}/*`))];
+}
+
+async function ensureDealerScripts(me) {
+  if (!chrome.scripting || !chrome.scripting.registerContentScripts) return;
+  const patterns = dealerOriginPatterns(me && me.dealership);
+  const granted = [];
+  for (const p of patterns) {
+    try { if (await chrome.permissions.contains({ origins: [p] })) granted.push(p); }
+    catch { /* invalid pattern — skip */ }
+  }
+  const existing = await chrome.scripting.getRegisteredContentScripts({ ids: [DEALER_SCRIPT_ID] }).catch(() => []);
+  if (!granted.length) {
+    if (existing.length) await chrome.scripting.unregisterContentScripts({ ids: [DEALER_SCRIPT_ID] }).catch(() => {});
+    return;
+  }
+  const script = {
+    id: DEALER_SCRIPT_ID,
+    matches: granted,
+    js: ['lib/mappers.core.js', 'dealerContent.js'],
+    runAt: 'document_idle',
+    persistAcrossSessions: true
+  };
+  if (existing.length) await chrome.scripting.updateContentScripts([script]).catch(() => {});
+  else await chrome.scripting.registerContentScripts([script]).catch(() => {});
+}
+
+// Re-sync on worker boot (covers browser restarts and extension reloads).
+(async () => {
+  const me = (await chrome.storage.local.get('ezlistMe')).ezlistMe;
+  if (me) ensureDealerScripts(me).catch(() => {});
+})();
 
 // Cached JWKS; refetch on force (unknown kid → rotation) and cache.
 async function getJwks(force) {
@@ -692,8 +789,21 @@ async function openPanel(sender) {
 
 // ==================== listings sync (C5) ====================
 
-// Map a local ezlistListings entry to the /api/listings/sync contract shape.
-function toSyncListing(l) {
+// The per-platform slots for a car (ezlistListedVins entry) → the sync contract's platforms[]
+// array. Legacy flat entries ({listedAt}) read as Facebook. Undefined when nothing is recorded,
+// so the payload stays clean for cars with no publish state.
+function platformsFromEntry(entry) {
+  if (!entry || typeof entry !== 'object') return undefined;
+  const slots = ('listedAt' in entry) ? { fb: entry } : entry;
+  const arr = Object.entries(slots)
+    .filter(([, m]) => m && typeof m === 'object')
+    .map(([platform, m]) => ({ platform, status: 'listed', listedAt: m.listedAt || null, url: m.url || null }));
+  return arr.length ? arr : undefined;
+}
+
+// Map a local ezlistListings entry to the /api/listings/sync contract shape. `listedEntry` is
+// the car's ezlistListedVins slots — the source of per-platform presence + listing URLs.
+function toSyncListing(l, listedEntry) {
   return {
     clientKey: l.key,
     vin: l.vin || null,
@@ -708,7 +818,9 @@ function toSyncListing(l) {
     status: l.status === 'sold' ? 'sold' : 'listed', // local 'active' → server 'listed'
     listedAt: l.listedAt || null,
     soldAt: l.soldAt || null,
-    soldPrice: l.soldPrice != null ? Number(l.soldPrice) : null
+    soldPrice: l.soldPrice != null ? Number(l.soldPrice) : null,
+    soldPlatform: l.soldPlatform || null,
+    platforms: platformsFromEntry(listedEntry)
   };
 }
 
@@ -721,8 +833,9 @@ async function syncNow() {
   if (syncing) return { ok: true, skipped: 'in_progress' };
   syncing = true;
   try {
-    const store = await chrome.storage.local.get(['ezlistListings', 'ezlistEventQueue']);
-    const listings = Object.values(store.ezlistListings || {}).map(toSyncListing);
+    const store = await chrome.storage.local.get(['ezlistListings', 'ezlistEventQueue', 'ezlistListedVins']);
+    const listedMap = store.ezlistListedVins || {};
+    const listings = Object.values(store.ezlistListings || {}).map((l) => toSyncListing(l, listedMap[l.key]));
     const events = store.ezlistEventQueue || [];
     if (!listings.length && !events.length) return { ok: true, empty: true };
     const data = await postBackend('/api/listings/sync', { listings, events });
@@ -748,6 +861,34 @@ async function getServerListings() {
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok || !data.ok) return { ok: false, reason: `http_${resp.status}` };
   return { ok: true, listings: data.listings || [] };
+}
+
+// New device / post-purge restore: the server is the source of truth for what's already
+// published. When local green-button state is empty, rebuild it from the server so a
+// salesperson doesn't accidentally double-list cars they published from another machine.
+async function restoreListedFromServer() {
+  const local = (await chrome.storage.local.get('ezlistListedVins')).ezlistListedVins || {};
+  if (Object.keys(local).length) return;
+  const res = await getServerListings();
+  if (!res.ok || !res.listings.length) return;
+  const listed = {};
+  for (const l of res.listings) {
+    if (l.status !== 'listed' || !l.client_key) continue;
+    // Per-platform shape ({ fb: {...}, craigslist: {...} }): prefer the server's platforms[]
+    // (listing_platforms child rows — full multi-platform state incl. View-listing URLs);
+    // fall back to the legacy single platform column for pre-migration servers.
+    const entry = listed[l.client_key] || {};
+    const plats = Array.isArray(l.platforms) ? l.platforms.filter((p) => p && p.platform && p.status !== 'removed') : [];
+    if (plats.length) {
+      for (const p of plats) {
+        entry[p.platform] = { listedAt: p.listedAt || l.listed_at || new Date().toISOString(), url: p.url || undefined, restored: true };
+      }
+    } else {
+      entry[l.platform || 'fb'] = { listedAt: l.listed_at || new Date().toISOString(), restored: true };
+    }
+    listed[l.client_key] = entry;
+  }
+  if (Object.keys(listed).length) await chrome.storage.local.set({ ezlistListedVins: listed });
 }
 
 // Append an event to the offline queue (client uuid = idempotency key). Deduped by id;

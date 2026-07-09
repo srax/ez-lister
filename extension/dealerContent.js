@@ -18,13 +18,21 @@
     }
   }).catch(() => {});
 
-  // Pure helpers shared with the FB filler (lib/mappers.js, loaded first via manifest).
-  const M = globalThis.CarxpertShared;
+  // Pure decoders shared across platforms (lib/mappers.core.js, loaded first via manifest).
+  const M = globalThis.CarxpertCore;
 
-  const DEALER = {
-    // Default Marketplace listing location for this dealer.
-    location: 'Alexandria, VA'
+  // Per-dealer config comes from the backend dealership row (served in /api/me, cached as
+  // ezlistMe) — this script runs on ANY connected DealerOn site, so nothing is hardcoded.
+  // Missing location just leaves the marketplace location field for the user to fill.
+  const DEALER = { location: '' };
+  const applyDealerConfig = (me) => {
+    const cfg = me && me.dealership && me.dealership.config;
+    DEALER.location = (cfg && cfg.location) || '';
   };
+  chrome.storage.local.get('ezlistMe').then((s) => applyDealerConfig(s.ezlistMe)).catch(() => {});
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.ezlistMe) applyDealerConfig(changes.ezlistMe.newValue);
+  });
 
   const num = (s) => {
     const m = String(s == null ? '' : s).replace(/,/g, '').match(/\d+(?:\.\d+)?/);
@@ -190,12 +198,15 @@
   }
 
   // ---- button + click flow ----
+  // "Where to post" selection (ezlistPrefs.platform, set in the side panel); FB is the default.
+  let platform = 'fb';
   // Pre-warm the FB create tab on first hover (intent signal) so its heavy load overlaps the user's click.
   let prewarmed = false;
   function maybePrewarm() {
-    if (prewarmed) return;
+    // Prewarm only helps Facebook's single-page create form; Craigslist's multi-page flow can't be prewarmed.
+    if (prewarmed || platform !== 'fb') return;
     prewarmed = true;
-    chrome.runtime.sendMessage({ type: 'EZLIST_PREWARM' }).catch(() => {});
+    chrome.runtime.sendMessage({ type: 'EZLIST_PREWARM', platform: 'fb' }).catch(() => {});
   }
 
   // ---- listed-state (green "✓ Added") ----
@@ -212,8 +223,12 @@
       .then((r) => { const next = !!(r && r.ok && r.auth && r.auth.entitled); if (next !== entitled) { entitled = next; repaintAll(); } })
       .catch(() => {});
   }
-  chrome.storage.local.get(['ezlistListedVins'])
-    .then((s) => { listedKeys = s.ezlistListedVins || {}; repaintAll(); })
+  chrome.storage.local.get(['ezlistListedVins', 'ezlistPrefs'])
+    .then((s) => {
+      listedKeys = s.ezlistListedVins || {};
+      platform = (s.ezlistPrefs && s.ezlistPrefs.platform) || 'fb';
+      repaintAll();
+    })
     .catch(() => {});
   refreshEntitled();
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -223,6 +238,10 @@
       repaintAll();
     }
     if (changes.ezlistMe || changes.ezlistAuthToken) refreshEntitled();
+    if (changes.ezlistPrefs) {
+      const next = (changes.ezlistPrefs.newValue && changes.ezlistPrefs.newValue.platform) || 'fb';
+      if (next !== platform) { platform = next; repaintAll(); } // re-color cards for the new marketplace
+    }
   });
   function cardKey(card, vdpUrl) {
     const vin = (card.getAttribute('data-vin') || '').toUpperCase();
@@ -233,6 +252,13 @@
   // Inline ink-coloured bolt (the panel's lightning mark); fill:currentColor so it inherits
   // the button's text colour. Set via innerHTML (static markup, no user input).
   const BOLT = (sz) => `<svg width="${sz}" height="${sz}" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="flex:0 0 auto"><path d="M13 2L4.5 13.5H11l-1 8.5L19.5 10H13l0-8z"/></svg>`;
+  // ezlistListedVins entries are per-platform { fb?:{...}, craigslist?:{...} }; legacy flat
+  // { listedAt } means Facebook. A card is "Added" only if it's listed on the SELECTED platform.
+  const listedOn = (entry, plat) => {
+    if (!entry || typeof entry !== 'object') return false;
+    if ('listedAt' in entry) return plat === 'fb'; // legacy flat = Facebook
+    return !!entry[plat];
+  };
   function paint(btn) {
     if (btn.dataset.busy) return; // mid-click transient text — don't clobber
     const vdp = btn.classList.contains('ezlist-vdp-btn');
@@ -242,10 +268,10 @@
       btn.style.color = '#8a8d9b';
       btn.style.boxShadow = 'none';
       btn.innerHTML = `<span>🔒 ${vdp ? 'Sign in to list' : 'Sign in'}</span>`;
-      btn.title = 'Sign in to Carxpert to list this vehicle';
+      btn.title = 'Sign in to CarXprt to list this vehicle';
       return;
     }
-    const listed = !!(btn.dataset.ezkey && listedKeys[btn.dataset.ezkey]);
+    const listed = !!(btn.dataset.ezkey && listedOn(listedKeys[btn.dataset.ezkey], platform));
     if (listed) {
       btn.style.background = '#178a3f';   // success green — reads clearly as "already listed"
       btn.style.color = '#fff';
@@ -277,16 +303,21 @@
     try {
       const draft = extractVehicle(scope, sourceUrl);
       if (!draft.vin) throw new Error('no VIN found on this card');
-      await chrome.runtime.sendMessage({ type: 'EZLIST_SAVE_DRAFT', draft, autoFill: true });
+      await chrome.runtime.sendMessage({ type: 'EZLIST_SAVE_DRAFT', draft, autoFill: true, platform, key: (draft.vin || '').toUpperCase() });
       // Overlap: start downloading photos now, in parallel with the FB tab opening + form fill.
-      if (draft.photoBaseUrl) {
+      // (FB uploads photos during the fill; Craigslist adds them on a later step, so skip there.)
+      if (draft.photoBaseUrl && platform === 'fb') {
         chrome.runtime.sendMessage({ type: 'EZLIST_PREFETCH_IMAGES', baseUrl: draft.photoBaseUrl, ext: draft.photoExt }).catch(() => {});
       }
-      await chrome.runtime.sendMessage({ type: 'EZLIST_OPEN_FACEBOOK' });
-      btn.textContent = '✓ Opened FB';
+      await chrome.runtime.sendMessage({ type: 'EZLIST_OPEN_PLATFORM', platform });
+      btn.textContent = platform === 'fb' ? '✓ Opened FB' : '✓ Opened';
       prewarmed = false; // allow warming a fresh tab for the next car
     } catch (e) {
-      btn.textContent = 'Error';
+      // "Extension context invalidated" = this tab's content script is stale after an
+      // extension reload; a page refresh re-injects a fresh one. Guide the user rather than
+      // showing a bare "Error".
+      const stale = /context invalidated/i.test((e && e.message) || '');
+      btn.textContent = stale ? '↻ Refresh page' : 'Error';
       console.error('[ezlist] list failed:', e);
     } finally {
       // Restore the correct steady state (green if since published, else "⚡ List").
@@ -376,8 +407,8 @@
     try {
       const draft = extractVehicle(vdpVehicleEl(), location.href);
       if (!draft.vin) { sendResponse({ ok: false, error: 'No vehicle data found on this page.' }); return false; }
-      chrome.runtime.sendMessage({ type: 'EZLIST_SAVE_DRAFT', draft }, () => {
-        chrome.runtime.sendMessage({ type: 'EZLIST_OPEN_FACEBOOK' });
+      chrome.runtime.sendMessage({ type: 'EZLIST_SAVE_DRAFT', draft, autoFill: true, platform, key: (draft.vin || '').toUpperCase() }, () => {
+        chrome.runtime.sendMessage({ type: 'EZLIST_OPEN_PLATFORM', platform });
         sendResponse({ ok: true, draft });
       });
       return true; // async sendResponse

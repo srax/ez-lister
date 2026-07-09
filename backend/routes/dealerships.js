@@ -40,7 +40,8 @@ router.post('/api/dealerships/resolve', requireUser, async (req, res, next) => {
   }
 });
 
-// Link the user to a supported dealership (one per user; switching is admin-only).
+// Link the user to a supported dealership (one per user). Switching is allowed while the
+// account has no live paid subscription; after payment the link is locked (409, admin-only).
 router.post('/api/dealerships/link', requireUser, async (req, res, next) => {
   try {
     const dealershipId = req.body && req.body.dealershipId;
