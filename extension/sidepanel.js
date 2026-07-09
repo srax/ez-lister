@@ -37,6 +37,7 @@ const ui = {
   stPlatforms: el('st-platforms'), stTrend: el('st-trend'), stListings: el('st-listings'),
   // auth + entitlement gate
   gate: el('gate'), gateIcon: el('gate-icon'), gateTitle: el('gate-title'), gateMsg: el('gate-msg'),
+  gateSteps: el('gate-steps'), gateBenefits: el('gate-benefits'),
   gateDealer: el('gate-dealer'), gatePrice: el('gate-price'), gatePriceAmt: el('gate-price-amt'), gatePricePer: el('gate-price-per'),
   gatePrimary: el('gate-primary'), gateSecondary: el('gate-secondary'),
   gateErr: el('gate-err'), gateSignout: el('gate-signout'),
@@ -61,7 +62,11 @@ const state = {
   plan: null,
   dealerRequestOpen: false,
   autoDealerConnectTried: false,
-  linkFlash: null
+  linkFlash: null,
+  authResolved: false,     // first /api/me answer landed — until then the gate shows "checking"
+  checkoutPending: false,  // Stripe tab is open — show the "finish in checkout" beat
+  welcome: false,          // one-time arrival screen after completing onboarding this session
+  lastGateScreen: 'checking'
 };
 
 init();
@@ -614,7 +619,7 @@ function renderListingList() {
   if (!ui.stListings) return;
   const all = unifiedListings();
   if (!all.length) {
-    ui.stListings.innerHTML = '<div class="listing-empty">No listings tracked yet. Cars you publish with Carxpert show up here.</div>';
+    ui.stListings.innerHTML = '<div class="listing-empty">No listings tracked yet. Cars you publish with CarXprt show up here.</div>';
     return;
   }
   const dayCount = (from, to) => Math.max(1, Math.round((new Date(to) - new Date(from)) / 864e5));
@@ -786,8 +791,8 @@ function wireEvents() {
   ui.tMileage.addEventListener('click', () => savePref('mileage', !state.prefs.mileage, true));
 
   // auth + gate
-  ui.gatePrimary.addEventListener('click', () => gateAction(ui.gatePrimary.dataset.action));
-  ui.gateSecondary.addEventListener('click', () => gateAction(ui.gateSecondary.dataset.action));
+  ui.gatePrimary.addEventListener('click', () => gateAction(ui.gatePrimary.dataset.action, ui.gatePrimary));
+  ui.gateSecondary.addEventListener('click', () => gateAction(ui.gateSecondary.dataset.action, ui.gateSecondary));
   ui.dealerRequestToggle.addEventListener('click', () => { state.dealerRequestOpen = true; renderGate(); });
   ui.dealerRequestCancel.addEventListener('click', () => { state.dealerRequestOpen = false; renderGate(); });
   ui.dealerRequest.addEventListener('submit', submitDealerRequest);
@@ -917,15 +922,26 @@ async function onTranslate() {
 }
 
 // ---------- auth + entitlement gate (C3) ----------
-// One gate screen per /api/me reason. The background worker owns auth/entitlement; the panel
-// just renders the right step and fires the action.
-const GATE = {
-  signed_out: { icon: '🔑', title: 'Sign in to Carxpert', msg: 'Sign in with your Google account to start listing inventory to Facebook Marketplace.', primary: 'Sign in with Google', action: 'signin' },
-  no_dealership: { icon: '🏬', title: 'Connect your dealership', msg: 'Open your dealership inventory page, then detect and connect it here. Supported dealers unlock checkout immediately.', primary: 'Detect dealership', action: 'connectDealer' },
-  no_subscription: { title: 'Start your subscription', msg: 'One-click dealer inventory to Facebook Marketplace, with AI descriptions & translations.', primary: 'Subscribe', action: 'checkout', price: true },
-  expired: { title: 'Renew your subscription', msg: 'Your subscription has ended. Renew to keep listing to Facebook Marketplace.', primary: 'Renew', action: 'checkout', price: true },
-  unknown: { icon: '⚠️', title: 'Couldn’t load your account', msg: 'We couldn’t reach the server. Check your connection and try again.', primary: 'Retry', action: 'recheck' }
+// One gate screen per /api/me reason, presented as a guided 3-step journey
+// (Sign in · Connect · Subscribe) with orchestrated transitions. The background worker owns
+// auth/entitlement; the panel just renders the right step and fires the action.
+// Static internal SVG markup (no user input) — innerHTML is safe here.
+const GATE_SVG = {
+  user: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+  store: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l1.7-5.2A1 1 0 0 1 5.7 3h12.6a1 1 0 0 1 1 .8L21 9"/><path d="M4 9v11a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9"/><path d="M9 21v-6h6v6"/><path d="M2.5 9h19"/></svg>',
+  card: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>',
+  alert: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
 };
+const GATE = {
+  signed_out: { step: 1, benefits: true, title: 'Welcome to CarXprt', msg: 'Sign in with Google to start listing your dealership’s inventory — Facebook Marketplace, Craigslist, and more.', primary: 'Sign in with Google', action: 'signin' },
+  no_dealership: { svg: GATE_SVG.store, step: 2, title: 'Connect your dealership', msg: 'Open your dealership’s inventory page in a tab, then detect it here. Supported dealers connect instantly.', primary: 'Detect dealership', action: 'connectDealer' },
+  no_subscription: { svg: GATE_SVG.card, step: 3, title: 'Start your subscription', msg: 'Unlimited one-click listings, AI descriptions & translations, and automatic sold tracking.', primary: 'Subscribe', action: 'checkout', price: true },
+  expired: { svg: GATE_SVG.card, title: 'Renew your subscription', msg: 'Your subscription has ended. Renew to keep listing your inventory to your marketplaces.', primary: 'Renew', action: 'checkout', price: true },
+  unknown: { svg: GATE_SVG.alert, title: 'Couldn’t load your account', msg: 'We couldn’t reach the server. Check your connection and try again.', primary: 'Retry', action: 'recheck' }
+};
+// Screens that count as "the user is inside onboarding" — finishing from one of these earns
+// the one-time welcome beat before the app appears.
+const ONBOARDING_SCREENS = ['signed_out', 'no_dealership', 'no_subscription', 'expired', 'checkout_pending', 'linkflash'];
 
 async function loadBillingPlan() {
   const res = await chrome.runtime.sendMessage({ type: 'EZLIST_BILLING_PLAN' }).catch(() => null);
@@ -952,6 +968,7 @@ async function refreshAuth(opts) {
   } catch {
     state.auth = { signedIn: false, entitled: false, reason: 'unknown' };
   }
+  state.authResolved = true; // the boot "checking" screen can resolve now
   renderGate();
   return state.auth;
 }
@@ -966,55 +983,153 @@ function gateStateKey(auth) {
   return 'unknown';
 }
 
+// Which screen the gate should show right now. Pseudo-screens (checking / linkflash /
+// welcome / checkout_pending) wrap the /api/me-driven GATE keys; null = entitled, no gate.
+function gateScreen(auth) {
+  if (!state.authResolved) return 'checking';
+  if (state.linkFlash && auth.signedIn) return 'linkflash';
+  const key = gateStateKey(auth);
+  if (state.welcome && key === null) return 'welcome';
+  if (state.checkoutPending && (key === 'no_subscription' || key === 'expired')) return 'checkout_pending';
+  return key;
+}
+
+// Restart the staggered enter animation — only called when the screen actually changes, so
+// routine re-renders (visibilitychange, storage pings) don't re-play it.
+function restartGateEnter() {
+  const card = ui.gate.querySelector('.gate-card');
+  if (!card) return;
+  card.classList.remove('gate-enter');
+  void card.offsetWidth; // reflow so removing+adding the class re-triggers the CSS animations
+  card.classList.add('gate-enter');
+}
+
+function renderSteps(n) {
+  // n = 1..3 highlights that step, 4 = all done (the welcome completion cue), null = hidden.
+  ui.gateSteps.hidden = !n;
+  if (!n) return;
+  ui.gateSteps.querySelectorAll('.gstep').forEach((s) => {
+    const k = Number(s.dataset.n);
+    s.classList.toggle('done', k < n);
+    s.classList.toggle('active', k === n);
+  });
+}
+
 function renderGate() {
   const auth = state.auth || { signedIn: false };
   applyAccount(auth);
-  // The linking moment gets its own beat (spinner → tick) before the next gate step —
-  // otherwise a successful auto-connect silently drops the user on the subscribe screen.
-  if (state.linkFlash && auth.signedIn) { renderLinkFlash(); return; }
-  const key = gateStateKey(auth);
-  if (!key) { ui.gate.hidden = true; return; }
-  const g = GATE[key];
-  ui.gate.hidden = false;
-  ui.gatePrimary.hidden = false;
-  ui.gateIcon.textContent = '';
-  ui.gateIcon.hidden = true;
-  ui.gateTitle.textContent = g.title;
-  ui.gateMsg.textContent = g.msg;
-  renderVerifiedDealer(key, auth);
-  ui.gatePrice.hidden = !g.price;
-  if (g.price) renderPlan();
-  ui.gatePrimary.textContent = g.primary;
-  ui.gatePrimary.dataset.action = g.action;
-  if (g.secondary) { ui.gateSecondary.hidden = false; ui.gateSecondary.textContent = g.secondary; ui.gateSecondary.dataset.action = g.secondaryAction; }
-  else ui.gateSecondary.hidden = true;
-  renderDealerConnect(key, auth);
-  ui.gateSignout.hidden = !auth.signedIn;
-  ui.gateErr.hidden = true;
-}
-
-function renderLinkFlash() {
-  const f = state.linkFlash;
-  const name = f.name
-    || (state.auth && state.auth.dealership && state.auth.dealership.name)
-    || 'Dealership';
-  ui.gate.hidden = false;
-  ui.gateIcon.hidden = false;
-  ui.gateIcon.innerHTML = f.stage === 'linking'
-    ? '<span class="gate-spinner" aria-hidden="true"></span>'
-    : '<span class="gate-tick" aria-hidden="true">✓</span>';
-  ui.gateTitle.textContent = f.stage === 'linking' ? 'Connecting your dealership…' : 'Dealership linked';
-  ui.gateMsg.textContent = f.stage === 'linking' ? 'Verifying with Carxpert' : '';
-  ui.gateDealer.hidden = f.stage !== 'linked';
-  if (f.stage === 'linked') {
-    ui.gateDealer.innerHTML = `${esc(name)}<small>Verified by Carxpert backend</small>`;
+  let screen = gateScreen(auth);
+  // Finished onboarding this session → one welcome beat before the app appears.
+  if (!screen && ONBOARDING_SCREENS.includes(state.lastGateScreen)) {
+    state.welcome = true;
+    state.checkoutPending = false;
+    screen = 'welcome';
   }
+  const changed = screen !== state.lastGateScreen;
+  state.lastGateScreen = screen;
+  if (!screen) { ui.gate.hidden = true; return; }
+  ui.gate.hidden = false;
+  if (changed) restartGateEnter();
+
+  // Reset shared elements; each screen re-shows what it needs.
+  ui.gateIcon.innerHTML = '';
+  ui.gateIcon.hidden = false;
+  ui.gateBenefits.hidden = true;
+  ui.gateDealer.hidden = true;
   ui.gatePrice.hidden = true;
   ui.gatePrimary.hidden = true;
   ui.gateSecondary.hidden = true;
   ui.dealerConnect.hidden = true;
   ui.gateErr.hidden = true;
   ui.gateSignout.hidden = true;
+  renderSteps(null);
+
+  if (screen === 'checking') {
+    ui.gateIcon.innerHTML = '<span class="gate-spinner" aria-hidden="true"></span>';
+    ui.gateTitle.textContent = 'One moment…';
+    ui.gateMsg.textContent = 'Checking your account.';
+    return;
+  }
+  if (screen === 'linkflash') { renderLinkFlash(); return; }
+  if (screen === 'welcome') { renderWelcome(auth); return; }
+  if (screen === 'checkout_pending') { renderCheckoutPending(); return; }
+
+  const g = GATE[screen];
+  if (screen === 'signed_out') { state.checkoutPending = false; state.welcome = false; }
+  renderSteps(g.step || null);
+  if (g.svg) ui.gateIcon.innerHTML = `<span class="gate-disc">${g.svg}</span>`;
+  else ui.gateIcon.hidden = true;
+  ui.gateTitle.textContent = g.title;
+  ui.gateMsg.textContent = g.msg;
+  ui.gateBenefits.hidden = !g.benefits;
+  renderVerifiedDealer(screen, auth);
+  ui.gatePrice.hidden = !g.price;
+  if (g.price) renderPlan();
+  ui.gatePrimary.hidden = false;
+  ui.gatePrimary.textContent = g.primary;
+  ui.gatePrimary.dataset.action = g.action;
+  renderDealerConnect(screen, auth);
+  ui.gateSignout.hidden = !auth.signedIn;
+}
+
+// The linking moment keeps its own beat (spinner → tick) before the next gate step —
+// otherwise a successful auto-connect silently drops the user on the subscribe screen.
+function renderLinkFlash() {
+  const f = state.linkFlash;
+  const name = f.name
+    || (state.auth && state.auth.dealership && state.auth.dealership.name)
+    || 'Dealership';
+  renderSteps(2);
+  ui.gateIcon.innerHTML = f.stage === 'linking'
+    ? '<span class="gate-spinner" aria-hidden="true"></span>'
+    : '<span class="gate-tick" aria-hidden="true">✓</span>';
+  ui.gateTitle.textContent = f.stage === 'linking' ? 'Connecting your dealership…' : 'Dealership linked';
+  ui.gateMsg.textContent = f.stage === 'linking' ? 'Verifying with CarXprt' : '';
+  ui.gateDealer.hidden = f.stage !== 'linked';
+  if (f.stage === 'linked') {
+    ui.gateDealer.innerHTML = `${esc(name)}<small>Verified by CarXprt backend</small>`;
+  }
+}
+
+// Stripe checkout opened in a tab — hold a "finish there" beat here instead of a stale
+// subscribe screen. visibilitychange + the background checkout-watch flip it automatically.
+function renderCheckoutPending() {
+  renderSteps(3);
+  ui.gateIcon.innerHTML = '<span class="gate-spinner" aria-hidden="true"></span>';
+  ui.gateTitle.textContent = 'Finish in the checkout tab';
+  ui.gateMsg.textContent = 'Complete your subscription in the Stripe tab that just opened — CarXprt unlocks here automatically.';
+  ui.gatePrimary.hidden = false;
+  ui.gatePrimary.textContent = 'I’ve subscribed — check again';
+  ui.gatePrimary.dataset.action = 'recheck';
+  ui.gateSecondary.hidden = false;
+  ui.gateSecondary.textContent = 'Back';
+  ui.gateSecondary.dataset.action = 'checkoutBack';
+}
+
+// One-time arrival screen when onboarding completes this session: all steps done, a clear
+// pointer at the first real action. Never blocks — both buttons dismiss it.
+function renderWelcome(auth) {
+  renderSteps(4);
+  ui.gateIcon.innerHTML = '<span class="gate-tick lg" aria-hidden="true">✓</span>';
+  ui.gateTitle.textContent = 'You’re all set!';
+  ui.gateMsg.textContent = 'Open your inventory and hit ⚡ List on any car — CarXprt fills the listing, you review and publish.';
+  const url = dealerInventoryUrl(auth);
+  ui.gatePrimary.hidden = false;
+  ui.gatePrimary.textContent = url ? 'Open my inventory' : 'Start listing';
+  ui.gatePrimary.dataset.action = url ? 'openInventory' : 'dismissWelcome';
+  ui.gateSecondary.hidden = !url;
+  if (url) { ui.gateSecondary.textContent = 'Not now'; ui.gateSecondary.dataset.action = 'dismissWelcome'; }
+}
+
+// The dealership's inventory page, from the /api/me payload (config.inventoryUrls, falling
+// back to the first alias domain). Null when the payload has neither.
+function dealerInventoryUrl(auth) {
+  const d = auth && auth.dealership;
+  if (!d) return null;
+  const inv = d.config && Array.isArray(d.config.inventoryUrls) && d.config.inventoryUrls[0];
+  if (inv) return inv;
+  const dom = Array.isArray(d.domains) && d.domains[0];
+  return dom ? `https://${dom}` : null;
 }
 
 function startLinkFlash(dealer) {
@@ -1034,7 +1149,7 @@ function renderVerifiedDealer(key, auth) {
   const show = !!(dealer && (key === 'no_subscription' || key === 'expired'));
   ui.gateDealer.hidden = !show;
   if (!show) return;
-  ui.gateDealer.innerHTML = `${esc(dealer.name || 'Dealership verified')}<small>Verified by Carxpert backend</small>`;
+  ui.gateDealer.innerHTML = `${esc(dealer.name || 'Dealership verified')}<small>Verified by CarXprt backend</small>`;
 }
 
 function renderDealerConnect(key, auth) {
@@ -1084,9 +1199,19 @@ function applyAccount(auth) {
     : 'No active plan';
 }
 
-async function gateAction(action) {
+async function gateAction(action, btnEl) {
   ui.gateErr.hidden = true;
-  const btn = action === 'refresh' ? ui.gateSecondary : ui.gatePrimary;
+  // Instant local screen switches — no network, no button-state dance.
+  if (action === 'dismissWelcome') { state.welcome = false; renderGate(); return; }
+  if (action === 'checkoutBack') { state.checkoutPending = false; renderGate(); return; }
+  if (action === 'openInventory') {
+    const url = dealerInventoryUrl(state.auth);
+    if (url) chrome.tabs.create({ url }).catch(() => window.open(url, '_blank'));
+    state.welcome = false;
+    renderGate();
+    return;
+  }
+  const btn = btnEl || (action === 'refresh' ? ui.gateSecondary : ui.gatePrimary);
   const label = btn.textContent;
   btn.disabled = true;
   try {
@@ -1105,7 +1230,10 @@ async function gateAction(action) {
         err.reason = res && res.reason;
         throw err;
       }
-      // Checkout opens in a tab; entitlement flips when the user returns (visibilitychange) or taps refresh.
+      // Checkout opened in a tab — hold the "finish in checkout" beat here; entitlement flips
+      // via visibilitychange / the background checkout-watch / the manual recheck button.
+      state.checkoutPending = true;
+      renderGate();
     } else { // refresh | recheck | retry
       btn.textContent = 'Checking…';
       await refreshAuth({ refresh: true });
@@ -1119,7 +1247,10 @@ async function gateAction(action) {
     }
   } finally {
     btn.disabled = false;
-    btn.textContent = label;
+    // Restore the label only if it still shows our transient text — a successful action may
+    // have re-rendered the gate onto a new screen whose button text must not be clobbered.
+    const transient = ['Opening Google…', 'Opening checkout…', 'Checking…'];
+    if (transient.includes(btn.textContent)) btn.textContent = label;
   }
 }
 

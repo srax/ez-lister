@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Carxpert</title>
+  <title>CarXprt</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -15,10 +15,10 @@
   <!-- Header -->
   <header class="head">
     <span class="logo" aria-hidden="true">
-      <img src="assets/cx-logo.png" alt="Carxpert">
+      <img src="assets/cx-logo.png" alt="CarXprt">
     </span>
     <div class="brand">
-      <div class="brand-name">Carxpert</div>
+      <div class="brand-name">CarXprt</div>
       <div class="brand-tag">
         <svg width="11" height="11" viewBox="0 0 24 24" fill="#6f7257"><path d="M13 2L4.5 13.5H11l-1 8.5L19.5 10H13l0-8z"/></svg>
         <span>Lightning-fast lister</span>
@@ -305,18 +305,38 @@
   </div>
 
   <!-- Entitlement gate — covers the panel until signed in + subscribed + dealership-linked.
-       One screen per /api/me reason: signed_out → no_dealership → no_subscription → ready. -->
-  <div id="gate" class="gate" hidden>
+       One screen per /api/me reason: signed_out → no_dealership → no_subscription → ready.
+       Boots VISIBLE in a "checking" state so a signed-out user never sees the app flash. -->
+  <div id="gate" class="gate">
     <div class="gate-card">
-      <img class="gate-logo" src="assets/cx-logo.png" alt="Carxpert">
-      <div class="gate-icon" id="gate-icon" aria-hidden="true" hidden></div>
-      <h2 class="gate-title" id="gate-title">Carxpert</h2>
-      <p class="gate-msg" id="gate-msg"></p>
+      <img class="gate-logo" src="assets/cx-logo.png" alt="CarXprt">
+      <div class="gate-steps" id="gate-steps" hidden>
+        <span class="gstep" data-n="1"><i></i>Sign in</span>
+        <span class="gstep" data-n="2"><i></i>Connect</span>
+        <span class="gstep" data-n="3"><i></i>Subscribe</span>
+      </div>
+      <div class="gate-icon" id="gate-icon" aria-hidden="true"><span class="gate-spinner"></span></div>
+      <h2 class="gate-title" id="gate-title">One moment…</h2>
+      <p class="gate-msg" id="gate-msg">Checking your account.</p>
+      <div class="gate-benefits" id="gate-benefits" hidden>
+        <div class="gate-benefit">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="#1c1e12" aria-hidden="true"><path d="M13 2L4.5 13.5H11l-1 8.5L19.5 10H13l0-8z"/></svg>
+          <span><b>One-click listing</b> — a car goes from your site to a filled marketplace form</span>
+        </div>
+        <div class="gate-benefit">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#1c1e12" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 4.6L18.5 9 14 11l-2 4.6L10 11 5.5 9 10 7.6 12 3z"/></svg>
+          <span><b>AI descriptions</b> — drafted and translated for you</span>
+        </div>
+        <div class="gate-benefit">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#1c1e12" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" y1="20" x2="6" y2="13"/><line x1="12" y1="20" x2="12" y2="8"/><line x1="18" y1="20" x2="18" y2="4"/></svg>
+          <span><b>Sold tracking</b> — live stats per marketplace, automatic</span>
+        </div>
+      </div>
       <div class="gate-dealer" id="gate-dealer" hidden></div>
       <div class="gate-price" id="gate-price" hidden>
         <span class="gate-price-amt" id="gate-price-amt">$89.99</span><span class="gate-price-per" id="gate-price-per"> / month · cancel anytime</span>
       </div>
-      <button class="accent-btn primary gate-primary" id="gate-primary"></button>
+      <button class="accent-btn primary gate-primary" id="gate-primary" hidden></button>
       <button class="ghost-btn compact gate-secondary" id="gate-secondary" hidden></button>
       <div class="dealer-connect" id="dealer-connect" hidden>
         <div class="dealer-pending" id="dealer-pending" hidden></div>

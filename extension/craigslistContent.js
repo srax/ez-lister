@@ -138,7 +138,7 @@
     filling = true;
     try {
       const gate = await chrome.runtime.sendMessage({ type: 'EZLIST_CAN_LIST' }).catch(() => null);
-      if (!gate || !gate.ok) { setBtn('Sign in to Carxpert to fill'); postStatus('Sign in to Carxpert to fill listings.', true); return; }
+      if (!gate || !gate.ok) { setBtn('Sign in to CarXprt to fill'); postStatus('Sign in to CarXprt to fill listings.', true); return; }
       const draft = await getDraft();
       if (!draft) { setBtn('No car — List one first'); postStatus('No vehicle draft found — List a car first.', true); return; }
       setBtn('Filling…');
@@ -266,12 +266,12 @@
       const draft = await getDraft();
       if (draft) {
         const car = [draft.year, draft.make, draft.model].filter(Boolean).join(' ') || 'this listing';
-        ensureButton(`⚡ Fill ${car} with Carxpert`, doFill);
+        ensureButton(`⚡ Fill ${car} with CarXprt`, doFill);
       }
     } else if (isImagesPage()) {
       const draft = await getDraft();
       if (draft && (draft.photoBaseUrl || (draft.photoUrls && draft.photoUrls.length))) {
-        ensureButton('⚡ Add photos with Carxpert', addPhotos);
+        ensureButton('⚡ Add photos with CarXprt', addPhotos);
       }
     }
   }

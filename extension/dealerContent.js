@@ -260,7 +260,7 @@
       btn.style.color = '#8a8d9b';
       btn.style.boxShadow = 'none';
       btn.innerHTML = `<span>🔒 ${vdp ? 'Sign in to list' : 'Sign in'}</span>`;
-      btn.title = 'Sign in to Carxpert to list this vehicle';
+      btn.title = 'Sign in to CarXprt to list this vehicle';
       return;
     }
     const listed = !!(btn.dataset.ezkey && listedOn(listedKeys[btn.dataset.ezkey], platform));

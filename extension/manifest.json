@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Carxpert Lightning Lister",
+  "name": "CarXprt Lightning Lister",
   "version": "0.2.2",
   "description": "List dealership inventory to Facebook Marketplace in one click.",
   "minimum_chrome_version": "114",
@@ -29,7 +29,7 @@
     "128": "assets/icon-128.png"
   },
   "action": {
-    "default_title": "Carxpert \u2014 open panel",
+    "default_title": "CarXprt \u2014 open panel",
     "default_icon": {
       "16": "assets/icon-16.png",
       "32": "assets/icon-32.png",

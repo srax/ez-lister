@@ -14,6 +14,9 @@
   --input-border:#e7e8ee;
 }
 *{ box-sizing:border-box; }
+/* The hidden attribute must always win — author display rules (e.g. .ghost-btn's display:flex)
+   otherwise override the UA's [hidden]{display:none} and "hidden" elements still render. */
+[hidden]{ display:none !important; }
 html,body{ height:100%; }
 body{
   margin:0; display:flex; flex-direction:column;
@@ -304,10 +307,54 @@ body{
 .gate{ position:fixed; inset:0; z-index:60; background:linear-gradient(180deg,#fff 0%,#fafbf3 100%); display:flex; align-items:center; justify-content:center; padding:28px 22px; }
 .gate[hidden]{ display:none; } /* author display:flex beats the UA [hidden] rule without this */
 .gate-card{ width:100%; max-width:300px; text-align:center; display:flex; flex-direction:column; align-items:center; }
-.gate-logo{ width:48px; height:48px; border-radius:13px; box-shadow:0 2px 8px rgba(20,24,55,0.14); margin-bottom:18px; }
-.gate-icon{ font-size:30px; line-height:1; margin-bottom:10px; min-height:20px; }
+.gate-logo{ width:48px; height:48px; border-radius:13px; box-shadow:0 2px 8px rgba(20,24,55,0.14); margin-bottom:16px; }
+.gate-icon{ display:flex; align-items:center; justify-content:center; margin-bottom:12px; min-height:34px; }
 .gate-title{ font-size:19px; font-weight:800; color:#191b29; letter-spacing:-0.3px; margin:0 0 8px; }
 .gate-msg{ font-size:13px; line-height:1.5; color:#5d6070; margin:0 0 18px; }
+
+/* step icon in a soft lime disc (replaces the old OS-emoji icons) */
+.gate-disc{ width:46px; height:46px; border-radius:14px; background:var(--accent-soft); border:1px solid var(--accent-border);
+  display:flex; align-items:center; justify-content:center; color:var(--ink); }
+
+/* onboarding progress — Sign in · Connect · Subscribe */
+.gate-steps{ display:flex; align-items:center; gap:0; margin:0 0 18px; }
+.gstep{ display:flex; align-items:center; gap:5px; font-size:10.5px; font-weight:700; color:#c0c2cc; letter-spacing:.1px; }
+.gstep i{ width:7px; height:7px; border-radius:50%; background:#e2e4ea; flex-shrink:0; transition:background .2s ease; }
+.gstep + .gstep::before{ content:''; width:16px; height:1px; background:#e7e8ee; margin:0 7px; }
+.gstep.active{ color:var(--ink); }
+.gstep.active i{ background:var(--ink); box-shadow:0 0 0 3px var(--accent-soft); }
+.gstep.done{ color:#8a8d9b; }
+.gstep.done i{ background:var(--accent); border:1px solid rgba(28,30,18,.25); }
+
+/* sign-in value proposition */
+.gate-benefits{ width:100%; display:flex; flex-direction:column; gap:9px; margin:-4px 0 18px; text-align:left; }
+.gate-benefit{ display:flex; align-items:flex-start; gap:9px; font-size:12px; font-weight:600; color:#5d6070; line-height:1.45; }
+.gate-benefit svg{ flex-shrink:0; margin-top:1.5px; }
+.gate-benefit b{ color:#23263a; font-weight:750; }
+
+/* welcome (arrival) tick — larger sibling of the link-flash tick */
+.gate-tick.lg{ width:46px; height:46px; border-radius:15px; font-size:22px; }
+
+/* orchestrated step transitions — content rises in with a small stagger on each step change */
+@keyframes gateRise{ from{ opacity:0; transform:translateY(8px); } to{ opacity:1; transform:none; } }
+@keyframes gateFade{ from{ opacity:0; } to{ opacity:1; } }
+.gate-enter .gate-steps,
+.gate-enter .gate-icon{ animation:gateRise .24s cubic-bezier(0.23,1,0.32,1) both; }
+.gate-enter .gate-title{ animation:gateRise .24s cubic-bezier(0.23,1,0.32,1) .04s both; }
+.gate-enter .gate-msg{ animation:gateRise .24s cubic-bezier(0.23,1,0.32,1) .07s both; }
+.gate-enter .gate-benefits,
+.gate-enter .gate-dealer,
+.gate-enter .gate-price{ animation:gateRise .24s cubic-bezier(0.23,1,0.32,1) .10s both; }
+.gate-enter .gate-primary{ animation:gateRise .24s cubic-bezier(0.23,1,0.32,1) .13s both; }
+.gate-enter .gate-secondary,
+.gate-enter .dealer-connect{ animation:gateRise .24s cubic-bezier(0.23,1,0.32,1) .16s both; }
+@media (prefers-reduced-motion: reduce){
+  .gate-enter .gate-steps, .gate-enter .gate-icon, .gate-enter .gate-title, .gate-enter .gate-msg,
+  .gate-enter .gate-benefits, .gate-enter .gate-dealer, .gate-enter .gate-price,
+  .gate-enter .gate-primary, .gate-enter .gate-secondary, .gate-enter .dealer-connect{
+    animation:gateFade .15s ease both;
+  }
+}
 .gate-dealer{ width:100%; margin:-5px 0 15px; padding:9px 11px; border:1px solid #dfe1ea; border-radius:11px; background:#fbfbfd; color:#23263a; font-size:12px; font-weight:750; line-height:1.35; text-align:left; }
 .gate-dealer small{ display:block; margin-top:2px; color:#8a8d9b; font-size:10.5px; font-weight:700; }
 /* Dealership-link moment: spinner -> tick beat shown between connect and subscribe. */

@@ -120,7 +120,7 @@
       // Entitlement guard (belt-and-braces; the panel/dealer path gates first). No host —
       // just "is the user entitled to fill"; lease-first with /api/me fallback in the worker.
       const gate = await chrome.runtime.sendMessage({ type: 'EZLIST_CAN_LIST' }).catch(() => null);
-      if (!gate || !gate.ok) { postStatus('Sign in to Carxpert to fill listings.', true); return; }
+      if (!gate || !gate.ok) { postStatus('Sign in to CarXprt to fill listings.', true); return; }
       const resp = await getStored();
       const draft = resp && resp.ezlistDraft;
       if (!draft) { postStatus('No vehicle draft found.', true); return; }
