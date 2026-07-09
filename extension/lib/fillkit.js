@@ -61,13 +61,23 @@
     return (l.textContent || '').trim();
   };
 
-  const getLabel = (name) => [...document.querySelectorAll('label')]
-    .find((l) => fieldName(l).toLowerCase() === name.toLowerCase());
+  // Field labels can differ per locale ("Exterior color" US vs "Exterior colour" UK), so
+  // lookups take one name or an ordered candidate list (primary spelling first).
+  const getLabel = (names) => {
+    const list = Array.isArray(names) ? names : [names];
+    const labels = [...document.querySelectorAll('label')];
+    for (const n of list) {
+      const hit = labels.find((l) => fieldName(l).toLowerCase() === n.toLowerCase());
+      if (hit) return hit;
+    }
+    return undefined;
+  };
+  const displayName = (names) => (Array.isArray(names) ? names[0] : names);
 
-  const waitForLabel = async (name, timeout = 8000) => {
+  const waitForLabel = async (names, timeout = 8000) => {
     const t0 = Date.now();
     while (Date.now() - t0 < timeout) {
-      if (getLabel(name)) return true;
+      if (getLabel(names)) return true;
       await sleep(60);
     }
     return false;
@@ -106,54 +116,76 @@
     if (a && typeof a.blur === 'function') a.blur();
   };
 
-  async function fillTextField(name, value) {
-    if (value === undefined || value === null || value === '') return { name, ok: false, msg: 'no value' };
+  async function fillTextField(name, value, opts = {}) {
+    const disp = displayName(name);
+    if (value === undefined || value === null || value === '') return { name: disp, ok: false, msg: 'no value' };
     const label = getLabel(name);
-    if (!label) return { name, ok: false, msg: 'field not found' };
+    if (!label) return { name: disp, ok: false, msg: 'field not found' };
     const input = label.querySelector('input, textarea');
-    if (!input) return { name, ok: false, msg: 'no input in field' };
+    if (!input) return { name: disp, ok: false, msg: 'no input in field' };
     input.focus();
     setNativeValue(input, String(value));
     await sleep(50); // let a controlled input reformat (e.g. price -> $54,970) settle
     const digits = (s) => String(s).replace(/\D/g, '');
     const ok = norm(input.value) === norm(value) || (!!digits(value) && digits(input.value) === digits(value));
-    return { name, ok, msg: ok ? `"${input.value}"` : `got "${input.value}"` };
+    // Currency guard: a non-matching symbol means the account's marketplace region reformats
+    // the amount in local currency (live case: "$35,995" typed on a PK-region account became
+    // "Rs35,995" — a $130 car). The digits match, so this is the only tell.
+    if (ok && opts.currencySymbol) {
+      const symbol = String(input.value).replace(/[\d.,\s]/g, '');
+      if (symbol && symbol !== opts.currencySymbol) {
+        return { name: disp, ok: false, msg: `entered as "${input.value}" — marketplace region isn't ${opts.currencySymbol === '$' ? 'US' : opts.currencySymbol}, fix the price/currency before publishing` };
+      }
+    }
+    return { name: disp, ok, msg: ok ? `"${input.value}"` : `got "${input.value}"` };
   }
 
+  // `value` may be a single string or an ORDERED candidate list (e.g. a US spelling with its
+  // UK fallback) — each is tried in turn, in the portal and in searchable-typing mode.
   async function selectDropdown(name, value) {
-    if (value === undefined || value === null || value === '') return { name, ok: false, msg: 'no value' };
+    const disp = displayName(name);
+    const values = (Array.isArray(value) ? value : [value]).filter((v) => v !== undefined && v !== null && v !== '');
+    if (!values.length) return { name: disp, ok: false, msg: 'no value' };
     const label = getLabel(name);
-    if (!label) return { name, ok: false, msg: 'field not found' };
+    if (!label) return { name: disp, ok: false, msg: 'field not found' };
     realClick(label);
-    // wait for the option portal to render, then match
+    // wait for the option portal to render, then try each candidate in order
     await waitUntil(() => readOptions().length > 0, 3000);
-    let hit = matchOption(readOptions(), value);
+    let hit = null;
+    for (const v of values) {
+      hit = matchOption(readOptions(), v);
+      if (hit) break;
+    }
     if (!hit) {
       // searchable dropdown (e.g. Make): type to filter, then wait for a match to appear
       const focused = document.activeElement;
       if (focused && focused.tagName === 'INPUT') {
-        setNativeValue(focused, String(value));
-        hit = await waitUntil(() => matchOption(readOptions(), value), 2500);
+        for (const v of values) {
+          setNativeValue(focused, String(v));
+          hit = await waitUntil(() => matchOption(readOptions(), v), 2500);
+          if (hit) break;
+        }
       }
     }
     if (!hit) {
       await closeAnyDropdown();
-      return { name, ok: false, msg: `no option matched "${value}"` };
+      return { name: disp, ok: false, msg: `no option matched ${values.map((v) => `"${v}"`).join(' / ')}` };
     }
     realClick(hit.el);
     // wait for the listbox to close (selection committed) before the next field opens its own
     await waitUntil(() => readOptions().length === 0, 1500);
-    return { name, ok: true, msg: `picked "${hit.txt}"` };
+    return { name: disp, ok: true, msg: `picked "${hit.txt}"` };
   }
 
   // Autocomplete field: type the value, then pick the first suggestion that renders.
   // Generalized from Facebook's Location field so any platform's typeahead can reuse it.
   async function fillAutocomplete(name, value) {
-    if (value === undefined || value === null || value === '') return { name, ok: false, msg: 'no value' };
+    const disp = displayName(name);
+    if (value === undefined || value === null || value === '') return { name: disp, ok: false, msg: 'no value' };
     const label = getLabel(name);
-    if (!label) return { name, ok: false, msg: 'field not found' };
+    if (!label) return { name: disp, ok: false, msg: 'field not found' };
     const input = label.querySelector('input');
-    if (!input) return { name, ok: false, msg: 'no input in field' };
+    if (!input) return { name: disp, ok: false, msg: 'no input in field' };
     input.focus();
     setNativeValue(input, '');
     setNativeValue(input, String(value));
@@ -161,9 +193,9 @@
     if (opt) {
       realClick(opt.el);
       await waitUntil(() => readOptions().length === 0, 1200);
-      return { name, ok: true, msg: `picked "${opt.txt}"` };
+      return { name: disp, ok: true, msg: `picked "${opt.txt}"` };
     }
-    return { name, ok: false, msg: 'no suggestion (left default)' };
+    return { name: disp, ok: false, msg: 'no suggestion (left default)' };
   }
 
   // Native <select> fill (classic server-rendered forms like Craigslist — NOT React portals).
@@ -225,7 +257,7 @@
 
   const api = {
     sleep, norm, waitUntil, realClick, setNativeValue,
-    fieldName, getLabel, waitForLabel, readOptions, matchOption,
+    fieldName, getLabel, displayName, waitForLabel, readOptions, matchOption,
     closeAnyDropdown, settleUi, fillTextField, selectDropdown, fillAutocomplete, fillSelect,
     dataUrlToFile, attachPhotos, waitForCount,
   };

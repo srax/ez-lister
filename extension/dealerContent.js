@@ -167,7 +167,7 @@
     const mileage = odo === undefined ? num(specFromGrid(el, /mileage/i)) : odo;
     const photos = photoSource(el, vin);
     const v = {
-      vehicleType: 'Car/van',
+      vehicleType: 'Car/Truck',
       vin,
       stock: attr(el, ['data-stocknum', 'data-stocknumber']),
       year: attr(el, ['data-year', 'data-dotagging-item-year']),
