@@ -11,6 +11,9 @@ const PLATFORM_LABEL = { fb: 'Facebook Marketplace', craigslist: 'Craigslist', o
 const platformLabel = (p) => PLATFORM_LABEL[p] || 'Facebook Marketplace';
 // Short badge (abbrev + brand colour) shown per platform on each "Your listings" row.
 const PLATFORM_BADGE = { fb: ['FB', '#1877f2'], craigslist: ['CL', '#5c2d91'], offerup: ['OU', '#12b76a'], cars: ['Cars', '#6b7280'] };
+// Footer "open the form" button label — follows the Where-to-post selection.
+const OPEN_LABEL = { fb: 'Open FB form', craigslist: 'Open Craigslist', offerup: 'Open OfferUp', cars: 'Open Cars.com' };
+const updateOpenButton = () => { ui.openfb.textContent = OPEN_LABEL[ui.platform.value] || 'Open form'; };
 const platformBadgeHtml = (p) => (PLATFORM_BADGE[p] ? `<span class="lst-badge" style="background:${PLATFORM_BADGE[p][1]}">${esc(PLATFORM_BADGE[p][0])}</span>` : '');
 
 const el = (id) => document.getElementById(id);
@@ -26,7 +29,7 @@ const ui = {
   desc: el('desc'), charcount: el('charcount'),
   aiDraft: el('ai-draft'), lang: el('lang'), translate: el('translate'),
   tAi: el('t-ai'), tDealer: el('t-dealer'), tMileage: el('t-mileage'),
-  fill: el('fill'), openfb: el('openfb'),
+  fill: el('fill'), openfb: el('openfb'), openInv: el('open-inventory'),
   status: el('status'),
   statsBtn: el('stats-btn'), statsBack: el('stats-back'),
   viewLister: el('view-lister'), viewStats: el('view-stats'),
@@ -190,6 +193,7 @@ function applyPrefsToUI() {
   ui.emoji.value = state.prefs.emoji;
   ui.category.value = state.prefs.category;
   ui.platform.value = state.prefs.platform || 'fb';
+  updateOpenButton();
   ui.lang.value = state.prefs.lang || 'en';
   ui.unitMi.classList.toggle('on', state.prefs.unit === 'mi');
   ui.unitKm.classList.toggle('on', state.prefs.unit === 'km');
@@ -359,8 +363,16 @@ function enhanceSelect(select) {
 }
 
 function setStatus(text, isError) {
-  ui.status.textContent = text || '';
+  const t = text || '';
+  ui.status.textContent = t;
   ui.status.classList.toggle('err', !!isError);
+  // Terminal success lines ("Listing filled ✓", "✓ Listed on Craigslist") turn green; anything
+  // trailing an ellipsis or streaming per-field progress ("✓ Price: …", "• Photos: …") shows a
+  // small working spinner so a long fill visibly reads as in-progress, not stalled.
+  const ok = !isError && /filled ✓|listed on/i.test(t);
+  const working = !isError && !ok && (/…$/.test(t) || /^[✓•] /.test(t));
+  ui.status.classList.toggle('ok', ok);
+  ui.status.classList.toggle('working', working);
 }
 
 // ---------- stats view ----------
@@ -776,7 +788,13 @@ function wireEvents() {
   ui.openfb.addEventListener('click', () => chrome.runtime.sendMessage({ type: 'EZLIST_OPEN_PLATFORM', platform: ui.platform.value || 'fb' }));
   ui.platform.addEventListener('change', () => {
     savePref('platform', ui.platform.value, false);
+    updateOpenButton(); // footer button names the selected marketplace
     if (state.draft) ui.vehListed.hidden = !isListed(state.draft); // badge follows the selected marketplace
+  });
+  ui.openInv.addEventListener('click', () => {
+    const url = dealerInventoryUrl(state.auth);
+    if (url) chrome.tabs.create({ url }).catch(() => window.open(url, '_blank'));
+    else setStatus('Connect your dealership to open your inventory.', true);
   });
   ui.fill.addEventListener('click', onFill);
   ui.aiDraft.addEventListener('click', onAiDraft);
@@ -855,7 +873,7 @@ async function onFill() {
   const original = ui.fill.textContent;
   const platform = ui.platform.value || 'fb';
   const name = platformLabel(platform);
-  ui.fill.textContent = 'Filling…';
+  ui.fill.innerHTML = '<span class="btn-spin" aria-hidden="true"></span>Filling…'; // static markup
   setStatus('Saving listing…');
   try {
     const fillDraft = { ...state.draft, description: ui.desc.value };

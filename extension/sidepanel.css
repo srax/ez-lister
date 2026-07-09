@@ -204,14 +204,11 @@ body{
 .toggle.on .knob{ transform:translateX(16px); }
 .hairline{ height:1px; background:#f4f5f7; }
 
-/* queue */
-.queue{ margin-top:14px; width:100%; display:flex; align-items:center; gap:12px; padding:13px 14px;
-  background:var(--accent-soft); border:1px solid var(--accent-border); border-radius:13px; cursor:default; font-family:inherit; opacity:.85; }
-.queue-icon{ width:34px; height:34px; border-radius:9px; background:#fff; display:flex; align-items:center; justify-content:center; flex-shrink:0; box-shadow:0 1px 2px rgba(20,24,55,0.08); }
-.queue-text{ flex:1; text-align:left; }
-.queue-title{ display:block; font-size:13.5px; font-weight:700; color:#23263a; }
-.queue-sub{ display:block; font-size:11.5px; font-weight:600; color:#8a8d9b; margin-top:1px; }
-.queue-count{ background:var(--ink); color:var(--accent); font-size:12px; font-weight:800; padding:3px 9px; border-radius:999px; font-variant-numeric:tabular-nums; }
+/* batch-queue teaser — one quiet line, no dead accent block */
+.queue-hint{ margin-top:14px; text-align:center; font-size:11px; font-weight:600; color:#b6b8c4; letter-spacing:.2px; }
+
+/* empty-state CTA */
+.veh-empty-btn{ margin:12px auto 0; width:auto; display:inline-flex; padding:9px 16px; font-size:12.5px; }
 
 /* ===== views (lister ⇄ stats) ===== */
 /* re-triggers each time a view is unhidden — the "flip card" switch gets a soft fade+rise */
@@ -325,6 +322,16 @@ body{
 .foot{ flex-shrink:0; border-top:1px solid var(--line); padding:12px 16px 14px; background:#fff; }
 .status{ font-size:12px; font-weight:600; color:#6f7257; min-height:16px; margin-bottom:9px; line-height:1.4; }
 .status.err{ color:#c0392b; }
+.status.ok{ color:#178a3f; }
+/* in-progress statuses get a small leading spinner; terminal (ok/err) states don't */
+.status.working::before{ content:''; display:inline-block; width:10px; height:10px; margin:0 6px -1px 0;
+  border-radius:50%; border:2px solid rgba(28,30,18,0.18); border-top-color:var(--ink); animation:gate-spin .7s linear infinite; }
+/* spinner inside the Fill button while a fill is being kicked off */
+.btn-spin{ display:inline-block; width:12px; height:12px; margin:0 7px -1px 0; border-radius:50%;
+  border:2px solid rgba(28,30,18,0.25); border-top-color:var(--ink); animation:gate-spin .7s linear infinite; }
+@media (prefers-reduced-motion: reduce){
+  .status.working::before, .btn-spin{ animation-duration:1.4s; }
+}
 .foot-actions{ display:flex; gap:8px; align-items:stretch; }
 .foot-note{ margin-top:9px; font-size:11px; color:#9b9eac; text-align:center; line-height:1.4; }
 .foot-note b{ color:#6f7257; }
