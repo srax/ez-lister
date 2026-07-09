@@ -439,6 +439,9 @@ function fromServerListing(r) {
     price: r.price != null ? Number(r.price) : undefined,
     soldPrice: r.sold_price != null ? Number(r.sold_price) : undefined,
     platform: r.platform || 'fb',
+    // Per-platform child rows from the server (listing_platforms) — presence + listing URLs.
+    platforms: Array.isArray(r.platforms) ? r.platforms : undefined,
+    soldPlatform: r.sold_platform || undefined,
     status: r.status === 'sold' ? 'sold' : 'active',
     listedAt: r.listed_at || undefined,
     soldAt: r.sold_at || undefined,
@@ -610,7 +613,16 @@ function platformSoon(name) {
 function unifiedListings() {
   const rows = {};
   for (const l of listingsArray()) {
-    rows[l.key] = { ...l, platforms: new Set([l.platform || 'fb']), urls: {} };
+    // Seed platform presence + View-listing URLs from the server's per-platform rows when
+    // available; fall back to the record's single legacy platform field.
+    const row = { ...l, platforms: new Set(), urls: {} };
+    const serverPlats = Array.isArray(l.platforms) ? l.platforms.filter((p) => p && p.platform && p.status !== 'removed') : [];
+    for (const p of serverPlats) {
+      row.platforms.add(p.platform);
+      if (p.url) row.urls[p.platform] = p.url;
+    }
+    if (!row.platforms.size) row.platforms.add(l.platform || 'fb');
+    rows[l.key] = row;
   }
   for (const [key, entry] of Object.entries(state.listed || {})) {
     const plats = listedPlatforms(entry); // { fb?:{...url}, craigslist?:{...meta,url} }

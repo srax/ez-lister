@@ -713,8 +713,21 @@ async function openPanel(sender) {
 
 // ==================== listings sync (C5) ====================
 
-// Map a local ezlistListings entry to the /api/listings/sync contract shape.
-function toSyncListing(l) {
+// The per-platform slots for a car (ezlistListedVins entry) → the sync contract's platforms[]
+// array. Legacy flat entries ({listedAt}) read as Facebook. Undefined when nothing is recorded,
+// so the payload stays clean for cars with no publish state.
+function platformsFromEntry(entry) {
+  if (!entry || typeof entry !== 'object') return undefined;
+  const slots = ('listedAt' in entry) ? { fb: entry } : entry;
+  const arr = Object.entries(slots)
+    .filter(([, m]) => m && typeof m === 'object')
+    .map(([platform, m]) => ({ platform, status: 'listed', listedAt: m.listedAt || null, url: m.url || null }));
+  return arr.length ? arr : undefined;
+}
+
+// Map a local ezlistListings entry to the /api/listings/sync contract shape. `listedEntry` is
+// the car's ezlistListedVins slots — the source of per-platform presence + listing URLs.
+function toSyncListing(l, listedEntry) {
   return {
     clientKey: l.key,
     vin: l.vin || null,
@@ -729,7 +742,9 @@ function toSyncListing(l) {
     status: l.status === 'sold' ? 'sold' : 'listed', // local 'active' → server 'listed'
     listedAt: l.listedAt || null,
     soldAt: l.soldAt || null,
-    soldPrice: l.soldPrice != null ? Number(l.soldPrice) : null
+    soldPrice: l.soldPrice != null ? Number(l.soldPrice) : null,
+    soldPlatform: l.soldPlatform || null,
+    platforms: platformsFromEntry(listedEntry)
   };
 }
 
@@ -742,8 +757,9 @@ async function syncNow() {
   if (syncing) return { ok: true, skipped: 'in_progress' };
   syncing = true;
   try {
-    const store = await chrome.storage.local.get(['ezlistListings', 'ezlistEventQueue']);
-    const listings = Object.values(store.ezlistListings || {}).map(toSyncListing);
+    const store = await chrome.storage.local.get(['ezlistListings', 'ezlistEventQueue', 'ezlistListedVins']);
+    const listedMap = store.ezlistListedVins || {};
+    const listings = Object.values(store.ezlistListings || {}).map((l) => toSyncListing(l, listedMap[l.key]));
     const events = store.ezlistEventQueue || [];
     if (!listings.length && !events.length) return { ok: true, empty: true };
     const data = await postBackend('/api/listings/sync', { listings, events });
@@ -781,13 +797,20 @@ async function restoreListedFromServer() {
   if (!res.ok || !res.listings.length) return;
   const listed = {};
   for (const l of res.listings) {
-    if (l.status === 'listed' && l.client_key) {
-      // Per-platform shape ({ fb: {...}, craigslist: {...} }) keyed by the row's platform —
-      // a flat entry would be read as Facebook and wrongly green a Craigslist-only car.
-      const entry = listed[l.client_key] || {};
+    if (l.status !== 'listed' || !l.client_key) continue;
+    // Per-platform shape ({ fb: {...}, craigslist: {...} }): prefer the server's platforms[]
+    // (listing_platforms child rows — full multi-platform state incl. View-listing URLs);
+    // fall back to the legacy single platform column for pre-migration servers.
+    const entry = listed[l.client_key] || {};
+    const plats = Array.isArray(l.platforms) ? l.platforms.filter((p) => p && p.platform && p.status !== 'removed') : [];
+    if (plats.length) {
+      for (const p of plats) {
+        entry[p.platform] = { listedAt: p.listedAt || l.listed_at || new Date().toISOString(), url: p.url || undefined, restored: true };
+      }
+    } else {
       entry[l.platform || 'fb'] = { listedAt: l.listed_at || new Date().toISOString(), restored: true };
-      listed[l.client_key] = entry;
     }
+    listed[l.client_key] = entry;
   }
   if (Object.keys(listed).length) await chrome.storage.local.set({ ezlistListedVins: listed });
 }

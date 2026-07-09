@@ -227,7 +227,14 @@
       const left = lastPath;
       lastPath = path;
       if (!lastFilledKey) return;
-      const published = /\/marketplace\/item\/\d+/.test(path) || /\/marketplace\/you(\/|$)/.test(path);
+      // Post-publish FB lands on the new item, "your listings", or (observed live 2026-07)
+      // plain marketplace home. Home is accepted only right after OUR fill (lastFilledKey set):
+      // the create tab is opened directly with no history, so bailing out of the form almost
+      // never produces a create→home SPA transition — publishing does.
+      const published = /\/marketplace\/item\/\d+/.test(path)
+        || /\/marketplace\/you(\/|$)/.test(path)
+        || /\/marketplace\/?$/.test(path)
+        || /\/marketplace\/selling(\/|$)/.test(path);
       if (published && /\/marketplace\/create\/vehicle/.test(left)) {
         markListed(lastFilledKey);
         lastFilledKey = '';

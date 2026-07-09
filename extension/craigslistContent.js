@@ -322,18 +322,36 @@
 
   async function markPublished(key, meta) {
     if (!key) return;
-    const s = await chrome.storage.local.get(['ezlistListedVins']);
+    const s = await chrome.storage.local.get(['ezlistListedVins', 'ezlistListings']);
     const listed = s.ezlistListedVins || {};
     const entry = listedPlatforms(listed[key]);
     if (entry.craigslist) return; // already recorded
+    const now = new Date().toISOString();
     // "View listing" URL = the post-manage page: /manage/<hash1> derived from /k/<hash1>/<hash2>.
     const h1 = (location.pathname.match(/^\/k\/([^/]+)/) || [])[1];
     const url = h1 ? `https://post.craigslist.org/manage/${h1}` : undefined;
     // Store the vehicle basics + manage URL alongside the timestamp so the listings view can
     // render this car and open it later.
-    entry.craigslist = { listedAt: new Date().toISOString(), ...(meta || {}), url };
+    entry.craigslist = { listedAt: now, ...(meta || {}), url };
     listed[key] = entry;
-    await chrome.storage.local.set({ ezlistListedVins: listed });
+    // Also write the canonical stats record (like Facebook's markListed does) so a CL-only car
+    // syncs to the server on publish — the per-platform child rows need a parent listing row.
+    const listings = s.ezlistListings || {};
+    const prev = listings[key] || {};
+    listings[key] = {
+      key,
+      vin: (meta && meta.vin) || prev.vin || (key.length === 17 ? key : undefined),
+      title: (meta && meta.title) || prev.title || undefined,
+      year: (meta && meta.year) || prev.year,
+      make: (meta && meta.make) || prev.make,
+      model: (meta && meta.model) || prev.model,
+      price: (meta && meta.price != null) ? Number(meta.price) : prev.price,
+      sourceUrl: prev.sourceUrl,
+      platform: prev.platform || 'craigslist',
+      status: 'active',
+      listedAt: prev.listedAt || now,
+    };
+    await chrome.storage.local.set({ ezlistListedVins: listed, ezlistListings: listings });
     chrome.runtime.sendMessage({ type: 'EZLIST_ENQUEUE_EVENT', event: { type: 'publish_detected', clientKey: key, data: { platform: 'craigslist' } } }).catch(() => {});
     postStatus('✓ Listed on Craigslist.');
   }
