@@ -15,3 +15,7 @@ scripts/
 alexandria-*
 facebook-marketplace-*
 chrome-webstore-*
+.env
+.env.*
+.docs
+.claude
