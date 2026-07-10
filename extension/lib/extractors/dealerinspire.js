@@ -43,9 +43,13 @@
   const cardJson = (card) => parseVehicleJson(card.getAttribute && card.getAttribute('data-vehicle'));
   const cardVin = (card) => ((card.getAttribute && card.getAttribute('data-vehicle-vin')) || cardJson(card).vin || '').toUpperCase();
   const isRealCard = (el) => !!(el && el.getAttribute && el.getAttribute('data-vehicle') && (el.getAttribute('data-vehicle-vin') || /"vin"/i.test(el.getAttribute('data-vehicle') || '')));
+  // Dealer Inspire card links are frequently http:// even on an https page — fetching that from an
+  // https context is blocked as mixed content, so the VDP (images, mileage, …) never loads. Match
+  // the page's protocol (upgrade to https) so the same-origin fetch actually runs.
+  const sameProto = (u) => (typeof location !== 'undefined' && location.protocol === 'https:' ? String(u || '').replace(/^http:\/\//i, 'https://') : u);
   function vdpUrlFor(card) {
     const a = card.querySelector && card.querySelector('a.hit-link[href], a[href*="/inventory/"], a[href*="/vehicle/"]');
-    return a ? a.href : '';
+    return a ? sameProto(a.href) : '';
   }
   function priceFromCard(card, j) {
     const el = card.querySelector && card.querySelector('.price-block .price, .final-price .price, .price-value, .hit-price .price');

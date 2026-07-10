@@ -202,6 +202,8 @@ maybe('Dealer Inspire: extractVehicle reads the data-vehicle JSON + fills mileag
     assert.equal(v.interiorColor, 'Black');    // from the VDP
     assert.equal(v.photoUrls.length, 3, 'real di-uploads photos, chrome stock render excluded');
     assert.ok(v.photoUrls.every((u) => /di-uploads/.test(u)));
+    // The card's hit-link is http:// — must be upgraded to https so the VDP fetch isn't mixed-content blocked.
+    assert.ok(v.sourceUrl.startsWith('https://'), 'http VDP link upgraded to https');
   });
 });
 

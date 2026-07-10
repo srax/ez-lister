@@ -124,9 +124,12 @@
     && !li.hasAttribute('data-promo-id')
     && !!li.querySelector('.vehicle-card-title');
 
+  // Upgrade http→https to match an https page — an http VDP link would make the fetch fail as
+  // mixed content, so the gallery never loads.
+  const sameProto = (u) => (typeof location !== 'undefined' && location.protocol === 'https:' ? String(u || '').replace(/^http:\/\//i, 'https://') : u);
   function vdpUrlFor(card) {
     const a = card.querySelector('h2.vehicle-card-title a, .vehicle-card-title-container a, a.modern-my-cars-details-label');
-    return a ? a.href : '';
+    return a ? sameProto(a.href) : '';
   }
 
   function cardVin(card) {
