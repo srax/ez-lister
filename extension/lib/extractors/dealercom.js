@@ -132,19 +132,19 @@
   }
 
   function priceFromCard(card) {
-    const pick = (sel) => {
-      const n = parseMoney(text(card.querySelector(sel)));
-      return M && M.plausiblePrice ? (M.plausiblePrice(n) ? n : undefined) : n;
-    };
-    // Clean advertised "Price" first, then MSRP (new), then the fee-inclusive "Adjusted Price",
-    // then any plausible price cell.
-    let p = pick('dd.askingPrice .price-value') || pick('dd.msrp .price-value') || pick('dd.final-price .price-value');
-    if (p) return p;
-    for (const el of card.querySelectorAll('.price-value')) {
-      const n = parseMoney(text(el));
-      if (!M || !M.plausiblePrice || M.plausiblePrice(n)) return n;
-    }
-    return undefined;
+    const ok = (n) => n && (!M || !M.plausiblePrice || M.plausiblePrice(n));
+    const money = (sel) => { const n = parseMoney(text(card.querySelector(sel))); return ok(n) ? n : undefined; };
+    // Used cars: the clean advertised "Price" (askingPrice), which excludes fees.
+    const asking = money('dd.askingPrice .price-value');
+    if (asking) return asking;
+    // New cars (or themes without askingPrice): the dealer's PROMOTED final price = the last
+    // POSITIVE figure in the ladder (MSRP → discount(s) → final, e.g. Cronic's "$43,055" after a
+    // "-$4,000" discount). Scope to .pricing-detail so payment estimates don't leak in.
+    const dl = card.querySelector('.pricing-detail') || card;
+    const positives = [...dl.querySelectorAll('.price-value')]
+      .map((el) => ({ t: text(el), n: parseMoney(text(el)) }))
+      .filter((o) => ok(o.n) && !/^\s*[-(]|\bsave\b/i.test(o.t)); // skip "-$4,000" / "($4,000)" / "Save $…"
+    return positives.length ? positives[positives.length - 1].n : undefined;
   }
 
   function photosFromCard(card) {
@@ -161,20 +161,36 @@
     return urls;
   }
 
-  // Full gallery: fetch the VDP (same-origin → browser session → clears Akamai) and scrape every
-  // pictures.dealer.com image. Falls back to the 1-2 the SRP carousel eagerly loaded.
-  async function fetchGallery(vdpUrl, fallback) {
-    if (!vdpUrl) return fallback;
+  // Pull the VIN out of raw VDP HTML — SRP cards don't always print it (new-car themes omit it),
+  // but the detail page always does: the schema.org field first, then a labelled 17-char VIN.
+  function vinFromHtml(html) {
+    const h = String(html || '');
+    const m = h.match(/vehicleIdentificationNumber"\s*:\s*"([A-HJ-NPR-Z0-9]{11,17})"/i)
+      || h.match(/\bVIN\b[^A-Za-z0-9]{0,10}([A-HJ-NPR-Z0-9]{17})\b/i);
+    return m ? m[1].toUpperCase() : '';
+  }
+
+  // One VDP fetch (same-origin → browser session → clears Akamai) yields the VIN, the full photo
+  // gallery, and the JSON-LD gap-fill record (via the shared, platform-agnostic schema.org parser).
+  // Photos: prefer the pictures.dealer.com scrape (most complete), fall back to the SRP-loaded 1-2,
+  // then the JSON-LD image array.
+  async function fetchVdp(vdpUrl, photoFallback) {
+    const out = { vin: '', photos: photoFallback || [], ld: {} };
+    if (!vdpUrl) return out;
     try {
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 6000);
+      const timer = setTimeout(() => ctrl.abort(), 8000);
       const resp = await fetch(vdpUrl, { credentials: 'same-origin', signal: ctrl.signal });
       clearTimeout(timer);
-      if (!resp.ok) return fallback;
+      if (!resp.ok) return out;
       const html = await resp.text();
-      const urls = extractPhotoUrlsFromHtml(html);
-      return urls.length >= fallback.length && urls.length ? urls : fallback;
-    } catch { return fallback; }
+      out.ld = (root.CarxpertSchemaOrg ? root.CarxpertSchemaOrg.vehicleFromHtml(html) : {});
+      out.vin = out.ld.vin || vinFromHtml(html);
+      const gallery = extractPhotoUrlsFromHtml(html);
+      if (gallery.length >= out.photos.length && gallery.length) out.photos = gallery;
+      else if (!out.photos.length && out.ld.photos && out.ld.photos.length) out.photos = out.ld.photos.map(normalizePhoto);
+      return out;
+    } catch { return out; }
   }
 
   function buildDescription(v) {
@@ -194,7 +210,7 @@
   }
 
   async function extractVehicle(scope, sourceUrl, ctx = {}) {
-    const card = (scope.matches && scope.matches('li.vehicle-card')) ? scope : (scope.closest && scope.closest('li.vehicle-card')) || scope;
+    const card = (scope.matches && scope.matches('.vehicle-card[data-uuid]')) ? scope : (scope.closest && scope.closest('.vehicle-card[data-uuid]')) || scope;
     const vdpUrl = vdpUrlFor(card) || sourceUrl || location.href;
     const vdpPath = (() => { try { return new URL(vdpUrl, location.href).pathname; } catch { return vdpUrl; } })();
 
@@ -208,17 +224,15 @@
 
     const imgTitle = (card.querySelector('.vehicle-card-media img[title], .vehicle-card-media-container img[title]') || {}).title || '';
 
-    const baseline = photosFromCard(card);
-    const photoUrls = await fetchGallery(vdpUrl, baseline);
-
-    const v = {
-      vehicleType: 'Car/Truck',
+    // Read whatever the card offers (some themes are sparse — new-car cards omit the VIN, etc.),
+    // then fetch the DETAIL PAGE and let it fill every gap. The card wins where it has a value; the
+    // VDP's schema.org record supplies the rest, and always the VIN + full photo gallery.
+    const cardData = {
       vin: cardVin(card),
       stock: parseStockNumber(desc('.stockNumber')),
       year,
       make,
       model,
-      trim: '',
       price: priceFromCard(card),
       mileage: mileageBadge ? (Number(String(mileageBadge).replace(/[^\d]/g, '')) || undefined) : undefined,
       fuelType: fuelFromBadges(badges),
@@ -226,12 +240,33 @@
       engine: squish(desc('.engine') || desc('.normalEngine')).replace(/\s*Engine\s*$/i, '').trim(),
       exteriorColor: stripColorSuffix(desc('.exteriorColor')),
       interiorColor: stripColorSuffix(desc('.interiorColor')),
+      transmission: squish(desc('.transmission'))
+    };
+    const vdp = await fetchVdp(vdpUrl, photosFromCard(card));
+    const ld = vdp.ld;
+    const fill = (cardVal, ldVal) => (cardVal !== undefined && cardVal !== null && cardVal !== '' ? cardVal : (ldVal || undefined));
+
+    const v = {
+      vehicleType: 'Car/Truck',
+      vin: cardData.vin || vdp.vin,
+      stock: cardData.stock,
+      year: fill(cardData.year, ld.year),
+      make: fill(cardData.make, ld.make),
+      model: fill(cardData.model, ld.model),
+      trim: '',
+      price: fill(cardData.price, ld.price),
+      mileage: cardData.mileage != null ? cardData.mileage : (ld.mileage != null ? ld.mileage : undefined),
+      fuelType: fill(cardData.fuelType, ld.fuelType),
+      bodyType: fill(cardData.bodyType, ld.bodyType),
+      engine: cardData.engine,
+      exteriorColor: fill(cardData.exteriorColor, ld.exteriorColor),
+      interiorColor: fill(cardData.interiorColor, ld.interiorColor),
       exteriorColorGeneric: '',
-      transmission: squish(desc('.transmission')) || 'Automatic',
+      transmission: fill(cardData.transmission, ld.transmission) || 'Automatic',
       condition: 'Excellent',
       location: ctx.location || '',
       sourceUrl: vdpUrl,
-      photoUrls,
+      photoUrls: vdp.photos,
       photoBaseUrl: '',
       photoExt: 'jpg'
     };
@@ -245,20 +280,25 @@
     // DDC content framework markers visible to the isolated world (window.DDC itself is MAIN-world
     // only and unreachable here) — `.ddc-content`/ws-inv widgets and the vehicle-card grid.
     detect() {
-      return !!document.querySelector('li.vehicle-card[data-uuid], .ddc-content, [data-widget-name^="ws-inv"]')
+      return !!document.querySelector('.vehicle-card[data-uuid], .ddc-content, [data-widget-name^="ws-inv"]')
         || /\/(?:used|new|all|certified)-inventory\//i.test(location.pathname);
     },
     fingerprints() {
       return {
         ddcNamespace: !!document.querySelector('.ddc-content, [data-widget-name^="ws-inv"]'),
-        vehicleCardUuid: !!document.querySelector('li.vehicle-card[data-uuid]'),
+        vehicleCardUuid: !!document.querySelector('.vehicle-card[data-uuid]'),
         ddcInventoryPath: /\/(?:used|new|all|certified)-inventory\//i.test(location.pathname)
       };
     },
-    findCards() { return [...document.querySelectorAll('li.vehicle-card[data-uuid]')].filter(isRealCard); },
+    // Element-agnostic: DDC themes render the card as <li> or <div>; match the class + data-uuid
+    // (not the tag) so buttons appear across themes we haven't captured. isRealCard drops
+    // placeholder/promo tiles.
+    findCards() { return [...document.querySelectorAll('.vehicle-card[data-uuid]')].filter(isRealCard); },
     cardReady(card) {
-      if (card.querySelector('[data-testid="details-skeleton"], [data-testid="media-skeleton"], .skeleton-shimmer')) return false;
-      return !!cardVin(card);
+      // A List button shows on ANY rendered real card (findCards already filtered to real vehicle
+      // cards). We do NOT require rich card data — sparse themes are enriched from the detail page
+      // at list time. Only skip skeletons that haven't painted yet.
+      return !card.querySelector('[data-testid="details-skeleton"], [data-testid="media-skeleton"], .skeleton-shimmer');
     },
     cardKey(card) { return cardVin(card) || (card.querySelector('.stockNumber') ? parseStockNumber(text(card.querySelector('.stockNumber'))) : '') || card.getAttribute('data-uuid') || ''; },
     vdpUrlFor,
@@ -273,7 +313,7 @@
     module.exports = {
       cleanVin, parseStockNumber, stripColorSuffix, parseMoney, parseTitleName,
       bodyFromTitle, makeFromVdpPath, conditionFromVdpPath, fuelFromBadges,
-      normalizePhoto, extractPhotoUrlsFromHtml
+      normalizePhoto, extractPhotoUrlsFromHtml, vinFromHtml
     };
   }
 })(typeof globalThis !== 'undefined' ? globalThis : this);

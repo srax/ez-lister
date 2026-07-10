@@ -17,7 +17,9 @@
   // Pick the extractor for this page. Order matters: the most specific provider wins; DealerOn is
   // the backward-compatible fallback (every host onboarded before the refactor is DealerOn).
   const EX = globalThis.CarxpertExtractors || {};
-  const provider = [EX.dealercom, EX.dealeron].find((p) => p && p.detect()) || EX.dealeron;
+  // Specific providers first; `generic` (schema.org VDP fallback) is last so a recognized platform
+  // always wins and generic only claims detail pages nothing else handled. DealerOn is the final fallback.
+  const provider = [EX.dealercom, EX.dealeron, EX.generic].find((p) => p && p.detect()) || EX.dealeron;
   if (!provider) return; // extractor modules failed to load — do nothing rather than throw
 
   // Record what we're on so the side panel's Detect/onboard flow can resolve + link this dealer.
@@ -131,6 +133,41 @@
     document.querySelectorAll('.ezlist-list-btn, .ezlist-vdp-btn').forEach(paint);
   }
 
+  // Extraction-quality telemetry: report which fields we managed to pull, per provider + dealer host,
+  // so weak dealerships/themes surface in the data automatically — we can't manually test every
+  // dealership on a platform. Fire-and-forget; it must NEVER break listing. Reported even when the
+  // draft is incomplete (a missing VIN is exactly the signal worth capturing).
+  function reportExtraction(draft) {
+    try {
+      const has = (v) => v !== undefined && v !== null && v !== '';
+      const photoCount = Array.isArray(draft.photoUrls) ? draft.photoUrls.length : 0;
+      const fields = {
+        vin: has(draft.vin), year: has(draft.year), make: has(draft.make), model: has(draft.model),
+        price: has(draft.price), mileage: draft.mileage != null, exteriorColor: has(draft.exteriorColor),
+        transmission: has(draft.transmission), bodyType: has(draft.bodyType),
+        photos: photoCount > 0 || has(draft.photoBaseUrl)
+      };
+      const keys = Object.keys(fields);
+      const present = keys.filter((k) => fields[k]).length;
+      chrome.runtime.sendMessage({
+        type: 'EZLIST_ENQUEUE_EVENT',
+        event: {
+          type: 'extraction_completed',
+          clientKey: (draft.vin || '').toUpperCase() || draft.stock || undefined,
+          data: {
+            provider: provider.id,
+            host: location.hostname,
+            target: platform,
+            fields,
+            missing: keys.filter((k) => !fields[k]),
+            photoCount,
+            completeness: Number((present / keys.length).toFixed(2))
+          }
+        }
+      }).catch(() => {});
+    } catch { /* telemetry must never break listing */ }
+  }
+
   async function onList(scope, btn, sourceUrl) {
     if (!entitled) {
       // Not entitled → open the panel to sign in / subscribe instead of filling.
@@ -144,6 +181,7 @@
     btn.textContent = '…'; btn.disabled = true;
     try {
       const draft = await provider.extractVehicle(scope, sourceUrl, { location: DEALER.location });
+      reportExtraction(draft); // capture quality before the VIN gate — incomplete drafts are the signal
       if (!draft.vin) throw new Error('no VIN found on this card');
       await chrome.runtime.sendMessage({ type: 'EZLIST_SAVE_DRAFT', draft, autoFill: true, platform, key: (draft.vin || '').toUpperCase() });
       // Overlap: start downloading photos now, in parallel with the FB tab opening + form fill.

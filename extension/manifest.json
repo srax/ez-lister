@@ -51,8 +51,10 @@
       ],
       "js": [
         "lib/mappers.core.js",
+        "lib/extractors/schemaorg.js",
         "lib/extractors/dealeron.js",
         "lib/extractors/dealercom.js",
+        "lib/extractors/generic.js",
         "dealerContent.js"
       ],
       "run_at": "document_idle"

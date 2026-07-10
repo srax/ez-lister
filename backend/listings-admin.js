@@ -48,6 +48,43 @@ export async function recentFills(days = 7, db = pool) {
   return rows;
 }
 
+// Extraction-quality view: every extraction_completed event carries data.provider, data.host,
+// data.completeness (0..1) and data.missing = [field, …]. Aggregating per dealer surfaces the
+// WEAKEST dealerships/themes automatically (lowest completeness first) — the whole point being that
+// we can't manually test every dealership on a platform, so the data tells us which ones need a
+// selector or a schema.org-fallback tweak. `missingFields` shows WHICH fields fail most often.
+export async function extractionQuality(days = 14, db = pool) {
+  const window = [String(Math.min(90, Math.max(1, days)))];
+  const byDealer = await db.query(
+    `select data->>'provider' as provider,
+            data->>'host' as host,
+            count(*)::int as extractions,
+            round(avg((data->>'completeness')::numeric), 2) as avg_completeness
+     from usage_events
+     where type = 'extraction_completed'
+       and occurred_at > now() - ($1 || ' days')::interval
+     group by 1, 2
+     order by avg_completeness asc nulls last, extractions desc`,
+    window
+  );
+  const missingFields = await db.query(
+    `select m as field, count(*)::int as missing_count
+     from usage_events e
+     cross join lateral jsonb_array_elements_text(coalesce(e.data->'missing', '[]'::jsonb)) as m
+     where e.type = 'extraction_completed'
+       and e.occurred_at > now() - ($1 || ' days')::interval
+     group by m
+     order by missing_count desc, field`,
+    window
+  );
+  const total = await db.query(
+    `select count(*)::int as n from usage_events
+     where type = 'extraction_completed' and occurred_at > now() - ($1 || ' days')::interval`,
+    window
+  );
+  return { extractions: total.rows[0].n, byDealer: byDealer.rows, missingFields: missingFields.rows };
+}
+
 // Retention: delete usage_events older than 90 days. Piggybacks on the worker loop (A4).
 export async function pruneUsageEvents(db = pool) {
   const { rowCount } = await db.query("delete from usage_events where occurred_at < now() - interval '90 days'");

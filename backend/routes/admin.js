@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { requireAdmin } from '../admin.js';
-import { fillAccuracy, recentFills } from '../listings-admin.js';
+import { fillAccuracy, recentFills, extractionQuality } from '../listings-admin.js';
 import { runScanCycle } from '../worker/soldScan.js';
 import {
   listDealerRequests, createDealership, adminLink, adminUnlink, recentScans, compGrant, compRevoke,
@@ -28,6 +28,15 @@ router.get('/api/admin/fill-accuracy', async (req, res, next) => {
   try {
     const days = Math.min(90, Math.max(1, Number(req.query.days) || 14));
     res.json({ ok: true, days, ...(await fillAccuracy(days)) });
+  } catch (err) { next(err); }
+});
+
+// Extraction quality per dealer (weakest first) — which dealerships/themes extract poorly, so we
+// can fix them without manually testing every dealer on a platform.
+router.get('/api/admin/extraction-quality', async (req, res, next) => {
+  try {
+    const days = Math.min(90, Math.max(1, Number(req.query.days) || 14));
+    res.json({ ok: true, days, ...(await extractionQuality(days)) });
   } catch (err) { next(err); }
 });
 
