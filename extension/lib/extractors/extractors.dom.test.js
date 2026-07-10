@@ -24,6 +24,7 @@ require('../mappers.core.js');
 require('./schemaorg.js');
 require('./dealeron.js');
 require('./dealercom.js');
+require('./dealerinspire.js');
 require('./generic.js');
 const EX = globalThis.CarxpertExtractors;
 
@@ -43,7 +44,7 @@ async function onPage(html, url, fn) {
 
 // The dispatcher's provider pick, mirrored (dealerContent.js): specific providers first, the
 // schema.org `generic` fallback next, DealerOn as the final default.
-const pick = () => [EX.dealercom, EX.dealeron, EX.generic].find((p) => p && p.detect()) || EX.dealeron;
+const pick = () => [EX.dealercom, EX.dealeron, EX.dealerinspire, EX.generic].find((p) => p && p.detect()) || EX.dealeron;
 
 // ---------------------------------------------------------------- DealerOn
 maybe('DealerOn: detect() claims the page, Dealer.com does NOT (isolation)', async () => {
@@ -168,6 +169,39 @@ maybe('Dealer.com: all lazy-loaded slider images are collected from the card, no
     const v = await EX.dealercom.extractVehicle(card, null, { location: 'Cicero, NY' });
     assert.equal(v.photoUrls.length, 5, 'all 5 lazy slider images collected');
     assert.equal(v.vin, '1G1ZD5ST0LF012345');
+  });
+});
+
+// ---- Dealer Inspire (Cars.com): data-vehicle JSON on the card + schema.org/di-uploads on the VDP.
+maybe('Dealer Inspire: detect() claims the page, others do NOT (isolation)', async () => {
+  await onPage(fixture('dealerinspire-srp-card.html'), 'https://www.classicchevrolet.com/used-vehicles/', () => {
+    assert.equal(EX.dealerinspire.detect(), true);
+    assert.equal(EX.dealercom.detect(), false);
+    assert.equal(EX.dealeron.detect(), false);
+    assert.equal(pick().id, 'dealerinspire');
+  });
+});
+
+maybe('Dealer Inspire: extractVehicle reads the data-vehicle JSON + fills mileage/photos from the VDP', async () => {
+  await onPage(fixture('dealerinspire-srp-card.html'), 'https://www.classicchevrolet.com/used-vehicles/', async () => {
+    const card = EX.dealerinspire.findCards()[0];
+    assert.ok(card, 'card found');
+    assert.equal(EX.dealerinspire.cardReady(card), true);
+    global.fetch = async () => ({ ok: true, async text() { return fixture('dealerinspire-vdp.html'); } });
+    const v = await EX.dealerinspire.extractVehicle(card, null, { location: 'Grapevine, TX' });
+    assert.equal(v.vin, '5XYPG4A36KG550522');
+    assert.equal(v.make, 'Kia');
+    assert.equal(v.model, 'Sorento LX');       // model + trim from the JSON
+    assert.equal(v.year, '2019');
+    assert.equal(v.price, 13367);              // rendered "Classic Price", not the fee-inclusive JSON 13592
+    assert.equal(v.stock, 'KG550522');
+    assert.equal(v.exteriorColor, 'White');
+    assert.equal(v.fuelType, 'Gasoline Fuel');
+    assert.equal(v.mileage, 78450);            // absent from the card JSON → filled from the VDP schema.org
+    assert.equal(v.bodyType, 'SUV');           // card bodystyle empty → filled from the VDP
+    assert.equal(v.interiorColor, 'Black');    // from the VDP
+    assert.equal(v.photoUrls.length, 3, 'real di-uploads photos, chrome stock render excluded');
+    assert.ok(v.photoUrls.every((u) => /di-uploads/.test(u)));
   });
 });
 

@@ -9,7 +9,7 @@ import { activeSubscription } from './entitlement/index.js';
 // Platforms our extractor actually supports end-to-end: detection at/above threshold on one
 // of these AUTO-ONBOARDS the dealership (row + aliases, status 'supported') so any dealer on
 // that platform can self-serve. Everything else stays curated (request → triage → admin).
-const AUTO_SUPPORT_PLATFORMS = new Set(['dealeron', 'dealercom', 'generic']);
+const AUTO_SUPPORT_PLATFORMS = new Set(['dealeron', 'dealercom', 'dealerinspire', 'generic']);
 
 export function slugFromHost(host) {
   return String(host || '').toLowerCase().replace(/^www\./, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');

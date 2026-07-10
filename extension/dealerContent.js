@@ -19,7 +19,7 @@
   const EX = globalThis.CarxpertExtractors || {};
   // Specific providers first; `generic` (schema.org VDP fallback) is last so a recognized platform
   // always wins and generic only claims detail pages nothing else handled. DealerOn is the final fallback.
-  const provider = [EX.dealercom, EX.dealeron, EX.generic].find((p) => p && p.detect()) || EX.dealeron;
+  const provider = [EX.dealercom, EX.dealeron, EX.dealerinspire, EX.generic].find((p) => p && p.detect()) || EX.dealeron;
   if (!provider) return; // extractor modules failed to load — do nothing rather than throw
 
   // Record what we're on so the side panel's Detect/onboard flow can resolve + link this dealer.

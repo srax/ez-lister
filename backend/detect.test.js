@@ -25,7 +25,7 @@ test('evidenceFromHtml: DealerOn markers all detected (Dealer.com markers stay o
   const e = evidenceFromHtml(DEALERON_HTML);
   assert.deepEqual(e, {
     mentionsDealerOn: true, hasSitemapAspx: true, hasSearchNew: true, hasSearchUsed: true, hasInventoryPhotos: true,
-    mentionsDealerDotCom: false, serverDdcInventoryPath: false
+    mentionsDealerDotCom: false, serverDdcInventoryPath: false, mentionsDealerInspire: false
   });
 });
 

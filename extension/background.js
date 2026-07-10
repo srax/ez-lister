@@ -474,6 +474,9 @@ async function probeSiteFingerprints(url, host) {
     const hasSchemaAutoDealer = /"@type"\s*:\s*"(?:AutoDealer|AutomotiveBusiness|Car ?dealer)"/i.test(ldText);
     const hasSchemaVehicle = /vehicleIdentificationNumber|"@type"\s*:\s*"(?:Vehicle|Car)"/i.test(ldText);
     const hasInventoryLinks = !!document.querySelector('a[href*="inventory" i], a[href*="/vehicle" i], a[href*="/used-" i], a[href*="/new-" i]');
+    // Dealer Inspire (Cars.com): its cards carry data-vehicle JSON and it ships assets from
+    // dealerinspire.com / carscommerce.inc.
+    const diAssets = !!document.querySelector('[data-vehicle][data-vehicle-vin], img[src*="dealerinspire.com"], img[src*="carscommerce.inc"], script[src*="dealerinspire.com"], link[href*="dealerinspire.com"]');
     const siteName = (() => {
       const og = document.querySelector('meta[property="og:site_name"]');
       if (og && og.content && og.content.trim()) return og.content.trim().slice(0, 80);
@@ -496,6 +499,7 @@ async function probeSiteFingerprints(url, host) {
       hasSchemaAutoDealer,
       hasSchemaVehicle,
       hasInventoryLinks,
+      diAssets,
       siteName,
       _dbg: { host: location.host, path: location.pathname, hasDdcAssets, hasDdcDom, hasDdcGlobal, schemaDealer: hasSchemaAutoDealer, schemaVehicle: hasSchemaVehicle, title: (document.title || '').slice(0, 60) }
     };
@@ -506,7 +510,7 @@ async function probeSiteFingerprints(url, host) {
       return (results && results[0] && results[0].result) || null;
     } catch (e) { console.warn('[cx] probe executeScript failed:', e && e.message); return null; }
   };
-  const usable = (r) => r && (r.ddcNamespace || r.vehicleInfoVin || r.dotagging || r.hasSchemaAutoDealer || r.hasSchemaVehicle);
+  const usable = (r) => r && (r.ddcNamespace || r.vehicleInfoVin || r.dotagging || r.hasSchemaAutoDealer || r.hasSchemaVehicle || r.diAssets);
 
   let tab = (await chrome.tabs.query({}).catch(() => [])).find((t) => t.url && onHost(t.url));
   let opened = false;
@@ -730,7 +734,7 @@ async function ensureDealerScripts(me) {
   const script = {
     id: DEALER_SCRIPT_ID,
     matches: granted,
-    js: ['lib/mappers.core.js', 'lib/extractors/schemaorg.js', 'lib/extractors/dealeron.js', 'lib/extractors/dealercom.js', 'lib/extractors/generic.js', 'dealerContent.js'],
+    js: ['lib/mappers.core.js', 'lib/extractors/schemaorg.js', 'lib/extractors/dealeron.js', 'lib/extractors/dealercom.js', 'lib/extractors/dealerinspire.js', 'lib/extractors/generic.js', 'dealerContent.js'],
     runAt: 'document_idle',
     persistAcrossSessions: true
   };
