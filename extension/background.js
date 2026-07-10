@@ -467,6 +467,13 @@ async function probeSiteFingerprints(url, host) {
     const hasDdcDom = q('.ddc-content, [data-widget-name], [class*="ddc-"], [id*="ddc-"]');
     let hasDdcGlobal = false;
     try { hasDdcGlobal = !!(window.DDC || window.DDCAPI); } catch { /* cross-origin/global guard */ }
+    // Universal-onboarding signals: a dealer site on ANY platform (Dealer Inspire, Sincro, …) that
+    // exposes schema.org can self-serve as 'generic'. AutoDealer marks a dealership site; Vehicle
+    // marks inventory. Inventory links are a weak corroborating hint.
+    const ldText = [...document.querySelectorAll('script[type="application/ld+json"]')].map((s) => s.textContent || '').join(' ');
+    const hasSchemaAutoDealer = /"@type"\s*:\s*"(?:AutoDealer|AutomotiveBusiness|Car ?dealer)"/i.test(ldText);
+    const hasSchemaVehicle = /vehicleIdentificationNumber|"@type"\s*:\s*"(?:Vehicle|Car)"/i.test(ldText);
+    const hasInventoryLinks = !!document.querySelector('a[href*="inventory" i], a[href*="/vehicle" i], a[href*="/used-" i], a[href*="/new-" i]');
     const siteName = (() => {
       const og = document.querySelector('meta[property="og:site_name"]');
       if (og && og.content && og.content.trim()) return og.content.trim().slice(0, 80);
@@ -486,8 +493,11 @@ async function probeSiteFingerprints(url, host) {
       ddcInventoryPath: /\/(?:used|new|all|certified)-inventory\//i.test(location.pathname),
       vehicleInfoVin: q('[data-vehicle-information][data-vin]'),
       dotagging: q('[data-dotagging-item-id],[data-dotagging-element-type]'),
+      hasSchemaAutoDealer,
+      hasSchemaVehicle,
+      hasInventoryLinks,
       siteName,
-      _dbg: { host: location.host, path: location.pathname, hasDdcAssets, hasDdcDom, hasDdcGlobal, title: (document.title || '').slice(0, 60) }
+      _dbg: { host: location.host, path: location.pathname, hasDdcAssets, hasDdcDom, hasDdcGlobal, schemaDealer: hasSchemaAutoDealer, schemaVehicle: hasSchemaVehicle, title: (document.title || '').slice(0, 60) }
     };
   };
   const runProbe = async (tabId) => {
@@ -496,7 +506,7 @@ async function probeSiteFingerprints(url, host) {
       return (results && results[0] && results[0].result) || null;
     } catch (e) { console.warn('[cx] probe executeScript failed:', e && e.message); return null; }
   };
-  const usable = (r) => r && (r.ddcNamespace || r.vehicleInfoVin || r.dotagging);
+  const usable = (r) => r && (r.ddcNamespace || r.vehicleInfoVin || r.dotagging || r.hasSchemaAutoDealer || r.hasSchemaVehicle);
 
   let tab = (await chrome.tabs.query({}).catch(() => [])).find((t) => t.url && onHost(t.url));
   let opened = false;

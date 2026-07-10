@@ -149,6 +149,28 @@ maybe('Dealer.com: sparse new-car card is button-ready and enriched from the VDP
   });
 });
 
+maybe('Dealer.com: all lazy-loaded slider images are collected from the card, not just the visible one', async () => {
+  // Burdick/Sunset case: the slick carousel keeps only the visible slide in src and stashes the
+  // rest in data-lazy — reading src alone gave 1 photo. Here the VDP fetch returns just the hero,
+  // so the win must come from reading every slide's data-lazy off the card.
+  const slides = [1, 2, 3, 4, 5].map((n) =>
+    `<div class="slick-slide"><a href="/used/Chevrolet/2020-x-u1.htm"><img class="w-100" data-lazy="https://pictures.dealer.com/c/burdickgm/000${n}/hash${n}x.jpg?impolicy=downsize_bkpt&w=520"></a></div>`).join('');
+  const html = `<div class="box vehicle-card vehicle-card-detailed" data-uuid="u1">`
+    + `<div class="vehicle-card-media-container"><div class="slick-slider"><div class="slick-list"><div class="slick-track">${slides}</div></div></div></div>`
+    + `<h2 class="vehicle-card-title"><div class="vehicle-card-title-container"><a href="/used/Chevrolet/2020-Chevrolet-Malibu-u1.htm"><span>2020 Chevrolet Malibu LT</span></a></div></h2>`
+    + `<ul class="vehicle-card-description"><li class="stockNumber">Stock # B1</li></ul></div>`;
+  await onPage(html, 'https://www.burdickgm.com/used-inventory/index.htm', async () => {
+    const card = EX.dealercom.findCards()[0];
+    global.fetch = async () => ({ ok: true, async text() {
+      return '<script type="application/ld+json">{"@type":"Vehicle","vehicleIdentificationNumber":"1G1ZD5ST0LF012345","offers":{"price":"18995"}}</script>'
+        + '<img src="https://pictures.dealer.com/c/burdickgm/0001/hash1x.jpg">'; // VDP raw HTML has only the hero
+    } });
+    const v = await EX.dealercom.extractVehicle(card, null, { location: 'Cicero, NY' });
+    assert.equal(v.photoUrls.length, 5, 'all 5 lazy slider images collected');
+    assert.equal(v.vin, '1G1ZD5ST0LF012345');
+  });
+});
+
 // ---- Generic schema.org fallback: an UNRECOGNIZED-platform detail page (only schema.org JSON-LD).
 maybe('Generic: claims a schema.org VDP that no specific provider recognizes; specifics never lose to it', async () => {
   // On an unknown-platform VDP, generic wins.

@@ -134,6 +134,44 @@ test('resolveDealer auto-onboards a Dealer.com site from client fingerprints whe
   assert.ok(db.aliases.has('www.attleborochevrolet.com') && db.aliases.has('attleborochevrolet.com'));
 });
 
+test('resolveDealer GENERIC-onboards an unrecognized platform that exposes schema.org dealer data', async () => {
+  const db = autoDb();
+  const walled = async () => ({ ok: false, status: 403, url: '', headers: { get: () => null }, text: async () => '' });
+  const r = await resolveDealer(
+    {
+      url: 'https://www.classicchevrolet.com/',
+      fingerprints: { source: 'extension_manual', host: 'www.classicchevrolet.com', hasSchemaAutoDealer: true, siteName: 'Classic Chevrolet' }
+    },
+    { db, allowNetwork: true, fetchImpl: walled }
+  );
+  assert.equal(r.supported, true);
+  assert.equal(r.autoOnboarded, true);
+  assert.equal(r.dealership.platform, 'generic');
+  assert.equal(r.dealership.name, 'Classic Chevrolet');
+});
+
+test('a SPECIFIC platform still wins over generic even when schema.org is also present', async () => {
+  const db = autoDb();
+  const walled = async () => ({ ok: false, status: 403, url: '', headers: { get: () => null }, text: async () => '' });
+  const r = await resolveDealer(
+    { url: 'https://x.example.com/', fingerprints: { host: 'x.example.com', ddcNamespace: true, hasSchemaAutoDealer: true, hasSchemaVehicle: true } },
+    { db, allowNetwork: true, fetchImpl: walled }
+  );
+  assert.equal(r.supported, true);
+  assert.equal(r.dealership.platform, 'dealercom'); // specific detection beats the generic fallback
+});
+
+test('resolveDealer does NOT generic-onboard a site with no schema.org / platform signal', async () => {
+  const db = autoDb();
+  const walled = async () => ({ ok: false, status: 403, url: '', headers: { get: () => null }, text: async () => '' });
+  const r = await resolveDealer(
+    { url: 'https://random.example.com/', fingerprints: { host: 'random.example.com' } },
+    { db, allowNetwork: true, fetchImpl: walled }
+  );
+  assert.equal(r.supported, false);
+  assert.equal(db.dealers.size, 0);
+});
+
 test('resolveDealer does NOT auto-onboard a non-DealerOn site', async () => {
   const db = autoDb();
   const r = await resolveDealer(

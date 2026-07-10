@@ -99,12 +99,14 @@
     return base ? `${base}?impolicy=downsize_bkpt&w=1200` : '';
   }
 
-  // Every gallery image on a Dealer.com page (SRP card or VDP HTML) is pictures.dealer.com/c/…x.jpg.
-  // Match up to `.jpg` (before any ?query), dedupe by base, preserve document order, cap the count.
+  // Every gallery image on a Dealer.com page is pictures.dealer.com/<seg>/…x.jpg — but the path
+  // segment VARIES by dealer/account: most use /c/, the Sunset/Burdick group uses /s/, others may
+  // differ. So match ANY path under pictures.dealer.com (not a hardcoded /c/), up to `.jpg` (before
+  // any ?query). Dedupe by base, preserve document order (the main gallery renders first), cap.
   function extractPhotoUrlsFromHtml(html, max = 24) {
     const out = [];
     const seen = new Set();
-    const re = /https:\/\/pictures\.dealer\.com\/c\/[^\s"'<>\\)]+?\.jpg/gi;
+    const re = /https:\/\/pictures\.dealer\.com\/[^\s"'<>\\)]+?\.jpg/gi;
     let m;
     while ((m = re.exec(String(html || ''))) && out.length < max) {
       const base = m[0].split('?')[0];
@@ -147,16 +149,33 @@
     return positives.length ? positives[positives.length - 1].n : undefined;
   }
 
+  // Collect the FULL card gallery. The slick carousel keeps only the visible slide in `src` and
+  // stashes the rest in lazy attributes (data-lazy/data-src/srcset), so reading `src` alone yields
+  // one photo. We scan the media region's <img>/<source> across all those attributes, accept any
+  // image host (Dealer.com themes vary — pictures.dealer.com, images.dealer.com, or a rendered CDN),
+  // and scope to the media container + exclude logo/badge/swatch noise so nothing but photos gets in.
+  const BAD_PHOTO_RE = /logo|icon|sprite|placeholder|no-image|unavailable|stockphoto|badge|carfax|swatch|spinner|loading/i;
   function photosFromCard(card) {
     const urls = [];
     const seen = new Set();
-    for (const img of card.querySelectorAll('img')) {
-      const src = img.currentSrc || img.getAttribute('src') || '';
-      if (!/pictures\.dealer\.com\/c\//i.test(src)) continue;
-      const base = src.split('?')[0];
-      if (seen.has(base)) continue;
-      seen.add(base);
-      urls.push(normalizePhoto(base));
+    const add = (raw) => {
+      if (!raw) return;
+      const parts = raw.includes(',') ? raw.split(',').map((s) => s.trim().split(/\s+/)[0]) : [raw.trim()];
+      for (let u of parts) {
+        if (!u || !/\.(?:jpe?g|png|webp)/i.test(u) || BAD_PHOTO_RE.test(u)) continue;
+        if (u.startsWith('//')) u = `https:${u}`;
+        if (!/^https?:\/\//i.test(u)) continue;
+        const base = u.split('?')[0];
+        if (seen.has(base)) continue;
+        seen.add(base);
+        urls.push(/pictures\.dealer\.com/i.test(base) ? normalizePhoto(base) : base);
+      }
+    };
+    const media = card.querySelector('.vehicle-card-media-container, .vehicle-card-media, [data-location="vehicle-media"], .slick-slider') || card;
+    for (const el of media.querySelectorAll('img, source, [data-lazy], [data-src], [data-original]')) {
+      add(el.currentSrc); add(el.getAttribute('src')); add(el.getAttribute('data-lazy'));
+      add(el.getAttribute('data-src')); add(el.getAttribute('data-original'));
+      add(el.getAttribute('srcset')); add(el.getAttribute('data-srcset'));
     }
     return urls;
   }
@@ -170,10 +189,15 @@
     return m ? m[1].toUpperCase() : '';
   }
 
+  // Normalize any photo URL: pictures.dealer.com gets the clean large-render query; other hosts
+  // (a rendered CDN in the JSON-LD image array) are kept as-is minus any fragment.
+  const normAnyPhoto = (u) => (/pictures\.dealer\.com/i.test(u) ? normalizePhoto(u) : String(u || '').split('#')[0]);
+
   // One VDP fetch (same-origin → browser session → clears Akamai) yields the VIN, the full photo
   // gallery, and the JSON-LD gap-fill record (via the shared, platform-agnostic schema.org parser).
-  // Photos: prefer the pictures.dealer.com scrape (most complete), fall back to the SRP-loaded 1-2,
-  // then the JSON-LD image array.
+  // Photos: take the RICHEST of the three sources — the detail page's slider is often lazy-loaded so
+  // the raw-HTML scrape catches only the hero, while the schema.org `image` array (populated for
+  // image SEO) carries the whole gallery. So we can't just prefer the scrape; we pick the biggest set.
   async function fetchVdp(vdpUrl, photoFallback) {
     const out = { vin: '', photos: photoFallback || [], ld: {} };
     if (!vdpUrl) return out;
@@ -186,9 +210,12 @@
       const html = await resp.text();
       out.ld = (root.CarxpertSchemaOrg ? root.CarxpertSchemaOrg.vehicleFromHtml(html) : {});
       out.vin = out.ld.vin || vinFromHtml(html);
-      const gallery = extractPhotoUrlsFromHtml(html);
-      if (gallery.length >= out.photos.length && gallery.length) out.photos = gallery;
-      else if (!out.photos.length && out.ld.photos && out.ld.photos.length) out.photos = out.ld.photos.map(normalizePhoto);
+      const gallery = extractPhotoUrlsFromHtml(html);                 // raw-HTML pictures.dealer.com scrape
+      const ldPhotos = (out.ld.photos || []).map(normAnyPhoto);       // schema.org image array (full gallery)
+      const richest = [gallery, ldPhotos, out.photos]
+        .filter((a) => a && a.length)
+        .sort((a, b) => b.length - a.length)[0];
+      if (richest && richest.length) out.photos = [...new Set(richest)].slice(0, 24);
       return out;
     } catch { return out; }
   }
