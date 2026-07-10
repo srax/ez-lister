@@ -79,9 +79,24 @@ test('extractPhotoUrlsFromHtml: pulls unique gallery images from raw VDP HTML', 
     <img src="https://pictures.dealer.com/c/acct/1158/aaa111x.jpg?w=1200">
     <img src="https://images.dealer.com/graphics/logo.png">`;
   const urls = D.extractPhotoUrlsFromHtml(html);
-  assert.equal(urls.length, 2); // duplicate aaa111 collapsed, non-/c/ image ignored
+  assert.equal(urls.length, 2); // duplicate aaa111 collapsed, images.dealer.com .png ignored
   assert.equal(urls[0], 'https://pictures.dealer.com/c/acct/1158/aaa111x.jpg?impolicy=downsize_bkpt&w=1200');
   assert.equal(urls[1], 'https://pictures.dealer.com/c/acct/0484/bbb222x.jpg?impolicy=downsize_bkpt&w=1200');
+});
+
+test('extractPhotoUrlsFromHtml: matches the /s/ path variant (Sunset/Burdick group), not just /c/', () => {
+  const html = '<img data-lazy="https://pictures.dealer.com/s/sunsetporsche/0176/98ec9edfx.jpg?w=520">'
+    + '<img src="https://pictures.dealer.com/s/sunsetporsche/1363/ed31b7c1x.jpg">';
+  const urls = D.extractPhotoUrlsFromHtml(html);
+  assert.equal(urls.length, 2);
+  assert.equal(urls[0], 'https://pictures.dealer.com/s/sunsetporsche/0176/98ec9edfx.jpg?impolicy=downsize_bkpt&w=1200');
+});
+
+test('extractPhotoUrlsFromHtml: matches ESCAPED-slash JSON URLs (gallery data blob)', () => {
+  const html = '{"image":"https:\\/\\/pictures.dealer.com\\/s\\/acct\\/0176\\/hashx.jpg"}';
+  const urls = D.extractPhotoUrlsFromHtml(html);
+  assert.equal(urls.length, 1);
+  assert.equal(urls[0], 'https://pictures.dealer.com/s/acct/0176/hashx.jpg?impolicy=downsize_bkpt&w=1200');
 });
 
 test('extractPhotoUrlsFromHtml: respects the cap', () => {

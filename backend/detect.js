@@ -27,7 +27,10 @@ export function evidenceFromHtml(html) {
     hasInventoryPhotos: /\/inventoryphotos\//i.test(h),
     // Dealer.com (Cox Automotive)
     mentionsDealerDotCom: /pictures\.dealer\.com|images\.dealer\.com|\bwindow\.DDC\b|ddc-content/i.test(h),
-    serverDdcInventoryPath: /\/(?:used|new|all)-inventory\/index\.htm/i.test(h)
+    serverDdcInventoryPath: /\/(?:used|new|all)-inventory\/index\.htm/i.test(h),
+    // Dealer Inspire (Cars.com) — usually Cloudflare-walled, so this is a fallback for the rare
+    // reachable case; live detection leans on the client probe.
+    mentionsDealerInspire: /dealerinspire\.com|carscommerce\.inc|data-vehicle-vin/i.test(h)
   };
 }
 

@@ -54,6 +54,7 @@
         "lib/extractors/schemaorg.js",
         "lib/extractors/dealeron.js",
         "lib/extractors/dealercom.js",
+        "lib/extractors/dealerinspire.js",
         "lib/extractors/generic.js",
         "dealerContent.js"
       ],

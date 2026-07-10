@@ -9,7 +9,7 @@ import { activeSubscription } from './entitlement/index.js';
 // Platforms our extractor actually supports end-to-end: detection at/above threshold on one
 // of these AUTO-ONBOARDS the dealership (row + aliases, status 'supported') so any dealer on
 // that platform can self-serve. Everything else stays curated (request → triage → admin).
-const AUTO_SUPPORT_PLATFORMS = new Set(['dealeron', 'dealercom']);
+const AUTO_SUPPORT_PLATFORMS = new Set(['dealeron', 'dealercom', 'dealerinspire', 'generic']);
 
 export function slugFromHost(host) {
   return String(host || '').toLowerCase().replace(/^www\./, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
@@ -78,7 +78,15 @@ export async function resolveDealer({ url, fingerprints }, { db = pool, allowNet
   let siteInfo = null;
   if (inputHost && allowNetwork) siteInfo = await fetchSiteEvidence(inputHost, { fetchImpl });
   const evidence = buildEvidence({ ...(fingerprints || {}), ...(siteInfo ? siteInfo.evidence : {}) });
-  const { platform, confidence } = scorePlatform(evidence);
+  const scored = scorePlatform(evidence);
+  const { confidence } = scored;
+  let platform = scored.platform;
+
+  // Universal fallback: an UNRECOGNIZED platform (e.g. Dealer Inspire/Cars.com) that still exposes
+  // schema.org dealer/vehicle data can self-serve as 'generic' — the generic extractor lists from
+  // its detail pages. Only when no specific platform matched, so it never overrides a real one.
+  const fp = fingerprints || {};
+  if (!platform && (fp.hasSchemaAutoDealer || fp.hasSchemaVehicle)) platform = 'generic';
 
   // Supported-platform site → self-serve onboarding: create the dealership + aliases now and
   // return it as supported, so the user can connect without waiting on manual curation.

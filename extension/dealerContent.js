@@ -19,7 +19,7 @@
   const EX = globalThis.CarxpertExtractors || {};
   // Specific providers first; `generic` (schema.org VDP fallback) is last so a recognized platform
   // always wins and generic only claims detail pages nothing else handled. DealerOn is the final fallback.
-  const provider = [EX.dealercom, EX.dealeron, EX.generic].find((p) => p && p.detect()) || EX.dealeron;
+  const provider = [EX.dealercom, EX.dealeron, EX.dealerinspire, EX.generic].find((p) => p && p.detect()) || EX.dealeron;
   if (!provider) return; // extractor modules failed to load — do nothing rather than throw
 
   // Record what we're on so the side panel's Detect/onboard flow can resolve + link this dealer.
@@ -49,14 +49,10 @@
   // ---- button + click flow ----
   // "Where to post" selection (ezlistPrefs.platform, set in the side panel); FB is the default.
   let platform = 'fb';
-  // Pre-warm the FB create tab on first hover (intent signal) so its heavy load overlaps the user's click.
-  let prewarmed = false;
-  function maybePrewarm() {
-    // Prewarm only helps Facebook's single-page create form; Craigslist's multi-page flow can't be prewarmed.
-    if (prewarmed || platform !== 'fb') return;
-    prewarmed = true;
-    chrome.runtime.sendMessage({ type: 'EZLIST_PREWARM', platform: 'fb' }).catch(() => {});
-  }
+  // NOTE: we deliberately do NOT prewarm the FB tab on hover. Chrome fires a "phantom" mouseenter
+  // when a button is inserted under a stationary cursor — on a dense card grid that opened a blank
+  // FB Marketplace tab on mere page refresh, with no click. FB now opens only on an explicit List
+  // click (onList → EZLIST_OPEN_PLATFORM), which is the correct, intentional moment.
 
   // ---- listed-state (green "✓ Added") ----
   // A card turns green only once its VIN is confirmed *published* on Facebook — the FB
@@ -195,7 +191,6 @@
       }
       await chrome.runtime.sendMessage({ type: 'EZLIST_OPEN_PLATFORM', platform });
       btn.textContent = platform === 'fb' ? '✓ Opened FB' : '✓ Opened';
-      prewarmed = false; // allow warming a fresh tab for the next car
     } catch (e) {
       // "Extension context invalidated" = this tab's content script is stale after an
       // extension reload; a page refresh re-injects a fresh one. Guide the user rather than
@@ -230,7 +225,6 @@
     btn.style.cssText = BTN_STYLE;
     btn.dataset.ezkey = provider.cardKey(card);
     paint(btn);
-    btn.addEventListener('mouseenter', maybePrewarm);
     btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); onList(card, btn, provider.vdpUrlFor(card)); });
     card.appendChild(btn);
   }
@@ -245,7 +239,6 @@
     btn.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:2147483647;display:inline-flex;align-items:center;gap:6px;border:0;border-radius:11px;padding:10px 15px;font:800 13.5px/1 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;letter-spacing:.1px;white-space:nowrap;cursor:pointer'; // bg, colour + shadow set by paint()
     btn.dataset.ezkey = provider.vdpKey();
     paint(btn);
-    btn.addEventListener('mouseenter', maybePrewarm);
     btn.addEventListener('click', () => onList(el, btn, location.href));
     document.body.appendChild(btn);
   }

@@ -24,6 +24,7 @@ require('../mappers.core.js');
 require('./schemaorg.js');
 require('./dealeron.js');
 require('./dealercom.js');
+require('./dealerinspire.js');
 require('./generic.js');
 const EX = globalThis.CarxpertExtractors;
 
@@ -43,7 +44,7 @@ async function onPage(html, url, fn) {
 
 // The dispatcher's provider pick, mirrored (dealerContent.js): specific providers first, the
 // schema.org `generic` fallback next, DealerOn as the final default.
-const pick = () => [EX.dealercom, EX.dealeron, EX.generic].find((p) => p && p.detect()) || EX.dealeron;
+const pick = () => [EX.dealercom, EX.dealeron, EX.dealerinspire, EX.generic].find((p) => p && p.detect()) || EX.dealeron;
 
 // ---------------------------------------------------------------- DealerOn
 maybe('DealerOn: detect() claims the page, Dealer.com does NOT (isolation)', async () => {
@@ -111,6 +112,19 @@ maybe('Dealer.com: extractVehicle reads rendered text + fetches the gallery', as
   });
 });
 
+maybe('Dealer.com: title heading that wraps a price block still yields a clean model (Rameycars theme)', async () => {
+  await onPage(fixture('dealercom-srp-card-nested-price.html'), 'https://www.rameycars.com/used-inventory/index.htm', async () => {
+    const card = EX.dealercom.findCards()[0];
+    global.fetch = async () => ({ ok: true, async text() { return '<html></html>'; } }); // no VDP data needed
+    const v = await EX.dealercom.extractVehicle(card, null, {});
+    assert.equal(v.make, 'Acura');
+    assert.equal(v.model, 'RDX w/A-Spec Advance Package', 'model must NOT include the nested price/payment text');
+    assert.equal(v.year, '2023');
+    assert.equal(v.price, 38999, 'clean askingPrice, not the portal-price blob');
+    assert.equal(v.stock, '261272A');
+  });
+});
+
 maybe('Dealer.com: div-tag card variant is found (element-agnostic findCards)', async () => {
   // Some DDC themes render the card as <div> not <li> — findCards matches on class+data-uuid, not tag.
   const html = '<div class="box vehicle-card vehicle-card-detailed" data-uuid="abc123">'
@@ -146,6 +160,66 @@ maybe('Dealer.com: sparse new-car card is button-ready and enriched from the VDP
     assert.equal(v.bodyType, 'Truck');
     assert.equal(v.photoUrls.length, 3, 'full gallery scraped from the VDP');
     assert.match(v.sourceUrl, /cronicchevroletgriffin\.com\/new\/Chevrolet\//);
+  });
+});
+
+maybe('Dealer.com: all lazy-loaded slider images are collected from the card, not just the visible one', async () => {
+  // Burdick/Sunset case: the slick carousel keeps only the visible slide in src and stashes the
+  // rest in data-lazy — reading src alone gave 1 photo. Here the VDP fetch returns just the hero,
+  // so the win must come from reading every slide's data-lazy off the card.
+  const slides = [1, 2, 3, 4, 5].map((n) =>
+    `<div class="slick-slide"><a href="/used/Chevrolet/2020-x-u1.htm"><img class="w-100" data-lazy="https://pictures.dealer.com/c/burdickgm/000${n}/hash${n}x.jpg?impolicy=downsize_bkpt&w=520"></a></div>`).join('');
+  const html = `<div class="box vehicle-card vehicle-card-detailed" data-uuid="u1">`
+    + `<div class="vehicle-card-media-container"><div class="slick-slider"><div class="slick-list"><div class="slick-track">${slides}</div></div></div></div>`
+    + `<h2 class="vehicle-card-title"><div class="vehicle-card-title-container"><a href="/used/Chevrolet/2020-Chevrolet-Malibu-u1.htm"><span>2020 Chevrolet Malibu LT</span></a></div></h2>`
+    + `<ul class="vehicle-card-description"><li class="stockNumber">Stock # B1</li></ul></div>`;
+  await onPage(html, 'https://www.burdickgm.com/used-inventory/index.htm', async () => {
+    const card = EX.dealercom.findCards()[0];
+    global.fetch = async () => ({ ok: true, async text() {
+      return '<script type="application/ld+json">{"@type":"Vehicle","vehicleIdentificationNumber":"1G1ZD5ST0LF012345","offers":{"price":"18995"}}</script>'
+        + '<img src="https://pictures.dealer.com/c/burdickgm/0001/hash1x.jpg">'; // VDP raw HTML has only the hero
+    } });
+    const v = await EX.dealercom.extractVehicle(card, null, { location: 'Cicero, NY' });
+    assert.equal(v.photoUrls.length, 5, 'all 5 lazy slider images collected');
+    assert.equal(v.vin, '1G1ZD5ST0LF012345');
+  });
+});
+
+// ---- Dealer Inspire (Cars.com): data-vehicle JSON on the card + schema.org/di-uploads on the VDP.
+maybe('Dealer Inspire: detect() claims the page, others do NOT (isolation)', async () => {
+  await onPage(fixture('dealerinspire-srp-card.html'), 'https://www.classicchevrolet.com/used-vehicles/', () => {
+    assert.equal(EX.dealerinspire.detect(), true);
+    assert.equal(EX.dealercom.detect(), false);
+    assert.equal(EX.dealeron.detect(), false);
+    assert.equal(pick().id, 'dealerinspire');
+  });
+});
+
+maybe('Dealer Inspire: extractVehicle reads the data-vehicle JSON + fills mileage/photos from the VDP', async () => {
+  await onPage(fixture('dealerinspire-srp-card.html'), 'https://www.classicchevrolet.com/used-vehicles/', async () => {
+    const card = EX.dealerinspire.findCards()[0];
+    assert.ok(card, 'card found');
+    assert.equal(EX.dealerinspire.cardReady(card), true);
+    global.fetch = async () => ({ ok: true, async text() { return fixture('dealerinspire-vdp.html'); } });
+    const v = await EX.dealerinspire.extractVehicle(card, null, { location: 'Grapevine, TX' });
+    assert.equal(v.vin, '5XYPG4A36KG550522');
+    assert.equal(v.make, 'Kia');
+    assert.equal(v.model, 'Sorento LX');       // model + trim from the JSON
+    assert.equal(v.year, '2019');
+    assert.equal(v.price, 13367);              // rendered "Classic Price", not the fee-inclusive JSON 13592
+    assert.equal(v.stock, 'KG550522');
+    assert.equal(v.exteriorColor, 'White');
+    assert.equal(v.fuelType, 'Gasoline Fuel');
+    assert.equal(v.mileage, 78450);            // absent from the card JSON → filled from the VDP schema.org
+    assert.equal(v.bodyType, 'SUV');           // card bodystyle empty → filled from the VDP
+    assert.equal(v.interiorColor, 'Black');    // from the VDP
+    // Only THIS car's real photos (VIN-tagged carscommerce) — stock chrome render, a similar
+    // vehicle's photo (different VIN), and the dealer og- asset are all excluded.
+    assert.equal(v.photoUrls.length, 3);
+    assert.ok(v.photoUrls.every((u) => u.includes('5XYPG4A36KG550522')), 'all belong to this VIN');
+    assert.ok(v.photoUrls.every((u) => !/chrome|og-|stock-images/.test(u)), 'no stock/asset images');
+    // The card's hit-link is http:// — must be upgraded to https so the VDP fetch isn't mixed-content blocked.
+    assert.ok(v.sourceUrl.startsWith('https://'), 'http VDP link upgraded to https');
   });
 });
 

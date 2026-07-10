@@ -66,3 +66,11 @@ test('DealerOn and Dealer.com signals do not cross-contaminate', () => {
   const com = scorePlatform(buildEvidence({ ddcNamespace: true }));
   assert.equal(com.scores.dealeron, 0);
 });
+
+test('Dealer Inspire detected from its client asset/data-vehicle signal', () => {
+  const r = scorePlatform(buildEvidence({ diAssets: true }));
+  assert.equal(r.platform, 'dealerinspire');
+  assert.equal(r.scores.dealerinspire, 3);
+  assert.equal(r.scores.dealeron, 0);
+  assert.equal(r.scores.dealercom, 0);
+});

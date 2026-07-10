@@ -25,6 +25,13 @@ const RULES = {
     ['client.hasDdcInventoryPath', 1], // /used-inventory/ /new-inventory/ /all-inventory/
     ['server.bodyMentionsDealerDotCom', 3], // "dealer.com" / pictures.dealer.com in HTML
     ['server.hasDdcInventoryPath', 1] // same inventory path seen in server HTML
+  ],
+  // Dealer Inspire (Cars.com). Cloudflare-walled (not Akamai), so like Dealer.com it leans on the
+  // extension's live-DOM probe: DI ships assets from dealerinspire.com and its cards carry the
+  // data-vehicle JSON blob.
+  dealerinspire: [
+    ['client.hasDealerInspire', 3], // dealerinspire.com assets or [data-vehicle][data-vehicle-vin]
+    ['server.bodyMentionsDealerInspire', 3] // "dealerinspire.com" / x-cars-signature in HTML
   ]
 };
 const MAX_SCORE = Object.fromEntries(
@@ -46,7 +53,8 @@ export function buildEvidence(fingerprints = {}) {
       hasDotagging: pick('dotagging', 'hasDotagging', 'dataDotagging'),
       hasDdcNamespace: pick('ddcNamespace', 'hasDdcNamespace'),
       hasVehicleCardUuid: pick('vehicleCardUuid', 'hasVehicleCardUuid'),
-      hasDdcInventoryPath: pick('ddcInventoryPath', 'hasDdcInventoryPath')
+      hasDdcInventoryPath: pick('ddcInventoryPath', 'hasDdcInventoryPath'),
+      hasDealerInspire: pick('diAssets', 'diVehicleData', 'hasDealerInspire')
     },
     server: {
       bodyMentionsDealerOn: pick('mentionsDealerOn', 'bodyMentionsDealerOn'),
@@ -55,7 +63,8 @@ export function buildEvidence(fingerprints = {}) {
       hasSearchUsed: pick('hasSearchUsed', 'searchUsed'),
       hasInventoryPhotos: pick('hasInventoryPhotos', 'inventoryPhotos'),
       bodyMentionsDealerDotCom: pick('mentionsDealerDotCom', 'bodyMentionsDealerDotCom'),
-      hasDdcInventoryPath: pick('serverDdcInventoryPath', 'hasServerDdcInventoryPath')
+      hasDdcInventoryPath: pick('serverDdcInventoryPath', 'hasServerDdcInventoryPath'),
+      bodyMentionsDealerInspire: pick('mentionsDealerInspire', 'bodyMentionsDealerInspire')
     }
   };
 }

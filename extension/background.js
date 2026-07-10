@@ -83,6 +83,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       prewarm(message.platform).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
+    // Fetch a dealer detail page's HTML in the worker. Content-script fetches don't reliably carry
+    // the site's Cloudflare/Akamai session, so the extractors (Dealer Inspire/Dealer.com VDP scrape)
+    // delegate here — the worker sends the site's cookies (credentials:'include') under the granted
+    // host permission, clearing the bot wall the way the FB photo fetch does.
+    case 'EZLIST_FETCH_HTML':
+      fetchDealerHtml(message.url).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+
     // EZLIST_OPEN_FACEBOOK kept for the FB-only dealer/panel callers; platform defaults to fb.
     case 'EZLIST_OPEN_FACEBOOK':
     case 'EZLIST_OPEN_PLATFORM':
@@ -258,6 +266,24 @@ function startFetch(msg) {
     while (imageCache.size > IMG_CACHE_MAX) imageCache.delete(imageCache.keys().next().value);
   }
   return imageCache.get(key);
+}
+
+// Fetch a dealer detail page's HTML in the worker (credentialed, so it clears Cloudflare/Akamai
+// under the granted host permission). Capped at 3MB; https only. Used by the VDP extractors.
+async function fetchDealerHtml(url) {
+  if (!/^https:\/\/[^/]+/i.test(String(url || ''))) return { ok: false, error: 'bad url' };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    const resp = await fetch(url, { credentials: 'include', cache: 'no-store', redirect: 'follow', signal: controller.signal });
+    if (!resp || !resp.ok) return { ok: false, status: resp ? resp.status : 0 };
+    const html = (await resp.text()).slice(0, 3 * 1024 * 1024);
+    return { ok: true, html };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || 'fetch failed' };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Fetch vehicle photos in the worker: bypasses the Facebook page CSP/CORS that block in-page fetches.
@@ -467,6 +493,16 @@ async function probeSiteFingerprints(url, host) {
     const hasDdcDom = q('.ddc-content, [data-widget-name], [class*="ddc-"], [id*="ddc-"]');
     let hasDdcGlobal = false;
     try { hasDdcGlobal = !!(window.DDC || window.DDCAPI); } catch { /* cross-origin/global guard */ }
+    // Universal-onboarding signals: a dealer site on ANY platform (Dealer Inspire, Sincro, …) that
+    // exposes schema.org can self-serve as 'generic'. AutoDealer marks a dealership site; Vehicle
+    // marks inventory. Inventory links are a weak corroborating hint.
+    const ldText = [...document.querySelectorAll('script[type="application/ld+json"]')].map((s) => s.textContent || '').join(' ');
+    const hasSchemaAutoDealer = /"@type"\s*:\s*"(?:AutoDealer|AutomotiveBusiness|Car ?dealer)"/i.test(ldText);
+    const hasSchemaVehicle = /vehicleIdentificationNumber|"@type"\s*:\s*"(?:Vehicle|Car)"/i.test(ldText);
+    const hasInventoryLinks = !!document.querySelector('a[href*="inventory" i], a[href*="/vehicle" i], a[href*="/used-" i], a[href*="/new-" i]');
+    // Dealer Inspire (Cars.com): its cards carry data-vehicle JSON and it ships assets from
+    // dealerinspire.com / carscommerce.inc.
+    const diAssets = !!document.querySelector('[data-vehicle][data-vehicle-vin], img[src*="dealerinspire.com"], img[src*="carscommerce.inc"], script[src*="dealerinspire.com"], link[href*="dealerinspire.com"]');
     const siteName = (() => {
       const og = document.querySelector('meta[property="og:site_name"]');
       if (og && og.content && og.content.trim()) return og.content.trim().slice(0, 80);
@@ -486,8 +522,12 @@ async function probeSiteFingerprints(url, host) {
       ddcInventoryPath: /\/(?:used|new|all|certified)-inventory\//i.test(location.pathname),
       vehicleInfoVin: q('[data-vehicle-information][data-vin]'),
       dotagging: q('[data-dotagging-item-id],[data-dotagging-element-type]'),
+      hasSchemaAutoDealer,
+      hasSchemaVehicle,
+      hasInventoryLinks,
+      diAssets,
       siteName,
-      _dbg: { host: location.host, path: location.pathname, hasDdcAssets, hasDdcDom, hasDdcGlobal, title: (document.title || '').slice(0, 60) }
+      _dbg: { host: location.host, path: location.pathname, hasDdcAssets, hasDdcDom, hasDdcGlobal, schemaDealer: hasSchemaAutoDealer, schemaVehicle: hasSchemaVehicle, title: (document.title || '').slice(0, 60) }
     };
   };
   const runProbe = async (tabId) => {
@@ -496,7 +536,7 @@ async function probeSiteFingerprints(url, host) {
       return (results && results[0] && results[0].result) || null;
     } catch (e) { console.warn('[cx] probe executeScript failed:', e && e.message); return null; }
   };
-  const usable = (r) => r && (r.ddcNamespace || r.vehicleInfoVin || r.dotagging);
+  const usable = (r) => r && (r.ddcNamespace || r.vehicleInfoVin || r.dotagging || r.hasSchemaAutoDealer || r.hasSchemaVehicle || r.diAssets);
 
   let tab = (await chrome.tabs.query({}).catch(() => [])).find((t) => t.url && onHost(t.url));
   let opened = false;
@@ -720,7 +760,7 @@ async function ensureDealerScripts(me) {
   const script = {
     id: DEALER_SCRIPT_ID,
     matches: granted,
-    js: ['lib/mappers.core.js', 'lib/extractors/schemaorg.js', 'lib/extractors/dealeron.js', 'lib/extractors/dealercom.js', 'lib/extractors/generic.js', 'dealerContent.js'],
+    js: ['lib/mappers.core.js', 'lib/extractors/schemaorg.js', 'lib/extractors/dealeron.js', 'lib/extractors/dealercom.js', 'lib/extractors/dealerinspire.js', 'lib/extractors/generic.js', 'dealerContent.js'],
     runAt: 'document_idle',
     persistAcrossSessions: true
   };
