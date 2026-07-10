@@ -14,29 +14,32 @@ test('parseVehicleJson: parses the data-vehicle blob, tolerates junk', () => {
   assert.deepEqual(D.parseVehicleJson(null), {});
 });
 
-test('isRealPhoto: real DI hosts yes; chrome stock renders + placeholders + other hosts no', () => {
-  assert.equal(D.isRealPhoto('https://di-uploads-pod47.dealerinspire.com/x/uploads/img1.jpg'), true);
-  assert.equal(D.isRealPhoto('https://vehicle-images.carscommerce.inc/photos/real.jpg'), true);
-  assert.equal(D.isRealPhoto('https://vehicle-images.carscommerce.inc/stock-images/chrome/x.png'), false); // stock render
+test('isRealPhoto: real DI hosts yes; chrome/stock renders + assets + other hosts no', () => {
+  assert.equal(D.isRealPhoto('https://vehicle-images.carscommerce.inc/c9-1/VIN123/thumbnails/large/x.jpg'), true);
+  assert.equal(D.isRealPhoto('https://vehicle-images.carscommerce.inc/stock-images/thumbnails/large/chrome/x.png'), false); // stock render
+  assert.equal(D.isRealPhoto('https://di-uploads-pod47.dealerinspire.com/x/uploads/2025/08/og-200x200-1.jpg'), false);      // dealer og asset
   assert.equal(D.isRealPhoto('https://di-uploads.dealerinspire.com/x/placeholder.jpg'), false);
   assert.equal(D.isRealPhoto('https://someothercdn.com/img.jpg'), false);
 });
 
-test('photosFromHtml: unique real DI photos, skips stock renders + dupes', () => {
-  const html = '<img src="https://di-uploads-pod47.dealerinspire.com/a/1.jpg?w=520">'
-    + '<img src="https://di-uploads-pod47.dealerinspire.com/a/2.jpg">'
-    + '<img src="https://di-uploads-pod47.dealerinspire.com/a/1.jpg?w=1200">'  // dupe of #1
-    + '<img src="https://vehicle-images.carscommerce.inc/stock-images/chrome/s.png">'; // stock render
-  const urls = D.photosFromHtml(html);
+test('photosFromHtml: only THIS car (VIN in path) — skips stock, dealer assets, and other VINs', () => {
+  const VIN = '5XYPG4A36KG550522';
+  const html = '<img src="https://vehicle-images.carscommerce.inc/c9-1/5XYPG4A36KG550522/thumbnails/large/a.jpg?w=520">'
+    + '<img src="https://vehicle-images.carscommerce.inc/c9-1/5XYPG4A36KG550522/thumbnails/large/b.jpg">'
+    + '<img src="https://vehicle-images.carscommerce.inc/c9-1/5XYPG4A36KG550522/thumbnails/large/a.jpg?w=1200">' // dupe of a
+    + '<img src="https://vehicle-images.carscommerce.inc/stock-images/thumbnails/large/chrome/s.png">'          // stock
+    + '<img src="https://vehicle-images.carscommerce.inc/c9-2/3KPF24AD6RE759740/thumbnails/large/other.jpg">'   // different VIN
+    + '<img src="https://di-uploads-pod47.dealerinspire.com/x/uploads/2025/08/og-200x200-1.jpg">';              // dealer asset
+  const urls = D.photosFromHtml(html, VIN);
   assert.equal(urls.length, 2);
-  assert.equal(urls[0], 'https://di-uploads-pod47.dealerinspire.com/a/1.jpg');
+  assert.equal(urls[0], 'https://vehicle-images.carscommerce.inc/c9-1/5XYPG4A36KG550522/thumbnails/large/a.jpg');
 });
 
 test('photosFromHtml: matches ESCAPED-slash JSON URLs (the real DI gallery format)', () => {
-  // DI ships gallery URLs inside JSON blobs with escaped slashes: https:\/\/di-uploads…
-  const html = 'var d={"photos":["https:\\/\\/di-uploads-pod47.dealerinspire.com\\/acct\\/uploads\\/a.jpg",'
-    + '"https:\\/\\/di-uploads-pod47.dealerinspire.com\\/acct\\/uploads\\/b.jpg"]};';
-  const urls = D.photosFromHtml(html);
+  const VIN = '5XYPG4A36KG550522';
+  const html = 'var d={"photos":["https:\\/\\/vehicle-images.carscommerce.inc\\/c9\\/5XYPG4A36KG550522\\/thumbnails\\/large\\/a.jpg",'
+    + '"https:\\/\\/vehicle-images.carscommerce.inc\\/c9\\/5XYPG4A36KG550522\\/thumbnails\\/large\\/b.jpg"]};';
+  const urls = D.photosFromHtml(html, VIN);
   assert.equal(urls.length, 2);
-  assert.equal(urls[0], 'https://di-uploads-pod47.dealerinspire.com/acct/uploads/a.jpg');
+  assert.equal(urls[0], 'https://vehicle-images.carscommerce.inc/c9/5XYPG4A36KG550522/thumbnails/large/a.jpg');
 });

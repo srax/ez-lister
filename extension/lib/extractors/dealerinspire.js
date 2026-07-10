@@ -21,21 +21,27 @@
   function parseVehicleJson(raw) {
     try { const o = JSON.parse(raw || '{}'); return o && typeof o === 'object' ? o : {}; } catch { return {}; }
   }
-  // A photo URL is a REAL Dealer Inspire vehicle photo (not a chrome stock render / placeholder).
+  // A photo URL is a REAL Dealer Inspire vehicle photo (not a chrome stock render, dealer asset, or
+  // placeholder). Real Cars.com photos are carscommerce.inc/<acct>/<VIN>/thumbnails/…; stock renders
+  // sit under /stock-images/…/chrome/… and dealer assets are og-/logo/banner/sitebuilder images.
   const DI_PHOTO_HOST = /(?:di-uploads[^/"'\s]*\.dealerinspire\.com|vehicle-images\.carscommerce\.inc)/i;
-  const DI_PHOTO_SKIP = /stock-images\/chrome|placeholder|no-image|unavailable|logo|sprite|icon/i;
+  const DI_PHOTO_SKIP = /stock-images|\/chrome\/|placeholder|no-image|unavailable|\/logo|sprite|\/icon|og-\d|favicon|banner|sitebuilder|\/theme\//i;
   const isRealPhoto = (u) => DI_PHOTO_HOST.test(u) && !DI_PHOTO_SKIP.test(u) && /\.(?:jpe?g|png|webp)/i.test(u);
-  function photosFromHtml(html, max = 24) {
+  // Collect THIS car's real photos from VDP HTML. Real Cars.com photo URLs embed the VIN in the
+  // path, so filtering to the current VIN gets exactly this car's gallery — excluding stock renders
+  // (no VIN) AND similar-vehicle thumbnails (a different VIN). URLs may be escaped inside JSON blobs
+  // (https:\/\/…) so unescape slashes first and allow an optional protocol. If no VIN is known we
+  // fall back to any non-asset real photo (best-effort).
+  function photosFromHtml(html, vin, max = 24) {
     const out = []; const seen = new Set();
-    // The gallery URLs live in JSON blobs where slashes are escaped (https:\/\/di-uploads…), so a
-    // literal-`https://` regex matches none of them. Unescape first, then match by HOST (with an
-    // optional/absent protocol) and rebuild a clean https URL.
     const raw = String(html || '').replace(/\\\//g, '/');
     const re = /(?:https?:)?\/\/(?:di-uploads[^/"'\s\\]*\.dealerinspire\.com|vehicle-images\.carscommerce\.inc)\/[^\s"'<>)\\]+?\.(?:jpe?g|png|webp)/gi;
+    const v = String(vin || '').toUpperCase();
     let m;
     while ((m = re.exec(raw)) && out.length < max) {
       const u = m[0].replace(/^(?:https?:)?\/\//i, 'https://');
       if (DI_PHOTO_SKIP.test(u)) continue;
+      if (v && !u.toUpperCase().includes(v)) continue; // must belong to THIS car
       const base = u.split('?')[0];
       if (seen.has(base)) continue;
       seen.add(base); out.push(base);
@@ -62,11 +68,13 @@
     const p = money(j.price) || money(j.msrp);
     return plausible(p) ? p : undefined;
   }
-  function photosFromCard(card) {
+  function photosFromCard(card, vin) {
     const out = []; const seen = new Set();
+    const v = String(vin || '').toUpperCase();
     for (const img of card.querySelectorAll('img')) {
       const src = img.currentSrc || img.getAttribute('src') || img.getAttribute('data-src') || '';
       if (!isRealPhoto(src)) continue;
+      if (v && !src.toUpperCase().includes(v)) continue; // only THIS car's photo, not a stock render
       const base = src.split('?')[0];
       if (seen.has(base)) continue;
       seen.add(base); out.push(base);
@@ -74,15 +82,16 @@
     return out;
   }
 
-  async function fetchVdp(vdpUrl, photoFallback) {
+  async function fetchVdp(vdpUrl, vin, photoFallback) {
     const out = { photos: photoFallback || [], ld: {} };
     const s = S();
     if (!vdpUrl || !s) return out;
     const html = await s.fetchHtml(vdpUrl); // via the background worker (clears Cloudflare)
     if (!html) return out;
     out.ld = s.vehicleFromHtml(html);
-    const scraped = photosFromHtml(html);
-    const ldPhotos = (out.ld.photos || []).filter(isRealPhoto);
+    const effVin = vin || out.ld.vin || '';                 // VDP-direct: VIN comes from schema.org
+    const scraped = photosFromHtml(html, effVin);           // THIS car's photos (VIN-tagged), no stock
+    const ldPhotos = (out.ld.photos || []).filter(isRealPhoto); // schema.org Vehicle images (curated)
     const richest = [scraped, ldPhotos, out.photos].filter((a) => a && a.length).sort((a, b) => b.length - a.length)[0];
     if (richest && richest.length) out.photos = [...new Set(richest)].slice(0, 24);
     return out;
@@ -122,7 +131,7 @@
       interiorColor: squish(j.interior_color),
       transmission: squish(j.transmission)
     };
-    const vdp = await fetchVdp(vdpUrl, photosFromCard(card));
+    const vdp = await fetchVdp(vdpUrl, cardData.vin, photosFromCard(card, cardData.vin));
     const ld = vdp.ld;
     const fill = (c, l) => (c !== undefined && c !== null && c !== '' ? c : (l || undefined));
     const v = {

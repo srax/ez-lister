@@ -200,8 +200,11 @@ maybe('Dealer Inspire: extractVehicle reads the data-vehicle JSON + fills mileag
     assert.equal(v.mileage, 78450);            // absent from the card JSON → filled from the VDP schema.org
     assert.equal(v.bodyType, 'SUV');           // card bodystyle empty → filled from the VDP
     assert.equal(v.interiorColor, 'Black');    // from the VDP
-    assert.equal(v.photoUrls.length, 3, 'real di-uploads photos, chrome stock render excluded');
-    assert.ok(v.photoUrls.every((u) => /di-uploads/.test(u)));
+    // Only THIS car's real photos (VIN-tagged carscommerce) — stock chrome render, a similar
+    // vehicle's photo (different VIN), and the dealer og- asset are all excluded.
+    assert.equal(v.photoUrls.length, 3);
+    assert.ok(v.photoUrls.every((u) => u.includes('5XYPG4A36KG550522')), 'all belong to this VIN');
+    assert.ok(v.photoUrls.every((u) => !/chrome|og-|stock-images/.test(u)), 'no stock/asset images');
     // The card's hit-link is http:// — must be upgraded to https so the VDP fetch isn't mixed-content blocked.
     assert.ok(v.sourceUrl.startsWith('https://'), 'http VDP link upgraded to https');
   });
