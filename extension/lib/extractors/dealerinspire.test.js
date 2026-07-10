@@ -31,3 +31,12 @@ test('photosFromHtml: unique real DI photos, skips stock renders + dupes', () =>
   assert.equal(urls.length, 2);
   assert.equal(urls[0], 'https://di-uploads-pod47.dealerinspire.com/a/1.jpg');
 });
+
+test('photosFromHtml: matches ESCAPED-slash JSON URLs (the real DI gallery format)', () => {
+  // DI ships gallery URLs inside JSON blobs with escaped slashes: https:\/\/di-uploads…
+  const html = 'var d={"photos":["https:\\/\\/di-uploads-pod47.dealerinspire.com\\/acct\\/uploads\\/a.jpg",'
+    + '"https:\\/\\/di-uploads-pod47.dealerinspire.com\\/acct\\/uploads\\/b.jpg"]};';
+  const urls = D.photosFromHtml(html);
+  assert.equal(urls.length, 2);
+  assert.equal(urls[0], 'https://di-uploads-pod47.dealerinspire.com/acct/uploads/a.jpg');
+});

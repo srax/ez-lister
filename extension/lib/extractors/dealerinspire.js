@@ -27,11 +27,15 @@
   const isRealPhoto = (u) => DI_PHOTO_HOST.test(u) && !DI_PHOTO_SKIP.test(u) && /\.(?:jpe?g|png|webp)/i.test(u);
   function photosFromHtml(html, max = 24) {
     const out = []; const seen = new Set();
-    const re = /https:\/\/[^\s"'<>\\)]+?\.(?:jpe?g|png|webp)/gi;
+    // The gallery URLs live in JSON blobs where slashes are escaped (https:\/\/di-uploads…), so a
+    // literal-`https://` regex matches none of them. Unescape first, then match by HOST (with an
+    // optional/absent protocol) and rebuild a clean https URL.
+    const raw = String(html || '').replace(/\\\//g, '/');
+    const re = /(?:https?:)?\/\/(?:di-uploads[^/"'\s\\]*\.dealerinspire\.com|vehicle-images\.carscommerce\.inc)\/[^\s"'<>)\\]+?\.(?:jpe?g|png|webp)/gi;
     let m;
-    while ((m = re.exec(String(html || ''))) && out.length < max) {
-      const u = m[0];
-      if (!isRealPhoto(u)) continue;
+    while ((m = re.exec(raw)) && out.length < max) {
+      const u = m[0].replace(/^(?:https?:)?\/\//i, 'https://');
+      if (DI_PHOTO_SKIP.test(u)) continue;
       const base = u.split('?')[0];
       if (seen.has(base)) continue;
       seen.add(base); out.push(base);
@@ -72,21 +76,16 @@
 
   async function fetchVdp(vdpUrl, photoFallback) {
     const out = { photos: photoFallback || [], ld: {} };
-    if (!vdpUrl) return out;
-    try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 8000);
-      const resp = await fetch(vdpUrl, { credentials: 'same-origin', signal: ctrl.signal });
-      clearTimeout(timer);
-      if (!resp.ok) return out;
-      const html = await resp.text();
-      out.ld = S() ? S().vehicleFromHtml(html) : {};
-      const scraped = photosFromHtml(html);
-      const ldPhotos = (out.ld.photos || []).filter(isRealPhoto);
-      const richest = [scraped, ldPhotos, out.photos].filter((a) => a && a.length).sort((a, b) => b.length - a.length)[0];
-      if (richest && richest.length) out.photos = [...new Set(richest)].slice(0, 24);
-      return out;
-    } catch { return out; }
+    const s = S();
+    if (!vdpUrl || !s) return out;
+    const html = await s.fetchHtml(vdpUrl); // via the background worker (clears Cloudflare)
+    if (!html) return out;
+    out.ld = s.vehicleFromHtml(html);
+    const scraped = photosFromHtml(html);
+    const ldPhotos = (out.ld.photos || []).filter(isRealPhoto);
+    const richest = [scraped, ldPhotos, out.photos].filter((a) => a && a.length).sort((a, b) => b.length - a.length)[0];
+    if (richest && richest.length) out.photos = [...new Set(richest)].slice(0, 24);
+    return out;
   }
 
   function buildDescription(v) {

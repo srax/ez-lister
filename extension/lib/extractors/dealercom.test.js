@@ -92,6 +92,13 @@ test('extractPhotoUrlsFromHtml: matches the /s/ path variant (Sunset/Burdick gro
   assert.equal(urls[0], 'https://pictures.dealer.com/s/sunsetporsche/0176/98ec9edfx.jpg?impolicy=downsize_bkpt&w=1200');
 });
 
+test('extractPhotoUrlsFromHtml: matches ESCAPED-slash JSON URLs (gallery data blob)', () => {
+  const html = '{"image":"https:\\/\\/pictures.dealer.com\\/s\\/acct\\/0176\\/hashx.jpg"}';
+  const urls = D.extractPhotoUrlsFromHtml(html);
+  assert.equal(urls.length, 1);
+  assert.equal(urls[0], 'https://pictures.dealer.com/s/acct/0176/hashx.jpg?impolicy=downsize_bkpt&w=1200');
+});
+
 test('extractPhotoUrlsFromHtml: respects the cap', () => {
   const many = Array.from({ length: 30 }, (_, i) => `<img src="https://pictures.dealer.com/c/acct/0000/h${i}x.jpg">`).join('');
   assert.equal(D.extractPhotoUrlsFromHtml(many, 24).length, 24);

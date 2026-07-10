@@ -106,10 +106,13 @@
   function extractPhotoUrlsFromHtml(html, max = 24) {
     const out = [];
     const seen = new Set();
-    const re = /https:\/\/pictures\.dealer\.com\/[^\s"'<>\\)]+?\.jpg/gi;
+    // Gallery URLs may appear escaped inside JSON blobs (https:\/\/pictures.dealer.com\/…), so
+    // unescape slashes first and allow an optional/absent protocol, then rebuild a clean https URL.
+    const raw = String(html || '').replace(/\\\//g, '/');
+    const re = /(?:https?:)?\/\/pictures\.dealer\.com\/[^\s"'<>)\\]+?\.jpg/gi;
     let m;
-    while ((m = re.exec(String(html || ''))) && out.length < max) {
-      const base = m[0].split('?')[0];
+    while ((m = re.exec(raw)) && out.length < max) {
+      const base = m[0].replace(/^(?:https?:)?\/\//i, 'https://').split('?')[0];
       if (seen.has(base)) continue;
       seen.add(base);
       out.push(normalizePhoto(base));
@@ -203,15 +206,12 @@
   // image SEO) carries the whole gallery. So we can't just prefer the scrape; we pick the biggest set.
   async function fetchVdp(vdpUrl, photoFallback) {
     const out = { vin: '', photos: photoFallback || [], ld: {} };
-    if (!vdpUrl) return out;
+    const s = root.CarxpertSchemaOrg;
+    if (!vdpUrl || !s) return out;
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 8000);
-      const resp = await fetch(vdpUrl, { credentials: 'same-origin', signal: ctrl.signal });
-      clearTimeout(timer);
-      if (!resp.ok) return out;
-      const html = await resp.text();
-      out.ld = (root.CarxpertSchemaOrg ? root.CarxpertSchemaOrg.vehicleFromHtml(html) : {});
+      const html = await s.fetchHtml(vdpUrl); // via the background worker (clears Akamai)
+      if (!html) return out;
+      out.ld = s.vehicleFromHtml(html);
       out.vin = out.ld.vin || vinFromHtml(html);
       const gallery = extractPhotoUrlsFromHtml(html);                 // raw-HTML pictures.dealer.com scrape
       const ldPhotos = (out.ld.photos || []).map(normAnyPhoto);       // schema.org image array (full gallery)

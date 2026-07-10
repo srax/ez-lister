@@ -61,10 +61,34 @@
     return nodes;
   }
 
+  // Fetch a detail page's HTML for the VDP extractors. Prefer the BACKGROUND worker — a
+  // content-script fetch doesn't reliably carry the site's Cloudflare/Akamai session, so a bare
+  // fetch can come back empty/challenged (Dealer Inspire's gallery lives only on the VDP, which
+  // exposed this). Fall back to a direct same-origin fetch when the worker isn't reachable (and in
+  // node:test, where `fetch` is stubbed and `chrome` is absent).
+  async function fetchHtml(url) {
+    // Direct same-origin fetch FIRST — it's same-site with the dealer page, so it carries the
+    // Cloudflare/Akamai session (a background/worker fetch is cross-site and could be challenged,
+    // returning a 200 challenge page that masquerades as success).
+    try {
+      const resp = await fetch(url, { credentials: 'same-origin' });
+      if (resp && resp.ok) { const t = await resp.text(); if (t) return t; }
+    } catch { /* fall through to the worker */ }
+    // Fallback: the background worker, for contexts where the in-page fetch is blocked.
+    try {
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+        const r = await chrome.runtime.sendMessage({ type: 'EZLIST_FETCH_HTML', url });
+        if (r && r.ok && typeof r.html === 'string') return r.html;
+      }
+    } catch { /* give up */ }
+    return '';
+  }
+
   const api = {
     normalizeVehicle,
     nodesFromHtml,
     nodesFromDocument,
+    fetchHtml,
     vehicleFromHtml: (html) => normalizeVehicle(nodesFromHtml(html)),
     vehicleFromDocument: (doc) => normalizeVehicle(nodesFromDocument(doc))
   };

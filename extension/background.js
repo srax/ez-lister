@@ -83,6 +83,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       prewarm(message.platform).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
+    // Fetch a dealer detail page's HTML in the worker. Content-script fetches don't reliably carry
+    // the site's Cloudflare/Akamai session, so the extractors (Dealer Inspire/Dealer.com VDP scrape)
+    // delegate here — the worker sends the site's cookies (credentials:'include') under the granted
+    // host permission, clearing the bot wall the way the FB photo fetch does.
+    case 'EZLIST_FETCH_HTML':
+      fetchDealerHtml(message.url).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+
     // EZLIST_OPEN_FACEBOOK kept for the FB-only dealer/panel callers; platform defaults to fb.
     case 'EZLIST_OPEN_FACEBOOK':
     case 'EZLIST_OPEN_PLATFORM':
@@ -258,6 +266,24 @@ function startFetch(msg) {
     while (imageCache.size > IMG_CACHE_MAX) imageCache.delete(imageCache.keys().next().value);
   }
   return imageCache.get(key);
+}
+
+// Fetch a dealer detail page's HTML in the worker (credentialed, so it clears Cloudflare/Akamai
+// under the granted host permission). Capped at 3MB; https only. Used by the VDP extractors.
+async function fetchDealerHtml(url) {
+  if (!/^https:\/\/[^/]+/i.test(String(url || ''))) return { ok: false, error: 'bad url' };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    const resp = await fetch(url, { credentials: 'include', cache: 'no-store', redirect: 'follow', signal: controller.signal });
+    if (!resp || !resp.ok) return { ok: false, status: resp ? resp.status : 0 };
+    const html = (await resp.text()).slice(0, 3 * 1024 * 1024);
+    return { ok: true, html };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || 'fetch failed' };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Fetch vehicle photos in the worker: bypasses the Facebook page CSP/CORS that block in-page fetches.
