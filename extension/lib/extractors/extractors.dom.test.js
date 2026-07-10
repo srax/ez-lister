@@ -106,3 +106,29 @@ maybe('Dealer.com: extractVehicle reads rendered text + fetches the gallery', as
     assert.match(v.sourceUrl, /attleborochevrolet\.com\/used\/Buick\//);
   });
 });
+
+// ---- Dealer.com SPARSE card (new-car theme: no VIN on the SRP, discount pricing) → the extractor
+// must still show a button (cardReady) and enrich from the detail page's JSON-LD. ----
+maybe('Dealer.com: sparse new-car card is button-ready and enriched from the VDP', async () => {
+  await onPage(fixture('dealercom-srp-card-sparse.html'), 'https://www.cronicchevroletgriffin.com/all-inventory/index.htm', async () => {
+    const card = EX.dealercom.findCards()[0];
+    assert.ok(card, 'card found');
+    // Button appears even though the card has no VIN.
+    assert.equal(EX.dealercom.cardReady(card), true, 'sparse card must be button-ready');
+
+    global.fetch = async () => ({ ok: true, async text() { return fixture('dealercom-vdp.html'); } });
+    const v = await EX.dealercom.extractVehicle(card, null, { location: 'Griffin, GA' });
+
+    assert.equal(v.vin, '3GCUDGED9SG279350', 'VIN pulled from the VDP JSON-LD (absent on the card)');
+    assert.equal(v.make, 'Chevrolet');
+    assert.equal(v.model, 'Silverado 1500 Custom');
+    assert.equal(v.year, '2026');
+    assert.equal(v.price, 43055, 'promoted "Cronic Price", not MSRP $47,055 or the -$4,000 discount');
+    assert.equal(v.stock, 'CV29350');
+    assert.equal(v.exteriorColor, 'Sterling Gray Metallic');
+    assert.equal(v.transmission, 'Automatic');
+    assert.equal(v.bodyType, 'Truck');
+    assert.equal(v.photoUrls.length, 3, 'full gallery scraped from the VDP');
+    assert.match(v.sourceUrl, /cronicchevroletgriffin\.com\/new\/Chevrolet\//);
+  });
+});
