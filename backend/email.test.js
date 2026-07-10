@@ -1,6 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildDealerRequestEmail, emailConfigured, notifyDealerRequest } from './email.js';
+import { buildDealerRequestEmail, emailConfigured, notifyDealerRequest, senderFrom } from './email.js';
+
+test('senderFrom: requester name becomes the display label; address stays on the verified domain', () => {
+  const saved = process.env.EMAIL_FROM;
+  process.env.EMAIL_FROM = 'CarXprt <no-reply@carxprt.com>';
+  try {
+    assert.equal(senderFrom('Jane Doe'), '"Jane Doe (via CarXprt)" <no-reply@carxprt.com>');
+    // display name can't smuggle a different address / break the header
+    assert.equal(senderFrom('Bad <x@evil.com>'), '"Bad x@evil.com (via CarXprt)" <no-reply@carxprt.com>');
+    // no name → fall back to the configured EMAIL_FROM
+    assert.equal(senderFrom(''), 'CarXprt <no-reply@carxprt.com>');
+    // bare address form for EMAIL_FROM still works
+    process.env.EMAIL_FROM = 'no-reply@carxprt.com';
+    assert.equal(senderFrom('Jane'), '"Jane (via CarXprt)" <no-reply@carxprt.com>');
+  } finally { process.env.EMAIL_FROM = saved; }
+});
 
 test('buildDealerRequestEmail: subject + all fields, HTML-escaped', () => {
   const { subject, html, text } = buildDealerRequestEmail({

@@ -46,7 +46,18 @@ export function buildDealerRequestEmail(d = {}) {
   return { subject, html, text };
 }
 
-async function sendEmail({ subject, html, text, replyTo }) {
+// Compose the "From" line. The ADDRESS must stay on the verified domain (EMAIL_FROM) — you can't
+// send as an arbitrary requester address (Resend blocks spoofing). But we can put the REQUESTER'S
+// NAME as the display label, so the inbox shows "Jane Doe (via CarXprt)" and Reply-To routes to
+// their real email — the standard contact-form pattern.
+export function senderFrom(requesterName) {
+  const base = (process.env.EMAIL_FROM || '').trim();
+  const addr = (base.match(/<([^>]+)>/) || [null, base])[1].trim(); // address inside <>, else whole string
+  const name = String(requesterName || '').replace(/["<>\r\n]/g, '').trim().slice(0, 60);
+  return name ? `"${name} (via CarXprt)" <${addr}>` : (base || addr);
+}
+
+async function sendEmail({ subject, html, text, replyTo, fromName }) {
   if (!emailConfigured()) {
     console.warn('[email] not configured (RESEND_API_KEY/EMAIL_FROM/EMAIL_TO_ADMIN) — skipping:', subject);
     return { ok: false, skipped: true };
@@ -58,7 +69,7 @@ async function sendEmail({ subject, html, text, replyTo }) {
     const resp = await fetch(RESEND_ENDPOINT, {
       method: 'POST',
       headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: process.env.EMAIL_FROM, to, subject, html, text, ...(replyTo ? { reply_to: replyTo } : {}) }),
+      body: JSON.stringify({ from: senderFrom(fromName), to, subject, html, text, ...(replyTo ? { reply_to: replyTo } : {}) }),
       signal: controller.signal
     });
     if (!resp.ok) {
@@ -79,7 +90,11 @@ async function sendEmail({ subject, html, text, replyTo }) {
 export async function notifyDealerRequest(details = {}) {
   try {
     const { subject, html, text } = buildDealerRequestEmail(details);
-    return await sendEmail({ subject, html, text, replyTo: details.contactEmail || undefined });
+    return await sendEmail({
+      subject, html, text,
+      fromName: details.contactName || undefined,   // inbox shows "<name> (via CarXprt)"
+      replyTo: details.contactEmail || undefined    // Reply goes to the requester
+    });
   } catch (e) {
     console.error('[email] notifyDealerRequest error', (e && e.message) || e);
     return { ok: false, error: 'notify error' };
