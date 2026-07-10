@@ -1366,13 +1366,25 @@ async function gateAction(action, btnEl) {
 // Resolve a dealership (device-seen, or a user-entered URL) and show it for CONFIRMATION.
 // Never links — that only happens in linkDetectedDealership after an explicit click.
 async function detectDealership(opts = {}) {
+  // For a user-entered site, ask for access up front (this click is the required user gesture) so
+  // the background can read the live DOM to identify the platform — the only way to detect
+  // bot-walled providers (Dealer.com/Cox) whose HTML the backend fetch can't reach. Declining
+  // just falls back to server-side detection (fine for DealerOn).
+  let canProbe = false;
+  if (opts.url && !opts.silent) {
+    try {
+      let host = new URL(/^https?:\/\//i.test(opts.url) ? opts.url : `https://${opts.url}`).hostname.toLowerCase();
+      const bare = host.replace(/^www\./, '');
+      canProbe = await chrome.permissions.request({ origins: [`https://${bare}/*`, `https://www.${bare}/*`] });
+    } catch { canProbe = false; }
+  }
   if (!opts.silent) {
     ui.gateErr.hidden = true;
     ui.gatePrimary.disabled = true;
     ui.gatePrimary.textContent = 'Detecting…';
   }
   try {
-    const res = await chrome.runtime.sendMessage({ type: 'EZLIST_DETECT_DEALER', url: opts.url });
+    const res = await chrome.runtime.sendMessage({ type: 'EZLIST_DETECT_DEALER', url: opts.url, canProbe });
     if (!res || !res.ok) {
       if (res && res.reason === 'unsupported_dealer') {
         if (res.normalizedDomain && !ui.dealerUrl.value) ui.dealerUrl.value = `https://${res.normalizedDomain}`;

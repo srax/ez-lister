@@ -13,16 +13,30 @@ const DEALERON_HTML = `<!doctype html><html><head>
 <footer>Website by DealerOn</footer>
 </body></html>`;
 
-const OTHER_HTML = '<html><head><title>Some Dealer</title></head><body>Powered by Dealer.com</body></html>';
+const OTHER_HTML = '<html><head><title>Some Dealer</title></head><body>Powered by CustomCMS</body></html>';
 
-test('evidenceFromHtml: DealerOn markers all detected', () => {
+const DEALERCOM_HTML = `<html><head><title>Chevy of Attleboro</title></head><body>
+<a href="/used-inventory/index.htm">Used</a>
+<img src="https://pictures.dealer.com/c/acct/0701/abc123x.jpg">
+<div class="ddc-content"></div>
+</body></html>`;
+
+test('evidenceFromHtml: DealerOn markers all detected (Dealer.com markers stay off)', () => {
   const e = evidenceFromHtml(DEALERON_HTML);
   assert.deepEqual(e, {
-    mentionsDealerOn: true, hasSitemapAspx: true, hasSearchNew: true, hasSearchUsed: true, hasInventoryPhotos: true
+    mentionsDealerOn: true, hasSitemapAspx: true, hasSearchNew: true, hasSearchUsed: true, hasInventoryPhotos: true,
+    mentionsDealerDotCom: false, serverDdcInventoryPath: false
   });
 });
 
-test('evidenceFromHtml: non-DealerOn site scores nothing', () => {
+test('evidenceFromHtml: Dealer.com markers detected (when not Akamai-walled)', () => {
+  const e = evidenceFromHtml(DEALERCOM_HTML);
+  assert.equal(e.mentionsDealerDotCom, true);
+  assert.equal(e.serverDdcInventoryPath, true);
+  assert.equal(e.mentionsDealerOn, false);
+});
+
+test('evidenceFromHtml: unknown-platform site scores nothing', () => {
   const e = evidenceFromHtml(OTHER_HTML);
   assert.equal(Object.values(e).some(Boolean), false);
 });
@@ -97,6 +111,27 @@ test('resolveDealer auto-onboards an unknown DealerOn site', async () => {
   assert.equal(r.dealership.name, 'Toyota Direct');
   assert.ok(db.aliases.has('www.toyotadirect.com') && db.aliases.has('toyotadirect.com'));
   assert.equal(db.dealers.get('toyotadirect-com').config.sitemapUrl, 'https://www.toyotadirect.com/sitemap.aspx');
+});
+
+test('resolveDealer auto-onboards a Dealer.com site from client fingerprints when the server fetch is Akamai-walled', async () => {
+  const db = autoDb();
+  // Akamai 403s the backend fetch → no server evidence; only the extension's live-DOM probe reaches us.
+  const walled = async () => ({ ok: false, status: 403, url: '', headers: { get: () => null }, text: async () => '' });
+  const r = await resolveDealer(
+    {
+      url: 'https://www.attleborochevrolet.com/',
+      fingerprints: {
+        source: 'extension_manual', host: 'www.attleborochevrolet.com',
+        ddcNamespace: true, siteName: 'Chevrolet Buick GMC of Attleboro'
+      }
+    },
+    { db, allowNetwork: true, fetchImpl: walled }
+  );
+  assert.equal(r.supported, true);
+  assert.equal(r.autoOnboarded, true);
+  assert.equal(r.dealership.platform, 'dealercom');
+  assert.equal(r.dealership.name, 'Chevrolet Buick GMC of Attleboro'); // client probe named the row
+  assert.ok(db.aliases.has('www.attleborochevrolet.com') && db.aliases.has('attleborochevrolet.com'));
 });
 
 test('resolveDealer does NOT auto-onboard a non-DealerOn site', async () => {

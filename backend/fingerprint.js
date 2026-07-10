@@ -14,6 +14,17 @@ const RULES = {
     ['server.hasSearchNew', 1], // /searchnew.aspx
     ['server.hasSearchUsed', 1], // /searchused.aspx
     ['server.hasInventoryPhotos', 1] // /inventoryphotos/ image paths
+  ],
+  // Dealer.com (Cox Automotive). These sites sit behind Akamai, which 403s our server fetch —
+  // so server.* rules almost never fire and the CLIENT signals (posted from the live DOM by the
+  // content script's dealercom extractor) carry the weight. `hasDdcNamespace` (window.DDC) alone
+  // clears THRESHOLD, matching the "client evidence beats server fetch when sites bot-wall" note.
+  dealercom: [
+    ['client.hasDdcNamespace', 3], // window.DDC present (Dealer.com's JS namespace)
+    ['client.hasVehicleCardUuid', 2], // li.vehicle-card[data-uuid] listing cards
+    ['client.hasDdcInventoryPath', 1], // /used-inventory/ /new-inventory/ /all-inventory/
+    ['server.bodyMentionsDealerDotCom', 3], // "dealer.com" / pictures.dealer.com in HTML
+    ['server.hasDdcInventoryPath', 1] // same inventory path seen in server HTML
   ]
 };
 const MAX_SCORE = Object.fromEntries(
@@ -32,14 +43,19 @@ export function buildEvidence(fingerprints = {}) {
   return {
     client: {
       hasVehicleInfoVin: pick('vehicleInfoVin', 'hasVehicleInfoVin', 'dataVehicleInformation'),
-      hasDotagging: pick('dotagging', 'hasDotagging', 'dataDotagging')
+      hasDotagging: pick('dotagging', 'hasDotagging', 'dataDotagging'),
+      hasDdcNamespace: pick('ddcNamespace', 'hasDdcNamespace'),
+      hasVehicleCardUuid: pick('vehicleCardUuid', 'hasVehicleCardUuid'),
+      hasDdcInventoryPath: pick('ddcInventoryPath', 'hasDdcInventoryPath')
     },
     server: {
       bodyMentionsDealerOn: pick('mentionsDealerOn', 'bodyMentionsDealerOn'),
       hasSitemapAspx: pick('hasSitemapAspx', 'sitemapAspx'),
       hasSearchNew: pick('hasSearchNew', 'searchNew'),
       hasSearchUsed: pick('hasSearchUsed', 'searchUsed'),
-      hasInventoryPhotos: pick('hasInventoryPhotos', 'inventoryPhotos')
+      hasInventoryPhotos: pick('hasInventoryPhotos', 'inventoryPhotos'),
+      bodyMentionsDealerDotCom: pick('mentionsDealerDotCom', 'bodyMentionsDealerDotCom'),
+      hasDdcInventoryPath: pick('serverDdcInventoryPath', 'hasServerDdcInventoryPath')
     }
   };
 }

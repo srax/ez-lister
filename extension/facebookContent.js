@@ -17,15 +17,19 @@
   // ---------- shared DOM primitives (lib/fillkit.js, loaded first per manifest) ----------
   const {
     sleep, norm, waitUntil, getLabel, waitForLabel, readOptions,
-    settleUi, fillTextField, selectDropdown, fillAutocomplete,
+    closeAnyDropdown, settleUi, fillTextField, selectDropdown, fillAutocomplete,
     attachPhotos, waitForCount,
   } = globalThis.CarxpertFill;
 
   // ---------- dealer term -> Facebook option mapping ----------
   // Facebook's value taxonomy (lib/mappers.fb.js, loaded first per manifest); unit-tested
-  // in lib/mappers.fb.test.js. Includes sanitization: HTML stripped from feed values,
-  // upholstery material words dropped before matching, unknown names -> blank for review.
-  const { mapColor, mapBody, mapFuel, mapTransmission } = globalThis.CarxpertFb;
+  // in lib/mappers.fb.test.js. Canonical values are the US composer's options;
+  // optionCandidates() expands each to [US, UK] so a UK-locale composer still matches.
+  const { mapColor, mapBody, mapFuel, mapTransmission, optionCandidates } = globalThis.CarxpertFb;
+
+  // Every FB dropdown fill goes through the locale-candidate expansion (US first, UK second).
+  const selectOpt = (name, value) =>
+    selectDropdown(name, Array.isArray(value) ? value : optionCandidates(value));
 
   // ---------- main fill routine ----------
   async function fillForm(draft, onStatus) {
@@ -37,30 +41,37 @@
       return r;
     };
 
-    // 1) Vehicle type first — it gates every downstream field.
-    await step(selectDropdown('Vehicle type', draft.vehicleType || 'Car/van'));
+    // 1) Vehicle type first — it gates every downstream field (they don't exist in the
+    // DOM until it's chosen). US composer says "Car/Truck", UK says "Car/van".
+    await step(selectOpt('Vehicle type', draft.vehicleType || 'Car/Truck'));
     await waitForLabel('Year'); // dependent fields render after Vehicle type is chosen
 
     // 2) the rest
-    await step(selectDropdown('Year', draft.year));
-    await step(selectDropdown('Make', draft.make));
+    await step(selectOpt('Year', draft.year));
+    await step(selectOpt('Make', draft.make));
     await step(fillTextField('Model', draft.model));
     // Facebook rejects mileage < 300; leave it blank for the user rather than blocking the form.
     await step((typeof draft.mileage === 'number' && draft.mileage < 300)
       ? Promise.resolve({ name: 'Mileage', ok: false, msg: `left blank — FB requires ≥300 mi (dealer shows ${draft.mileage})` })
       : fillTextField('Mileage', draft.mileage));
-    await step(fillTextField('Price', draft.price));
-    await step(selectDropdown('Body style', mapBody(draft.bodyType)));
+    // Currency guard: a non-US marketplace region silently re-denominates the amount.
+    await step(fillTextField('Price', draft.price, { currencySymbol: '$' }));
+    await step(selectOpt('Body style', mapBody(draft.bodyType)));
     // Marketing name first; DealerOn's coarse generic bucket ("Gray") as fallback when
     // the name doesn't map ("Other" maps to blank, so the fallback can't mis-color).
-    await step(selectDropdown('Exterior colour', mapColor(draft.exteriorColor) || mapColor(draft.exteriorColorGeneric)));
-    await step(selectDropdown('Interior colour', mapColor(draft.interiorColor)));
-    await step(selectDropdown('Vehicle condition', draft.condition || 'Excellent'));
-    await step(selectDropdown('Fuel type', mapFuel(draft.fuelType)));
-    await step(selectDropdown('Transmission', mapTransmission(draft.transmission)));
+    // Label spelling differs per composer: "color" (US) / "colour" (UK).
+    await step(selectOpt(['Exterior color', 'Exterior colour'], mapColor(draft.exteriorColor) || mapColor(draft.exteriorColorGeneric)));
+    await step(selectOpt(['Interior color', 'Interior colour'], mapColor(draft.interiorColor)));
+    await step(selectOpt('Vehicle condition', draft.condition || 'Excellent'));
+    await step(selectOpt('Fuel type', mapFuel(draft.fuelType)));
+    await step(selectOpt('Transmission', mapTransmission(draft.transmission)));
     await step(fillTextField('Description', draft.description));
 
-    // 3) Location (autocomplete: type then pick first suggestion)
+    // 3) Location (autocomplete: type then pick first suggestion).
+    // A leftover portal from a failed dropdown must never feed this picker (live case:
+    // Location "picked" the vehicle-type option Car/Truck). Start from a clean slate so
+    // any options that appear belong to the location autocomplete.
+    await closeAnyDropdown();
     if (draft.location) await step(fillAutocomplete('Location', draft.location));
 
     // 4) Photos (fetched by the background worker to bypass FB CSP/CORS)
@@ -136,9 +147,22 @@
       const log = await fillForm(draft, (line) => postStatus(line));
       const missed = log.filter((r) => !r.ok).map((r) => r.name);
       // Per-field fill report → sync queue (feeds the backend fill-accuracy metric). C5.
+      // variant/lang identify which composer locale this machine got — the first question
+      // of every "fields don't fill on HIS machine" report, answered from telemetry.
+      const vt = log.find((r) => r.name === 'Vehicle type');
+      const variant = vt && /Car\/Truck/i.test(vt.msg) ? 'us'
+        : vt && /Car\/van/i.test(vt.msg) ? 'uk' : 'unknown';
       chrome.runtime.sendMessage({
         type: 'EZLIST_ENQUEUE_EVENT',
-        event: { type: 'fill_completed', clientKey: lastFilledKey, data: { fields: log.map((r) => ({ name: r.name, ok: r.ok, msg: r.msg })) } }
+        event: {
+          type: 'fill_completed',
+          clientKey: lastFilledKey,
+          data: {
+            variant,
+            lang: document.documentElement.lang || '',
+            fields: log.map((r) => ({ name: r.name, ok: r.ok, msg: r.msg }))
+          }
+        }
       }).catch(() => {});
       postStatus(missed.length ? `Filled ✓ · add manually: ${missed.join(', ')}` : 'Listing filled ✓');
     } catch (e) {

@@ -168,6 +168,8 @@
       }).catch(() => {});
       setBtn(missed.length ? `Filled ✓ · add: ${missed.join(', ')}` : 'Filled ✓ — continue to photos');
       postStatus(missed.length ? `Filled ✓ · add manually: ${missed.join(', ')}` : 'Craigslist filled ✓');
+      // Done here — the user's next move is CL's continue button, so step aside for it.
+      scheduleDismiss();
     } catch (e) {
       setBtn('Error — see console');
       postStatus(`Error: ${e.message}`, true);
@@ -210,7 +212,7 @@
       // Never duplicate: if the listing already has any images (a prior attach this session, or
       // photos the user added), stop here rather than re-uploading the same set.
       const before = imgCount() || 0;
-      if (before > 0) { photosAttached = true; setBtn(`✓ ${before} photo${before === 1 ? '' : 's'} already added`); return; }
+      if (before > 0) { photosAttached = true; setBtn(`✓ ${before} photo${before === 1 ? '' : 's'} already added`); scheduleDismiss(); return; }
       const draft = await getDraft();
       const hasUrls = draft && Array.isArray(draft.photoUrls) && draft.photoUrls.length;
       if (!draft || (!hasUrls && !draft.photoBaseUrl)) { setBtn('No photos in draft'); return; }
@@ -233,6 +235,8 @@
       const ok = got != null && got >= result.count;
       setBtn(ok ? `✓ ${got} photos added` : `Uploading ${result.count}…`);
       postStatus(ok ? `✓ ${got} photos on Craigslist` : `Uploading ${result.count} photos (still processing)`);
+      // Photos are in — next is CL's continue button, so clear the overlay off it.
+      if (ok) scheduleDismiss();
     } catch (e) {
       setBtn('Photo error — see console');
       postStatus(`Photo error: ${e.message}`, true);
@@ -242,22 +246,53 @@
   }
 
   // ---- injected trigger button (interim; adapts to the current post step) ----
+  // It floats bottom-right (position:fixed) while Craigslist's own "continue"/submit button is
+  // in-flow, so scrolling can slide continue underneath ours right when the user needs it (they've
+  // just filled / added photos and want to advance). Two guards: a manual × to dismiss it anytime,
+  // and auto-dismiss a few seconds after a terminal success so it clears the way on its own. The
+  // `dismissed` latch keeps the poller from re-adding it on the same page load (each CL step is a
+  // full navigation, which resets this).
   let btnEl = null;
+  let hostEl = null;
+  let dismissed = false;
+  let dismissTimer = null;
   const setBtn = (label) => { if (btnEl) btnEl.textContent = label; };
+  const dismissButton = () => {
+    if (dismissTimer) { clearTimeout(dismissTimer); dismissTimer = null; }
+    if (hostEl) hostEl.remove();
+    hostEl = null; btnEl = null; dismissed = true;
+  };
+  // Auto-clear after a success so the floating button never blocks Craigslist's continue button.
+  const scheduleDismiss = (ms = 6000) => {
+    if (dismissTimer) clearTimeout(dismissTimer);
+    dismissTimer = setTimeout(dismissButton, ms);
+  };
 
   function ensureButton(label, onClick) {
-    if (btnEl) return;
+    if (btnEl || dismissed) return;
     const host = document.createElement('div');
     host.id = 'carxpert-cl-host';
-    host.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483647;font-family:system-ui,sans-serif;';
+    host.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483647;'
+      + 'font-family:system-ui,sans-serif;display:flex;align-items:stretch;gap:6px;';
     btnEl = document.createElement('button');
     btnEl.type = 'button';
     btnEl.textContent = label;
     btnEl.style.cssText = 'padding:10px 14px;border:0;border-radius:8px;background:#5c2d91;color:#fff;'
       + 'font-size:13px;font-weight:600;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.25);';
     btnEl.addEventListener('click', onClick);
+    // Small dismiss control — one click removes the overlay if it ever covers a CL button.
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = '×';
+    close.title = 'Hide (dismiss if it covers a Craigslist button)';
+    close.setAttribute('aria-label', 'Dismiss CarXprt button');
+    close.style.cssText = 'flex:0 0 auto;width:28px;border:0;border-radius:8px;background:#3f1f66;color:#fff;'
+      + 'font-size:16px;line-height:1;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.25);';
+    close.addEventListener('click', (e) => { e.stopPropagation(); dismissButton(); });
     host.appendChild(btnEl);
+    host.appendChild(close);
     document.body.appendChild(host);
+    hostEl = host;
   }
 
   async function maybeShowButton() {

@@ -147,7 +147,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Detect (resolve) only — NEVER links. Optional message.url resolves a user-entered site
     // instead of the device's last-seen dealer, so a new account can pick its own dealership.
     case 'EZLIST_DETECT_DEALER':
-      detectDealer(message.url).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      detectDealer(message.url, { canProbe: !!message.canProbe }).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
       return true;
 
     // Explicit link — only ever called after the user confirms the detected dealership.
@@ -444,7 +444,93 @@ async function findSupportedDealerTab() {
 // resolved; otherwise the device's last-seen / open dealer tab is used as the suggestion. The
 // panel shows the result and the user explicitly confirms before EZLIST_LINK_DEALER runs —
 // auto-linking the machine's last-seen dealer once bound a new account to the wrong dealership.
-async function detectDealer(urlOverride) {
+// Read platform fingerprints off the LIVE dealer site by injecting a one-shot probe into a tab
+// on that host — the only way to detect bot-walled platforms (Dealer.com/Cox front with Akamai,
+// which 403s the backend's server-side fetch, so its HTML never reaches us). Needs host access
+// (requested from the side panel during the Detect click) + the `scripting` permission. Reuses
+// an already-open tab on the host, else opens one in the background and closes it after.
+async function probeSiteFingerprints(url, host) {
+  if (!chrome.scripting || !chrome.scripting.executeScript) return null;
+  const bare = host.replace(/^www\./, '');
+  const onHost = (u) => { try { return new URL(u).hostname.replace(/^www\./, '') === bare; } catch { return false; } };
+  if (!(await chrome.permissions.contains({ origins: [`https://${host}/*`] }).catch(() => false))
+    && !(await chrome.permissions.contains({ origins: [`https://${bare}/*`] }).catch(() => false))) {
+    return null; // no access granted → can't inject
+  }
+  // Runs IN the page (MAIN world, so window.DDC is reachable). Detects Dealer.com via signals
+  // present on EVERY page including the homepage — the DDC JS/CDN assets and any DDC widget/class —
+  // not just inventory-page markers. Also carries the DealerOn markers so a manual detect of a
+  // DealerOn site works off the live DOM too.
+  const probe = () => {
+    const q = (s) => !!document.querySelector(s);
+    const hasDdcAssets = q('script[src*="dealer.com"], link[href*="dealer.com"], img[src*="pictures.dealer.com"], img[src*="images.dealer.com"]');
+    const hasDdcDom = q('.ddc-content, [data-widget-name], [class*="ddc-"], [id*="ddc-"]');
+    let hasDdcGlobal = false;
+    try { hasDdcGlobal = !!(window.DDC || window.DDCAPI); } catch { /* cross-origin/global guard */ }
+    const siteName = (() => {
+      const og = document.querySelector('meta[property="og:site_name"]');
+      if (og && og.content && og.content.trim()) return og.content.trim().slice(0, 80);
+      for (const s of document.querySelectorAll('script[type="application/ld+json"]')) {
+        try {
+          const d = JSON.parse(s.textContent);
+          for (const o of (Array.isArray(d) ? d : [d])) {
+            if (o && /AutoDealer/i.test(o['@type'] || '') && o.name) return String(o.name).trim().slice(0, 80);
+          }
+        } catch { /* ignore malformed ld+json */ }
+      }
+      return (document.title || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+    })();
+    return {
+      ddcNamespace: hasDdcAssets || hasDdcDom || hasDdcGlobal,
+      vehicleCardUuid: q('li.vehicle-card[data-uuid]'),
+      ddcInventoryPath: /\/(?:used|new|all|certified)-inventory\//i.test(location.pathname),
+      vehicleInfoVin: q('[data-vehicle-information][data-vin]'),
+      dotagging: q('[data-dotagging-item-id],[data-dotagging-element-type]'),
+      siteName,
+      _dbg: { host: location.host, path: location.pathname, hasDdcAssets, hasDdcDom, hasDdcGlobal, title: (document.title || '').slice(0, 60) }
+    };
+  };
+  const runProbe = async (tabId) => {
+    try {
+      const results = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: probe });
+      return (results && results[0] && results[0].result) || null;
+    } catch (e) { console.warn('[cx] probe executeScript failed:', e && e.message); return null; }
+  };
+  const usable = (r) => r && (r.ddcNamespace || r.vehicleInfoVin || r.dotagging);
+
+  let tab = (await chrome.tabs.query({}).catch(() => [])).find((t) => t.url && onHost(t.url));
+  let opened = false;
+  try {
+    if (!tab) {
+      tab = await chrome.tabs.create({ url, active: false });
+      opened = true;
+      await waitForTabComplete(tab.id, 15000);
+      await sleep(1500); // let the DDC shell/Akamai settle before reading the DOM
+    }
+    let result = await runProbe(tab.id);
+    // A freshly-opened tab can land mid-render or on an Akamai settle — retry once after a beat.
+    if (!usable(result) && opened) { await sleep(2000); result = await runProbe(tab.id); }
+    console.log('[cx] dealer probe result:', result && result._dbg, '→ ddcNamespace:', result && result.ddcNamespace);
+    return result;
+  } catch (e) { console.warn('[cx] probe failed:', e && e.message); return null; }
+  finally { if (opened && tab && tab.id != null) chrome.tabs.remove(tab.id).catch(() => {}); }
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Resolve once a tab reaches 'complete' (or timeout), so an injected probe reads a rendered page.
+function waitForTabComplete(tabId, timeoutMs = 15000) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; chrome.tabs.onUpdated.removeListener(onUpd); resolve(); };
+    const onUpd = (id, info) => { if (id === tabId && info.status === 'complete') finish(); };
+    chrome.tabs.onUpdated.addListener(onUpd);
+    chrome.tabs.get(tabId).then((t) => { if (t && t.status === 'complete') finish(); }).catch(() => {});
+    setTimeout(finish, timeoutMs);
+  });
+}
+
+async function detectDealer(urlOverride, { canProbe = false } = {}) {
   let payload;
   if (urlOverride) {
     let u = String(urlOverride).trim();
@@ -452,7 +538,13 @@ async function detectDealer(urlOverride) {
     let host = '';
     try { host = new URL(u).hostname.toLowerCase(); } catch { /* fall through */ }
     if (!host) return { ok: false, error: 'That doesn’t look like a valid website address.' };
-    payload = { url: u, fingerprints: { source: 'extension_manual', host } };
+    const fingerprints = { source: 'extension_manual', host };
+    // Bot-walled platforms are invisible to the backend's fetch — probe the live site for them.
+    if (canProbe) {
+      const probed = await probeSiteFingerprints(u, host).catch(() => null);
+      if (probed) Object.assign(fingerprints, probed);
+    }
+    payload = { url: u, fingerprints };
   } else {
     const seen = await recentDealerSeen();
     if (!seen) {
@@ -462,7 +554,10 @@ async function detectDealer(urlOverride) {
     }
     payload = {
       url: seen.url || `https://${seen.host}`,
-      fingerprints: { source: 'extension_seen', host: seen.host, platform: seen.platform || null }
+      // Spread the live-DOM fingerprints the content script captured (e.g. Dealer.com's
+      // ddcNamespace/vehicleCardUuid) — for Akamai-walled platforms these are the ONLY evidence
+      // the backend gets, since its server-side fetch is blocked.
+      fingerprints: { source: 'extension_seen', host: seen.host, platform: seen.platform || null, ...(seen.fingerprints || {}) }
     };
   }
   const resolved = await postBackend('/api/dealerships/resolve', payload);
@@ -569,7 +664,16 @@ async function refreshMe() {
   if (me.user && me.user.id) {
     const prevOwner = (await chrome.storage.local.get('ezlistOwnerId')).ezlistOwnerId;
     if (prevOwner && prevOwner !== me.user.id) {
-      await chrome.storage.local.remove(['ezlistListings', 'ezlistListedVins', 'ezlistEventQueue']);
+      // Everything car- or account-scoped goes: history AND the current selection. Leaving
+      // ezlistDraft behind handed a new sign-up the previous user's selected vehicle (from a
+      // different dealership); a stale ezlistAutoFill could even auto-fill it on the next
+      // marketplace tab. ezlistDealerSeen goes too so the connect step doesn't suggest the
+      // previous user's dealership.
+      await chrome.storage.local.remove([
+        'ezlistListings', 'ezlistListedVins', 'ezlistEventQueue',
+        'ezlistDraft', 'ezlistAutoFill', 'ezlistLastExtractedAt',
+        'ezlistInFlight', 'ezlistClPendingPhotos', 'ezlistDealerSeen'
+      ]);
     }
     if (prevOwner !== me.user.id) await chrome.storage.local.set({ ezlistOwnerId: me.user.id });
   }
@@ -616,7 +720,7 @@ async function ensureDealerScripts(me) {
   const script = {
     id: DEALER_SCRIPT_ID,
     matches: granted,
-    js: ['lib/mappers.core.js', 'dealerContent.js'],
+    js: ['lib/mappers.core.js', 'lib/extractors/dealeron.js', 'lib/extractors/dealercom.js', 'dealerContent.js'],
     runAt: 'document_idle',
     persistAcrossSessions: true
   };

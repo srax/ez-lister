@@ -34,3 +34,35 @@ test('all signals → max score, confidence capped at 1', () => {
   assert.equal(r.scores.dealeron, 13);
   assert.equal(r.confidence, 1);
 });
+
+// ---- Dealer.com (Cox Automotive): Akamai 403s the server fetch, so detection must clear
+// threshold on the CLIENT fingerprints the extractor posts from the live DOM. ----
+test('Dealer.com detected from window.DDC alone (client)', () => {
+  const r = scorePlatform(buildEvidence({ ddcNamespace: true }));
+  assert.equal(r.platform, 'dealercom');
+  assert.equal(r.scores.dealercom, 3);
+});
+
+test('Dealer.com detected from card + inventory-path client signals', () => {
+  const r = scorePlatform(buildEvidence({ vehicleCardUuid: true, ddcInventoryPath: true }));
+  assert.equal(r.platform, 'dealercom');
+  assert.equal(r.scores.dealercom, 3);
+});
+
+test('Dealer.com server marker (non-walled site) clears threshold', () => {
+  const r = scorePlatform(buildEvidence({ mentionsDealerDotCom: true }));
+  assert.equal(r.platform, 'dealercom');
+  assert.equal(r.scores.dealercom, 3);
+});
+
+test('a lone weak Dealer.com card signal stays below threshold', () => {
+  const r = scorePlatform(buildEvidence({ vehicleCardUuid: true })); // weight 2 < 3
+  assert.equal(r.platform, null);
+});
+
+test('DealerOn and Dealer.com signals do not cross-contaminate', () => {
+  const ron = scorePlatform(buildEvidence({ vehicleInfoVin: true }));
+  assert.equal(ron.scores.dealercom, 0);
+  const com = scorePlatform(buildEvidence({ ddcNamespace: true }));
+  assert.equal(com.scores.dealeron, 0);
+});

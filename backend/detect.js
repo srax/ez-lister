@@ -11,16 +11,23 @@ import { DEALER_UA, isBlockedHost } from './dealer-url.js';
 
 const MAX_HTML_BYTES = 512 * 1024;
 
-// DealerOn markers, matched against raw homepage HTML. Key names line up with the aliases
-// buildEvidence() picks (fingerprint.js).
+// Platform markers, matched against raw homepage HTML. Key names line up with the aliases
+// buildEvidence() picks (fingerprint.js). Dealer.com markers usually WON'T fire — those sites
+// front with Akamai, which 403s this server-side fetch — so their detection leans on the
+// client fingerprints the extension posts from the live DOM; these are the fallback for any
+// Dealer.com site that isn't bot-walled.
 export function evidenceFromHtml(html) {
   const h = String(html || '');
   return {
+    // DealerOn
     mentionsDealerOn: /dealeron/i.test(h),
     hasSitemapAspx: /sitemap\.aspx/i.test(h),
     hasSearchNew: /searchnew\.aspx/i.test(h),
     hasSearchUsed: /searchused\.aspx/i.test(h),
-    hasInventoryPhotos: /\/inventoryphotos\//i.test(h)
+    hasInventoryPhotos: /\/inventoryphotos\//i.test(h),
+    // Dealer.com (Cox Automotive)
+    mentionsDealerDotCom: /pictures\.dealer\.com|images\.dealer\.com|\bwindow\.DDC\b|ddc-content/i.test(h),
+    serverDdcInventoryPath: /\/(?:used|new|all)-inventory\/index\.htm/i.test(h)
   };
 }
 
