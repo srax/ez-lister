@@ -18,10 +18,13 @@ let JSDOM = null;
 try { ({ JSDOM } = require('jsdom')); } catch { /* optional — file self-skips below */ }
 const maybe = (name, fn) => test(name, JSDOM ? fn : { skip: 'jsdom not installed (npm i to enable DOM tests)' }, JSDOM ? undefined : () => {});
 
-// Load the pure decoders + BOTH extractors onto globalThis (as the manifest does in the browser).
+// Load the pure decoders + shared schema.org parser + ALL extractors onto globalThis, in the same
+// order the manifest does in the browser.
 require('../mappers.core.js');
+require('./schemaorg.js');
 require('./dealeron.js');
 require('./dealercom.js');
+require('./generic.js');
 const EX = globalThis.CarxpertExtractors;
 
 const fixture = (f) => fs.readFileSync(path.join(__dirname, '_fixtures', f), 'utf8');
@@ -38,8 +41,9 @@ async function onPage(html, url, fn) {
   finally { Object.assign(global, saved); }
 }
 
-// The dispatcher's provider pick, mirrored (dealerContent.js): most-specific first, DealerOn last.
-const pick = () => [EX.dealercom, EX.dealeron].find((p) => p && p.detect()) || EX.dealeron;
+// The dispatcher's provider pick, mirrored (dealerContent.js): specific providers first, the
+// schema.org `generic` fallback next, DealerOn as the final default.
+const pick = () => [EX.dealercom, EX.dealeron, EX.generic].find((p) => p && p.detect()) || EX.dealeron;
 
 // ---------------------------------------------------------------- DealerOn
 maybe('DealerOn: detect() claims the page, Dealer.com does NOT (isolation)', async () => {
@@ -107,6 +111,18 @@ maybe('Dealer.com: extractVehicle reads rendered text + fetches the gallery', as
   });
 });
 
+maybe('Dealer.com: div-tag card variant is found (element-agnostic findCards)', async () => {
+  // Some DDC themes render the card as <div> not <li> — findCards matches on class+data-uuid, not tag.
+  const html = '<div class="box vehicle-card vehicle-card-detailed" data-uuid="abc123">'
+    + '<h2 class="vehicle-card-title"><div class="vehicle-card-title-container"><a href="/used/Buick/2023-Buick-Encore-GX-abc123.htm"><span>2023 Buick Encore GX Essence</span></a></div></h2>'
+    + '<ul class="vehicle-card-description"><li class="stockNumber">Stock # Z9</li></ul></div>';
+  await onPage(html, 'https://www.somedealer.com/used-inventory/index.htm', () => {
+    const cards = EX.dealercom.findCards();
+    assert.equal(cards.length, 1, 'div card matched');
+    assert.equal(EX.dealercom.cardReady(cards[0]), true);
+  });
+});
+
 // ---- Dealer.com SPARSE card (new-car theme: no VIN on the SRP, discount pricing) → the extractor
 // must still show a button (cardReady) and enrich from the detail page's JSON-LD. ----
 maybe('Dealer.com: sparse new-car card is button-ready and enriched from the VDP', async () => {
@@ -130,5 +146,42 @@ maybe('Dealer.com: sparse new-car card is button-ready and enriched from the VDP
     assert.equal(v.bodyType, 'Truck');
     assert.equal(v.photoUrls.length, 3, 'full gallery scraped from the VDP');
     assert.match(v.sourceUrl, /cronicchevroletgriffin\.com\/new\/Chevrolet\//);
+  });
+});
+
+// ---- Generic schema.org fallback: an UNRECOGNIZED-platform detail page (only schema.org JSON-LD).
+maybe('Generic: claims a schema.org VDP that no specific provider recognizes; specifics never lose to it', async () => {
+  // On an unknown-platform VDP, generic wins.
+  await onPage(fixture('generic-vdp.html'), 'https://www.somedealer.com/inventory/2021-honda-accord-abc', () => {
+    assert.equal(EX.generic.detect(), true);
+    assert.equal(EX.dealercom.detect(), false);
+    assert.equal(EX.dealeron.detect(), false);
+    assert.equal(pick().id, 'generic');
+  });
+  // Generic must NOT claim recognized-platform pages (it's last in the dispatch order and its
+  // detect is narrow: schema.org Vehicle + VIN, which the SRP fixtures don't expose).
+  await onPage(fixture('dealercom-srp-card.html'), 'https://www.attleborochevrolet.com/used-inventory/index.htm', () => {
+    assert.equal(pick().id, 'dealercom', 'Dealer.com SRP → dealercom, not generic');
+  });
+  await onPage(fixture('dealeron-srp-card.html'), 'https://downtown.chevyman.com/searchall.aspx', () => {
+    assert.equal(pick().id, 'dealeron', 'DealerOn SRP → dealeron, not generic');
+  });
+});
+
+maybe('Generic: extractVehicle reads the whole vehicle from schema.org JSON-LD', async () => {
+  await onPage(fixture('generic-vdp.html'), 'https://www.somedealer.com/inventory/2021-honda-accord-abc', async () => {
+    const v = await EX.generic.extractVehicle(document.body, location.href, { location: 'Somewhere, US' });
+    assert.equal(v.vin, '1HGCV1F42MA012345');
+    assert.equal(v.year, '2021');
+    assert.equal(v.make, 'Honda');
+    assert.equal(v.model, 'Accord');
+    assert.equal(v.price, 27995);
+    assert.equal(v.mileage, 38210);
+    assert.equal(v.exteriorColor, 'Modern Steel Metallic');
+    assert.equal(v.interiorColor, 'Black');
+    assert.equal(v.transmission, 'Automatic');
+    assert.equal(v.bodyType, 'Sedan');
+    assert.equal(v.photoUrls.length, 2);
+    assert.equal(EX.generic.isVdpPage(), true);
   });
 });

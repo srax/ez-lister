@@ -720,7 +720,7 @@ async function ensureDealerScripts(me) {
   const script = {
     id: DEALER_SCRIPT_ID,
     matches: granted,
-    js: ['lib/mappers.core.js', 'lib/extractors/dealeron.js', 'lib/extractors/dealercom.js', 'dealerContent.js'],
+    js: ['lib/mappers.core.js', 'lib/extractors/schemaorg.js', 'lib/extractors/dealeron.js', 'lib/extractors/dealercom.js', 'lib/extractors/generic.js', 'dealerContent.js'],
     runAt: 'document_idle',
     persistAcrossSessions: true
   };

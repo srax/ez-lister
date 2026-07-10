@@ -170,39 +170,10 @@
     return m ? m[1].toUpperCase() : '';
   }
 
-  // The detail page carries the FULL record even when the SRP card is sparse: parse its schema.org
-  // Vehicle/Car/Product JSON-LD into a normalized object used to FILL fields the card is missing.
-  // Standard schema keys with generous fallbacks; every field is optional.
-  function parseVdpLd(html) {
-    const out = {};
-    const str = (x) => (x && typeof x === 'object' ? (x.name || x.value || '') : (x == null ? '' : String(x)));
-    const digits = (x) => { const n = Number(String(str(x)).replace(/[^\d.]/g, '')); return Number.isFinite(n) && n > 0 ? Math.round(n) : undefined; };
-    const re = /<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi;
-    let m;
-    while ((m = re.exec(String(html || '')))) {
-      let data; try { data = JSON.parse(m[1]); } catch { continue; }
-      const nodes = Array.isArray(data) ? data : (data['@graph'] ? data['@graph'] : [data]);
-      for (const n of nodes) {
-        if (!n || typeof n !== 'object' || !/vehicle|car|product/i.test(String(n['@type'] || ''))) continue;
-        if (!out.vin && n.vehicleIdentificationNumber) out.vin = String(n.vehicleIdentificationNumber).toUpperCase();
-        if (!out.year) { const y = str(n.vehicleModelDate || n.modelDate || n.productionDate).match(/\d{4}/); if (y) out.year = y[0]; }
-        if (!out.make) out.make = str(n.brand || n.manufacturer).trim();
-        if (!out.model) out.model = str(n.model).trim();
-        if (out.mileage == null) out.mileage = digits(n.mileageFromOdometer);
-        if (!out.exteriorColor) out.exteriorColor = str(n.color).trim();
-        if (!out.interiorColor) out.interiorColor = str(n.vehicleInteriorColor).trim();
-        if (!out.transmission) out.transmission = str(n.vehicleTransmission).trim();
-        if (!out.fuelType) out.fuelType = str(n.fuelType).trim();
-        if (!out.bodyType) out.bodyType = str(n.bodyType).trim();
-        if (out.price == null) { const off = Array.isArray(n.offers) ? n.offers[0] : n.offers; if (off) out.price = digits(off.price || off.lowPrice); }
-        if (!out.photos) { const img = Array.isArray(n.image) ? n.image : (n.image ? [n.image] : []); const imgs = img.map(str).filter((u) => /^https?:/.test(u)); if (imgs.length) out.photos = imgs; }
-      }
-    }
-    return out;
-  }
-
   // One VDP fetch (same-origin → browser session → clears Akamai) yields the VIN, the full photo
-  // gallery, and the JSON-LD gap-fill record. Photos fall back to the SRP-loaded 1-2, then LD images.
+  // gallery, and the JSON-LD gap-fill record (via the shared, platform-agnostic schema.org parser).
+  // Photos: prefer the pictures.dealer.com scrape (most complete), fall back to the SRP-loaded 1-2,
+  // then the JSON-LD image array.
   async function fetchVdp(vdpUrl, photoFallback) {
     const out = { vin: '', photos: photoFallback || [], ld: {} };
     if (!vdpUrl) return out;
@@ -213,11 +184,11 @@
       clearTimeout(timer);
       if (!resp.ok) return out;
       const html = await resp.text();
-      out.ld = parseVdpLd(html);
+      out.ld = (root.CarxpertSchemaOrg ? root.CarxpertSchemaOrg.vehicleFromHtml(html) : {});
       out.vin = out.ld.vin || vinFromHtml(html);
       const gallery = extractPhotoUrlsFromHtml(html);
       if (gallery.length >= out.photos.length && gallery.length) out.photos = gallery;
-      else if (!out.photos.length && out.ld.photos) out.photos = out.ld.photos.map(normalizePhoto);
+      else if (!out.photos.length && out.ld.photos && out.ld.photos.length) out.photos = out.ld.photos.map(normalizePhoto);
       return out;
     } catch { return out; }
   }
@@ -239,7 +210,7 @@
   }
 
   async function extractVehicle(scope, sourceUrl, ctx = {}) {
-    const card = (scope.matches && scope.matches('li.vehicle-card')) ? scope : (scope.closest && scope.closest('li.vehicle-card')) || scope;
+    const card = (scope.matches && scope.matches('.vehicle-card[data-uuid]')) ? scope : (scope.closest && scope.closest('.vehicle-card[data-uuid]')) || scope;
     const vdpUrl = vdpUrlFor(card) || sourceUrl || location.href;
     const vdpPath = (() => { try { return new URL(vdpUrl, location.href).pathname; } catch { return vdpUrl; } })();
 
@@ -309,17 +280,20 @@
     // DDC content framework markers visible to the isolated world (window.DDC itself is MAIN-world
     // only and unreachable here) — `.ddc-content`/ws-inv widgets and the vehicle-card grid.
     detect() {
-      return !!document.querySelector('li.vehicle-card[data-uuid], .ddc-content, [data-widget-name^="ws-inv"]')
+      return !!document.querySelector('.vehicle-card[data-uuid], .ddc-content, [data-widget-name^="ws-inv"]')
         || /\/(?:used|new|all|certified)-inventory\//i.test(location.pathname);
     },
     fingerprints() {
       return {
         ddcNamespace: !!document.querySelector('.ddc-content, [data-widget-name^="ws-inv"]'),
-        vehicleCardUuid: !!document.querySelector('li.vehicle-card[data-uuid]'),
+        vehicleCardUuid: !!document.querySelector('.vehicle-card[data-uuid]'),
         ddcInventoryPath: /\/(?:used|new|all|certified)-inventory\//i.test(location.pathname)
       };
     },
-    findCards() { return [...document.querySelectorAll('li.vehicle-card[data-uuid]')].filter(isRealCard); },
+    // Element-agnostic: DDC themes render the card as <li> or <div>; match the class + data-uuid
+    // (not the tag) so buttons appear across themes we haven't captured. isRealCard drops
+    // placeholder/promo tiles.
+    findCards() { return [...document.querySelectorAll('.vehicle-card[data-uuid]')].filter(isRealCard); },
     cardReady(card) {
       // A List button shows on ANY rendered real card (findCards already filtered to real vehicle
       // cards). We do NOT require rich card data — sparse themes are enriched from the detail page
@@ -339,7 +313,7 @@
     module.exports = {
       cleanVin, parseStockNumber, stripColorSuffix, parseMoney, parseTitleName,
       bodyFromTitle, makeFromVdpPath, conditionFromVdpPath, fuelFromBadges,
-      normalizePhoto, extractPhotoUrlsFromHtml, vinFromHtml, parseVdpLd
+      normalizePhoto, extractPhotoUrlsFromHtml, vinFromHtml
     };
   }
 })(typeof globalThis !== 'undefined' ? globalThis : this);
