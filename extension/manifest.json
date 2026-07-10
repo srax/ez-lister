@@ -51,6 +51,8 @@
       ],
       "js": [
         "lib/mappers.core.js",
+        "lib/extractors/dealeron.js",
+        "lib/extractors/dealercom.js",
         "dealerContent.js"
       ],
       "run_at": "document_idle"

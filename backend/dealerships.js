@@ -9,7 +9,7 @@ import { activeSubscription } from './entitlement/index.js';
 // Platforms our extractor actually supports end-to-end: detection at/above threshold on one
 // of these AUTO-ONBOARDS the dealership (row + aliases, status 'supported') so any dealer on
 // that platform can self-serve. Everything else stays curated (request → triage → admin).
-const AUTO_SUPPORT_PLATFORMS = new Set(['dealeron']);
+const AUTO_SUPPORT_PLATFORMS = new Set(['dealeron', 'dealercom']);
 
 export function slugFromHost(host) {
   return String(host || '').toLowerCase().replace(/^www\./, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
@@ -83,7 +83,10 @@ export async function resolveDealer({ url, fingerprints }, { db = pool, allowNet
   // Supported-platform site → self-serve onboarding: create the dealership + aliases now and
   // return it as supported, so the user can connect without waiting on manual curation.
   if (platform && AUTO_SUPPORT_PLATFORMS.has(platform) && inputHost) {
-    const created = await autoOnboardDealer({ inputHost, hosts, siteInfo, platform }, db);
+    // Bot-walled sites (Dealer.com) yield no server siteInfo, so the extension's live-DOM probe
+    // sends a siteName to name the row properly instead of falling back to the bare domain.
+    const clientSiteName = (fingerprints || {}).siteName;
+    const created = await autoOnboardDealer({ inputHost, hosts, siteInfo, platform, clientSiteName }, db);
     if (created) {
       return { supported: true, dealership: created, normalizedDomain: inputHost, autoOnboarded: true };
     }
@@ -96,7 +99,7 @@ export async function resolveDealer({ url, fingerprints }, { db = pool, allowNet
 // site. Config starts minimal: sitemapUrl only when the homepage actually references
 // sitemap.aspx (enables the sold-scan roster); location stays null until known (the extension
 // treats a missing location as "leave the field for the user").
-async function autoOnboardDealer({ inputHost, hosts, siteInfo, platform }, db) {
+async function autoOnboardDealer({ inputHost, hosts, siteInfo, platform, clientSiteName }, db) {
   try {
     const apex = inputHost.replace(/^www\./, '');
     const domains = [...new Set([inputHost, apex, `www.${apex}`, ...(hosts || []), ...(siteInfo && siteInfo.finalHost ? [siteInfo.finalHost] : [])])];
@@ -109,7 +112,10 @@ async function autoOnboardDealer({ inputHost, hosts, siteInfo, platform }, db) {
     if (clash.rows.length) {
       id = `${id}-${crypto.createHash('sha256').update(apex).digest('hex').slice(0, 6)}`;
     }
-    const name = (siteInfo && siteInfo.siteName) || apex;
+    // Prefer the server's og:site_name; else the extension probe's client-supplied name (sanitized:
+    // collapse whitespace, cap length); else the apex domain.
+    const cleanClientName = String(clientSiteName || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    const name = (siteInfo && siteInfo.siteName) || cleanClientName || apex;
     const config = {};
     if (siteInfo && siteInfo.evidence && siteInfo.evidence.hasSitemapAspx) {
       config.sitemapUrl = `https://${inputHost}/sitemap.aspx`;
