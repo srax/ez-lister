@@ -112,6 +112,19 @@ maybe('Dealer.com: extractVehicle reads rendered text + fetches the gallery', as
   });
 });
 
+maybe('Dealer.com: title heading that wraps a price block still yields a clean model (Rameycars theme)', async () => {
+  await onPage(fixture('dealercom-srp-card-nested-price.html'), 'https://www.rameycars.com/used-inventory/index.htm', async () => {
+    const card = EX.dealercom.findCards()[0];
+    global.fetch = async () => ({ ok: true, async text() { return '<html></html>'; } }); // no VDP data needed
+    const v = await EX.dealercom.extractVehicle(card, null, {});
+    assert.equal(v.make, 'Acura');
+    assert.equal(v.model, 'RDX w/A-Spec Advance Package', 'model must NOT include the nested price/payment text');
+    assert.equal(v.year, '2023');
+    assert.equal(v.price, 38999, 'clean askingPrice, not the portal-price blob');
+    assert.equal(v.stock, '261272A');
+  });
+});
+
 maybe('Dealer.com: div-tag card variant is found (element-agnostic findCards)', async () => {
   // Some DDC themes render the card as <div> not <li> — findCards matches on class+data-uuid, not tag.
   const html = '<div class="box vehicle-card vehicle-card-detailed" data-uuid="abc123">'

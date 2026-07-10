@@ -244,7 +244,14 @@
     const vdpUrl = vdpUrlFor(card) || sourceUrl || location.href;
     const vdpPath = (() => { try { return new URL(vdpUrl, location.href).pathname; } catch { return vdpUrl; } })();
 
-    const titleText = text(card.querySelector('.vehicle-card-title a, .vehicle-card-title'));
+    // Prefer the title LINK (just the name) — some themes nest a price/payment block inside the
+    // .vehicle-card-title heading, so reading the heading's text glues the price onto the model.
+    // NB querySelector returns the first match in DOCUMENT order, so query the <a> explicitly first
+    // (the heading is its ancestor and would otherwise win). Fall back to the heading only if no link.
+    const titleText = text(
+      card.querySelector('.vehicle-card-title a span, .vehicle-card-title a, .vehicle-card-title-container a')
+      || card.querySelector('.vehicle-card-title')
+    );
     const make = makeFromVdpPath(vdpPath);
     const { year, model } = parseTitleName(titleText, make);
 
