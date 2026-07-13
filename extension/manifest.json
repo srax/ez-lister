@@ -51,6 +51,7 @@
       ],
       "js": [
         "lib/mappers.core.js",
+        "lib/inventoryCheck.js",
         "lib/extractors/schemaorg.js",
         "lib/extractors/dealeron.js",
         "lib/extractors/dealercom.js",

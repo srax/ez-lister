@@ -9,6 +9,8 @@ const DEFAULT_PREFS = { emoji: '', unit: 'mi', category: '', dealerDesc: true, m
 // Where-to-post labels for status copy (must match the #platform <option> values).
 const PLATFORM_LABEL = { fb: 'Facebook Marketplace', craigslist: 'Craigslist', offerup: 'OfferUp', cars: 'Cars.com' };
 const platformLabel = (p) => PLATFORM_LABEL[p] || 'Facebook Marketplace';
+// Dealership-outcome logic (Part 2) — pure module loaded via <script> before this file.
+const DO = globalThis.CarxpertDealerOutcome;
 // Short badge (abbrev + brand colour) shown per platform on each "Your listings" row.
 const PLATFORM_BADGE = { fb: ['FB', '#1877f2'], craigslist: ['CL', '#5c2d91'], offerup: ['OU', '#12b76a'], cars: ['Cars', '#6b7280'] };
 // Footer "open the form" button label — follows the Where-to-post selection.
@@ -38,6 +40,8 @@ const ui = {
   stDays: el('st-days'), stHeroRange: el('st-hero-range'), stDelta: el('st-delta'),
   stListed: el('st-listed'), stListedSub: el('st-listed-sub'), stValue: el('st-value'),
   stPlatforms: el('st-platforms'), stTrend: el('st-trend'), stListings: el('st-listings'),
+  statsDot: el('stats-dot'),
+  dealerCard: el('st-dealer-card'), dealerFb: el('st-dealer-fb'), dealerCl: el('st-dealer-cl'), dealerDe: el('st-dealer-de'),
   // auth + entitlement gate
   gate: el('gate'), gateIcon: el('gate-icon'), gateTitle: el('gate-title'), gateMsg: el('gate-msg'),
   gateSteps: el('gate-steps'), gateBenefits: el('gate-benefits'),
@@ -98,6 +102,9 @@ async function init() {
   // Re-check entitlement when the panel regains focus (e.g. returning from Stripe checkout).
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAuth({ refresh: true }); });
   loadBillingPlan().catch(() => {});
+  // Best-effort: pull server listings once on load so the Stats-button attention dot can show
+  // before the user ever opens the stats view. Silent on failure / not-entitled / offline.
+  loadServerListings().then((ok) => { if (ok) updateNeedsActionDot(); }).catch(() => {});
   await refreshAuth();
 }
 
@@ -451,7 +458,12 @@ function fromServerListing(r) {
     status: r.status === 'sold' ? 'sold' : 'active',
     listedAt: r.listed_at || undefined,
     soldAt: r.sold_at || undefined,
-    sourceUrl: r.source_url || undefined
+    sourceUrl: r.source_url || undefined,
+    // Part 2 (inventory outcomes) — the backend signals a confirmed-gone car via gone_confirmed_at
+    // (or an explicit inventory_gone flag); dealer_outcome/at carry the user's classification once made.
+    inventoryGone: !!(r.gone_confirmed_at || r.inventory_gone),
+    dealerOutcome: DO && DO.isOutcome(r.dealer_outcome) ? r.dealer_outcome : undefined,
+    dealerOutcomeAt: r.dealer_outcome_at || undefined
   };
 }
 
@@ -483,8 +495,10 @@ function withinRange(iso, range) {
 // scoped to the selected range so the hero, tiles and platform rows all tell one story.
 function computeStats(range) {
   const all = unifiedListings(); // unique cars across ALL platforms (a car on FB+CL counts once)
-  const active = all.filter((l) => l.status === 'active');
-  const soldAll = all.filter((l) => l.status === 'sold');
+  // Sold-by-dealership and delisted cars drop out of Active + active value (they've left inventory);
+  // they're tallied only in the yellow "Sold by dealership" card, not the user's personal stats.
+  const active = all.filter((l) => DO.isActiveLive(l));
+  const soldAll = all.filter((l) => l.status === 'sold' && !DO.hasOutcome(l));
   const soldInRange = soldAll.filter((l) => withinRange(l.soldAt, range));
   const listedInRange = all.filter((l) => withinRange(l.listedAt, range)).length;
   const gross = soldInRange.reduce((sum, l) => sum + (Number(l.soldPrice || l.price) || 0), 0);
@@ -556,7 +570,28 @@ function renderStats() {
   }
   renderTrend();
   renderPlatforms(range);
+  renderDealerCard();
   renderListingList();
+  updateNeedsActionDot();
+}
+
+// Yellow "Sold by dealership" card: FB / Craigslist / Delisted counts. Hidden until there's at
+// least one, so users with none see a clean stats page.
+function renderDealerCard() {
+  if (!ui.dealerCard) return;
+  const c = DO.dealerCounts(unifiedListings());
+  ui.dealerCard.hidden = c.total === 0;
+  if (ui.dealerFb) ui.dealerFb.textContent = String(c.fb);
+  if (ui.dealerCl) ui.dealerCl.textContent = String(c.craigslist);
+  if (ui.dealerDe) ui.dealerDe.textContent = String(c.delisted);
+}
+
+// Red-orange dot on the Stats button whenever any car needs the user's attention (confirmed gone
+// from the dealership, not yet classified, not personally sold). Clears when none remain.
+function updateNeedsActionDot() {
+  if (!ui.statsDot) return;
+  const n = DO.needsActionCount(unifiedListings());
+  ui.statsDot.hidden = n === 0;
 }
 
 function renderTrend() {
@@ -659,24 +694,38 @@ function renderListingList() {
     return;
   }
   const dayCount = (from, to) => Math.max(1, Math.round((new Date(to) - new Date(from)) / 864e5));
-  ui.stListings.innerHTML = all.map((l) => {
+  ui.stListings.innerHTML = DO.sortForList(all).map((l) => {
     const title = esc(l.title || [l.year, l.make, l.model].filter(Boolean).join(' ') || 'Vehicle');
     const vin = l.vin || (l.key && l.key.length === 17 ? l.key : '');
     const sold = l.status === 'sold';
+    const outcome = DO.outcomeOf(l);          // dealership outcome: 'fb' | 'craigslist' | 'delisted' | null
+    const needs = DO.needsAction(l);          // gone from the dealership, not yet classified
     const price = l.price || l.soldPrice ? '$' + Number((sold && l.soldPrice) || l.price).toLocaleString('en-US') : '';
-    const pill = sold ? '<span class="lst-pill sold">Sold</span>' : '<span class="lst-pill live">Live</span>';
+
+    // Status pill: needs-action wins, then a dealership-outcome badge, then the normal Live/Sold.
+    let pill;
+    if (needs) pill = `<button class="needs-pill" data-action="needs" data-key="${esc(l.key)}">Needs action</button>`;
+    else if (outcome) {
+      const meta = DO.OUTCOME_META[outcome];
+      pill = `<span class="lst-badge ${outcome === 'delisted' ? 'delisted' : 'dealer'}">${esc(meta.badge)}</span>`;
+    } else pill = sold ? '<span class="lst-pill sold">Sold</span>' : '<span class="lst-pill live">Live</span>';
+
     const days = sold
       ? (l.soldAt && l.listedAt ? `sold in ${dayCount(l.listedAt, l.soldAt)}d` : '')
       : (l.listedAt ? `live ${dayCount(l.listedAt, Date.now())}d` : '');
-    const badges = [...l.platforms].map(platformBadgeHtml).join('');
-    const row3 = [price, pill, days ? `<span class="lst-days">${days}</span>` : '', badges].filter(Boolean).join(' · ');
+    const badges = [...(l.platforms || [])].map(platformBadgeHtml).join('');
+    const row3 = [price, pill, (!needs && !outcome && days) ? `<span class="lst-days">${days}</span>` : '', badges].filter(Boolean).join(' · ');
     const hasUrl = Object.keys(l.urls || {}).length > 0;
-    return `<div class="listing-row"><div class="listing-main">`
+
+    // The personal "Mark sold" button is hidden once the dealership flow owns the row (needs-action
+    // or already classified) — the dealership outcome supersedes the personal sale toggle there.
+    const soldBtn = (needs || outcome) ? '' : `<button class="lst-sold-btn${sold ? ' undo' : ''}" data-key="${esc(l.key)}">${sold ? 'Undo' : 'Mark sold'}</button>`;
+    return `<div class="listing-row${needs ? ' needs' : ''}"><div class="listing-main">`
       + `<div class="listing-title">${title}</div>`
       + (vin ? `<div class="listing-vin"><span class="vin-label">VIN#</span> ${esc(vin)}</div>` : '')
       + `<div class="listing-sub">${row3}</div>`
       + `</div><div class="listing-actions">`
-      + `<button class="lst-sold-btn${sold ? ' undo' : ''}" data-key="${esc(l.key)}">${sold ? 'Undo' : 'Mark sold'}</button>`
+      + soldBtn
       + `<button class="lst-view-btn" data-key="${esc(l.key)}"${hasUrl ? '' : ' disabled title="No saved link yet — publish to capture it"'}>View listing</button>`
       + `</div></div>`;
   }).join('');
@@ -729,6 +778,126 @@ function openListingUrl(url) {
   if (chrome.tabs && chrome.tabs.create) chrome.tabs.create({ url }).catch(() => window.open(url, '_blank'));
   else window.open(url, '_blank');
 }
+
+// ---- Part 2: dealership inventory outcome ----
+
+// Ensure a local listing record exists for `key` (materialising a server-only or slot-only car),
+// mirroring markSold's lookup so the outcome persists locally and syncs back.
+function ensureLocalListing(key) {
+  let l = state.listings[key];
+  if (l) return l;
+  const s = state.serverListings[key];
+  if (s) { l = { ...s }; }
+  else {
+    const plats = listedPlatforms(state.listed[key]);
+    const platform = Object.keys(plats)[0];
+    const meta = platform ? plats[platform] : null;
+    if (!meta) return null;
+    l = {
+      key, platform, status: 'active', listedAt: meta.listedAt,
+      vin: meta.vin || (key.length === 17 ? key : undefined),
+      title: meta.title, year: meta.year, make: meta.make, model: meta.model, price: meta.price
+    };
+  }
+  state.listings[key] = l;
+  return l;
+}
+
+// Record the user's classification of a removed-from-dealership car. SEPARATE from markSold: it does
+// not touch the personal sale status — it only tags the car as a dealership outcome (fb/craigslist/
+// delisted), which the stats layer excludes from Active and tallies in the yellow card.
+function setDealerOutcome(key, outcome) {
+  if (!DO.isOutcome(outcome)) return;
+  const l = ensureLocalListing(key);
+  if (!l) return;
+  l.dealerOutcome = outcome;
+  l.dealerOutcomeAt = new Date().toISOString();
+  l.inventoryGone = true; // it left the dealership; keep the flag (needsAction is now false)
+  chrome.storage.local.set({ ezlistListings: state.listings }); // triggers background auto-sync
+  chrome.runtime.sendMessage({
+    type: 'EZLIST_ENQUEUE_EVENT',
+    event: { type: 'dealer_outcome', clientKey: key, occurredAt: l.dealerOutcomeAt, data: { outcome } }
+  }).catch(() => {});
+  renderStats();
+}
+
+// The select-then-Submit popup. A choice only highlights; nothing commits until Submit — this is the
+// guard against a mis-click retiring the wrong car.
+function openInventoryActionPopup(key) {
+  const row = unifiedListings().find((r) => r.key === key);
+  if (!row) return;
+  document.getElementById('inv-modal-back')?.remove();
+  const title = esc(row.title || [row.year, row.make, row.model].filter(Boolean).join(' ') || 'This vehicle');
+
+  const back = document.createElement('div');
+  back.id = 'inv-modal-back';
+  back.className = 'inv-modal-back';
+  const optHtml = DO.OUTCOMES.map((o) => {
+    const meta = DO.OUTCOME_META[o];
+    const info = o === 'delisted'
+      ? `<span class="info-ico" title="Removed from the dealership for any reason other than a sale — it is NOT counted as a sale."><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></span>`
+      : '';
+    return `<button type="button" class="inv-opt" data-outcome="${o}"><span class="inv-opt-radio"></span>`
+      + `<span class="inv-opt-label">${esc(meta.label)}</span>${info}</button>`;
+  }).join('');
+  back.innerHTML = `<div class="inv-modal" role="dialog" aria-modal="true">`
+    + `<div class="inv-modal-title">Removed from your dealership</div>`
+    + `<div class="inv-modal-sub">${title} is no longer on your dealership's site.</div>`
+    + `<div class="inv-opts">${optHtml}</div>`
+    + `<div class="inv-modal-actions">`
+    + `<button type="button" class="inv-btn" data-act="cancel">Cancel</button>`
+    + `<button type="button" class="inv-btn primary" data-act="submit" disabled>Submit</button>`
+    + `</div></div>`;
+  document.body.appendChild(back);
+
+  let selected = null;
+  const submitBtn = back.querySelector('[data-act="submit"]');
+  const close = () => { back.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', onKey);
+
+  back.addEventListener('click', (e) => {
+    if (e.target === back) { close(); return; } // click outside the card
+    const opt = e.target.closest('.inv-opt');
+    if (opt) {
+      // Clicking the (i) info icon must not select the option.
+      if (e.target.closest('.info-ico')) return;
+      selected = opt.dataset.outcome;
+      back.querySelectorAll('.inv-opt').forEach((el) => el.classList.toggle('sel', el === opt));
+      submitBtn.disabled = false;
+      return;
+    }
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (act === 'cancel') { close(); return; }
+    if (act === 'submit' && selected) { setDealerOutcome(key, selected); close(); }
+  });
+}
+
+// ---- DEV: fabricate the "removed from dealership" signal for a demo, until the backend supplies it ----
+// From the side-panel devtools console:  cxDevMarkGone()            → flags the newest live car
+//                                        cxDevMarkGone('<VIN/key>')  → flags a specific car
+//                                        cxDevClearOutcomes()        → clears all Part-2 flags
+// It writes the same fields the backend will (inventoryGone), so the whole flow — dot → pill →
+// popup → badge → yellow card — runs end-to-end with real tracked listings. No effect in normal use.
+function cxDevMarkGone(key) {
+  const rows = unifiedListings().filter((r) => DO.isActiveLive(r));
+  const target = key ? rows.find((r) => r.key === key || r.vin === key) : DO.sortForList(rows)[0];
+  if (!target) { console.warn('[cx-dev] no live listing to flag'); return; }
+  const l = ensureLocalListing(target.key);
+  if (!l) { console.warn('[cx-dev] could not materialise listing', target.key); return; }
+  l.inventoryGone = true;
+  delete l.dealerOutcome; delete l.dealerOutcomeAt;
+  chrome.storage.local.set({ ezlistListings: state.listings });
+  renderStats();
+  console.log('[cx-dev] flagged as removed from dealership:', target.title || target.key);
+}
+function cxDevClearOutcomes() {
+  for (const l of Object.values(state.listings)) { delete l.inventoryGone; delete l.dealerOutcome; delete l.dealerOutcomeAt; }
+  chrome.storage.local.set({ ezlistListings: state.listings });
+  renderStats();
+  console.log('[cx-dev] cleared all inventory-outcome flags');
+}
+if (typeof window !== 'undefined') { window.cxDevMarkGone = cxDevMarkGone; window.cxDevClearOutcomes = cxDevClearOutcomes; }
 
 // Lightweight popover anchored to a button — used to pick a platform (for multi-platform cars)
 // when marking sold or choosing which listing to view. Closes on outside click / Escape.
@@ -798,6 +967,8 @@ function wireEvents() {
   ui.statsBack.addEventListener('click', () => showView('lister'));
   ui.statsRange.addEventListener('change', () => { ui.statsRangeLabel.textContent = rangeLabel(ui.statsRange.value); renderStats(); });
   ui.stListings.addEventListener('click', (e) => {
+    const needsBtn = e.target.closest('.needs-pill');
+    if (needsBtn && needsBtn.dataset.key) { openInventoryActionPopup(needsBtn.dataset.key); return; }
     const soldBtn = e.target.closest('.lst-sold-btn');
     if (soldBtn && soldBtn.dataset.key) { onSoldClick(soldBtn); return; }
     const viewBtn = e.target.closest('.lst-view-btn');
@@ -895,6 +1066,7 @@ function onStorageChanged(changes, area) {
   }
   if (changes.ezlistListings) {
     state.listings = changes.ezlistListings.newValue || {};
+    updateNeedsActionDot(); // keep the attention dot live even when the stats view is closed
     if (ui.viewStats && !ui.viewStats.hidden) renderStats();
   }
   if (changes.ezlistDraft) {

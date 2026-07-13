@@ -147,6 +147,21 @@ async function insertEvent(ownerId, ev, db) {
     );
   }
 
+  // Part 2: the user classified a removed-from-dealership car (sold at fb/craigslist by the
+  // dealership, or delisted). Sets the outcome tag only — it deliberately does NOT touch
+  // status/sold_*: a dealership outcome is not the user's personal sale, and the stats layer
+  // excludes outcome'd cars from Active on its own.
+  if (ev.type === 'dealer_outcome' && ev.clientKey) {
+    const outcome = ev.data && ev.data.outcome;
+    if (DEALER_OUTCOMES.has(outcome)) {
+      await db.query(
+        `update listings set dealer_outcome = $3, dealer_outcome_at = $4, updated_at = now()
+          where owner_id = $1 and client_key = $2`,
+        [ownerId, ev.clientKey, outcome, ev.occurredAt || new Date().toISOString()]
+      );
+    }
+  }
+
   // A fresh publish is definitive evidence the car is live again — it beats even a sticky
   // manual sold, but only when the publish happened AFTER the car was marked sold (so a
   // replayed old event can't un-sell anything).
@@ -189,6 +204,7 @@ export async function getListings(ownerId, db = pool) {
             l.platform, l.status, l.sold_source, l.sold_platform,
             l.listed_at, l.sold_at, l.sold_price, l.source_url, l.facebook_listing_url,
             l.views_count, l.views_observed_at,
+            l.gone_confirmed_at, l.dealer_outcome, l.dealer_outcome_at,
             coalesce(
               json_agg(json_build_object(
                 'platform', lp.platform, 'status', lp.status,
@@ -210,21 +226,32 @@ export async function getListings(ownerId, db = pool) {
 
 // The user's currently-listed cars that have a detail-page URL to check. Device-independent
 // (the backend is the source of truth), so the extension checks the right set regardless of
-// which device did the listing.
+// which device did the listing. Cars the user already classified (dealer_outcome) are done —
+// no point re-probing them.
 export async function getCarsToCheck(ownerId, db = pool) {
   const { rows } = await db.query(
     `select client_key as "clientKey", vin, source_url as "sourceUrl"
        from listings
-      where owner_id = $1 and status = 'listed' and vin is not null and source_url is not null`,
+      where owner_id = $1 and status = 'listed' and vin is not null and source_url is not null
+        and dealer_outcome is null`,
     [ownerId]
   );
   return rows;
 }
 
-// Record the extension's per-car presence verdicts. PART 1 = telemetry ONLY (no status change,
-// no selling): a car seen present updates last_seen + clears the miss clock; a car whose page is
-// gone starts the first_missed clock; 'unknown' (null) changes nothing. Only touches 'listed'
-// rows. Part 2 will read first_missed_at to drive the confirmed sold decision.
+// A second gone report must be at least this far after first_missed_at before we confirm the car
+// gone (needs-action in the panel). The check cadence is 3h, so a real removal confirms on the
+// very next sweep, while one transient blip can never confirm on its own.
+export const GONE_CONFIRM_MIN_GAP = '2 hours';
+
+// Record the extension's per-car presence verdicts.
+//   present → last_seen updated; BOTH miss clocks cleared (auto-revive: a car back on the site
+//             cancels any pending/confirmed gone state before the user has classified it).
+//   gone    → first miss starts the clock; a second miss ≥ GONE_CONFIRM_MIN_GAP later promotes to
+//             gone_confirmed_at — the panel's "needs action" signal. Never confirms on one miss.
+//   unknown (null) → no-op, never acted on (bot-wall / network / 5xx).
+// Only touches 'listed' rows without a dealer_outcome (classified cars are settled). Selling
+// still never happens here — the user decides in the panel.
 export async function recordPresence(ownerId, reports = [], db = pool) {
   const counts = { present: 0, gone: 0, unknown: 0, total: Array.isArray(reports) ? reports.length : 0 };
   for (const r of Array.isArray(reports) ? reports : []) {
@@ -234,15 +261,23 @@ export async function recordPresence(ownerId, reports = [], db = pool) {
     const at = Number.isNaN(parsed.getTime()) ? new Date().toISOString() : parsed.toISOString();
     if (r.present === true) {
       await db.query(
-        `update listings set last_seen_in_inventory_at = $3, first_missed_at = null, updated_at = now()
-          where owner_id = $1 and client_key = $2 and status = 'listed'`,
+        `update listings set last_seen_in_inventory_at = $3, first_missed_at = null, gone_confirmed_at = null, updated_at = now()
+          where owner_id = $1 and client_key = $2 and status = 'listed' and dealer_outcome is null`,
         [ownerId, key, at]
       );
       counts.present += 1;
     } else if (r.present === false) {
+      // Two-confirm: promote to confirmed-gone only when an earlier, separate miss is old enough.
+      // Runs BEFORE the coalesce below so this report can't self-confirm.
+      await db.query(
+        `update listings set gone_confirmed_at = coalesce(gone_confirmed_at, $3), updated_at = now()
+          where owner_id = $1 and client_key = $2 and status = 'listed' and dealer_outcome is null
+            and first_missed_at is not null and first_missed_at <= $3::timestamptz - interval '${GONE_CONFIRM_MIN_GAP}'`,
+        [ownerId, key, at]
+      );
       await db.query(
         `update listings set first_missed_at = coalesce(first_missed_at, $3), updated_at = now()
-          where owner_id = $1 and client_key = $2 and status = 'listed'`,
+          where owner_id = $1 and client_key = $2 and status = 'listed' and dealer_outcome is null`,
         [ownerId, key, at]
       );
       counts.gone += 1;
@@ -252,3 +287,6 @@ export async function recordPresence(ownerId, reports = [], db = pool) {
   }
   return counts;
 }
+
+// ---- Part 2: the user's classification of a removed-from-dealership car ----
+export const DEALER_OUTCOMES = new Set(['fb', 'craigslist', 'delisted']);

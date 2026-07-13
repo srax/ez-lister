@@ -271,11 +271,43 @@
     return true; // async sendResponse
   });
 
+  // Same-site inventory presence check. Runs while the user is on their own dealer site, so the
+  // detail-page fetches are same-origin and always carry the site's Cloudflare/Akamai clearance
+  // cookie — the reliable path that clears every bot wall. The background worker gates this to
+  // once per host / 3h and returns only THIS host's due cars; we fetch each, judge with the shared
+  // page-gone logic, and report the verdicts back. Best-effort and silent — never blocks the UI.
+  async function runSameSiteInventoryCheck() {
+    try {
+      const check = self.CarxpertInventoryCheck;
+      if (!check || !chrome.runtime || !chrome.runtime.id) return;
+      const res = await chrome.runtime.sendMessage({ type: 'EZLIST_INV_SAMESITE_CARS', host: HOST }).catch(() => null);
+      const cars = (res && res.cars) || [];
+      if (!cars.length) return;
+
+      const fetchImpl = (url) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 12000);
+        return fetch(url, { credentials: 'include', cache: 'no-store', redirect: 'follow', signal: controller.signal })
+          .finally(() => clearTimeout(timer));
+      };
+      const reports = [];
+      for (let i = 0; i < cars.length; i += 1) {
+        const car = cars[i];
+        const verdict = await check.checkOne(fetchImpl, { sourceUrl: car.sourceUrl, vin: car.vin });
+        reports.push({ clientKey: car.clientKey, present: verdict.present, checkedAt: new Date().toISOString() });
+        if (i < cars.length - 1) await new Promise((r) => setTimeout(r, 1500));
+      }
+      await chrome.runtime.sendMessage({ type: 'EZLIST_INV_SAMESITE_REPORT', host: HOST, reports }).catch(() => {});
+    } catch { /* best-effort telemetry — ignore */ }
+  }
+
   let scanTimer = null;
   const debouncedScan = () => { clearTimeout(scanTimer); scanTimer = setTimeout(scan, 300); };
   const start = () => {
     scan();
     new MutationObserver(debouncedScan).observe(document.body, { childList: true, subtree: true });
+    // Kick the presence check a little after load so it never competes with page render / extraction.
+    setTimeout(() => { runSameSiteInventoryCheck(); }, 8000);
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();

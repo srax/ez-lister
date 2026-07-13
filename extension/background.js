@@ -91,9 +91,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       fetchDealerHtml(message.url).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
-    // Manual trigger for the inventory-presence check (also runs on the 3h alarm).
+    // Manual trigger for the cross-site inventory-presence check (also runs on the 3h alarm).
     case 'EZLIST_CHECK_INVENTORY':
       runInventoryCheck().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+
+    // Same-site path: the dealer content script asks which of THIS host's listed cars are due for
+    // a presence check (throttled per host). It then fetches them same-origin (guaranteed to carry
+    // the site's bot-wall cookie) and reports back via EZLIST_INV_SAMESITE_REPORT.
+    case 'EZLIST_INV_SAMESITE_CARS':
+      inventoryCarsForHost(message.host).then(sendResponse).catch(() => sendResponse({ cars: [] }));
+      return true;
+
+    case 'EZLIST_INV_SAMESITE_REPORT':
+      reportSameSitePresence(message.host, message.reports).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
     // EZLIST_OPEN_FACEBOOK kept for the FB-only dealer/panel callers; platform defaults to fb.
@@ -765,7 +776,7 @@ async function ensureDealerScripts(me) {
   const script = {
     id: DEALER_SCRIPT_ID,
     matches: granted,
-    js: ['lib/mappers.core.js', 'lib/extractors/schemaorg.js', 'lib/extractors/dealeron.js', 'lib/extractors/dealercom.js', 'lib/extractors/dealerinspire.js', 'lib/extractors/generic.js', 'dealerContent.js'],
+    js: ['lib/mappers.core.js', 'lib/inventoryCheck.js', 'lib/extractors/schemaorg.js', 'lib/extractors/dealeron.js', 'lib/extractors/dealercom.js', 'lib/extractors/dealerinspire.js', 'lib/extractors/generic.js', 'dealerContent.js'],
     runAt: 'document_idle',
     persistAcrossSessions: true
   };
@@ -778,9 +789,6 @@ async function ensureDealerScripts(me) {
   const me = (await chrome.storage.local.get('ezlistMe')).ezlistMe;
   if (me) ensureDealerScripts(me).catch(() => {});
 })();
-
-// Arm the 3h inventory-presence alarm on every worker boot (idempotent).
-armInventoryAlarm();
 
 // Cached JWKS; refetch on force (unknown kid → rotation) and cache.
 async function getJwks(force) {
@@ -1016,40 +1024,112 @@ async function getServerListings() {
 }
 
 // ---- inventory presence check (Part 1) ----
-// Every 3h: ask the backend which listed cars to check, fetch each car's detail page in the
-// browser session (clears Akamai/Cloudflare — a server fetch can't), judge present/gone with the
-// shared page-gone logic, and report the verdicts back. Telemetry only for now; the backend does
-// NOT sell yet (Part 2). Polite: capped per run, spaced out, and a fetch failure = 'unknown'
-// (never acted on).
-const INV_CHECK_MAX = 25;          // cars checked per run
-const INV_CHECK_GAP_MS = 1500;     // spacing between detail-page fetches (per host politeness)
+// Two complementary paths report the same telemetry, both judged by the shared page-gone logic
+// (lib/inventoryCheck.js), and both fully platform-agnostic (they only need each car's stored
+// detail-page URL + VIN, so they cover DealerOn, Dealer.com/Cox, Dealer Inspire and generic alike):
+//
+//   • SAME-SITE  (dealerContent.js, when the user is on their dealer site): same-origin fetches
+//     always carry the site's Cloudflare/Akamai clearance cookie, so they clear every bot wall.
+//     This is the reliable path — a 'present:true' from it CLEARS any false miss the cross-site
+//     path might have recorded.
+//   • CROSS-SITE (this worker, on the 3h alarm): credentialed fetch under the granted host
+//     permission. Covers cars whose dealer site the user hasn't visited recently. A challenged or
+//     failed fetch resolves to 'unknown' (never 'gone'), so it can never falsely retire a car.
+//
+// Both share one per-host 3h throttle so they never double-probe. Telemetry only for now; the
+// backend does NOT sell yet (Part 2). Polite: capped per run and spaced out.
+const INV_CHECK_MAX = 25;                 // cars checked per run
+const INV_CHECK_GAP_MS = 1500;            // spacing between detail-page fetches (per host politeness)
+const INV_FETCH_TIMEOUT_MS = 12000;       // per detail-page fetch (a hung request must not stall the run)
+const INV_MIN_INTERVAL_MS = 3 * 60 * 60 * 1000; // per-host throttle: at most one check / 3h across both paths
 let invChecking = false;
 
+const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } };
+const bareHost = (h) => String(h || '').toLowerCase().replace(/^www\./, '');
+const sameHostName = (a, b) => bareHost(a) === bareHost(b);
+
+// Detail-page fetch with a hard timeout. credentials:'include' sends the dealer's own cookies
+// under the granted host permission (cross-site) or same-origin (content script reuses this shape).
+function dealerVdpFetch(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), INV_FETCH_TIMEOUT_MS);
+  return fetch(url, { credentials: 'include', cache: 'no-store', redirect: 'follow', signal: controller.signal })
+    .finally(() => clearTimeout(timer));
+}
+
+async function hostGranted(host) {
+  if (!chrome.permissions || !host) return false;
+  const bare = bareHost(host);
+  return (await chrome.permissions.contains({ origins: [`https://${host}/*`] }).catch(() => false))
+    || (await chrome.permissions.contains({ origins: [`https://${bare}/*`] }).catch(() => false))
+    || (await chrome.permissions.contains({ origins: [`https://www.${bare}/*`] }).catch(() => false));
+}
+
+// Per-host throttle map { "<bareHost>": epochMs } — shared by both paths.
+async function getInvThrottle() {
+  return (await chrome.storage.local.get('ezlistInvCheckAt')).ezlistInvCheckAt || {};
+}
+async function markHostsChecked(hosts) {
+  if (!hosts.length) return;
+  const map = await getInvThrottle();
+  const now = Date.now();
+  for (const h of hosts) map[bareHost(h)] = now;
+  await chrome.storage.local.set({ ezlistInvCheckAt: map });
+}
+function hostDue(map, host) {
+  const last = map[bareHost(host)] || 0;
+  return Date.now() - last >= INV_MIN_INTERVAL_MS;
+}
+
+// Ask the backend for the user's listed cars + detail-page URLs. Returns { cars } or { error }.
+async function fetchCarsToCheck() {
+  if (!(await getToken())) return { error: 'signed_out' };
+  const backend = await getBackendUrl();
+  let resp;
+  try {
+    resp = await fetch(`${backend}/api/inventory/to-check`, { headers: await authHeaders() });
+  } catch { return { error: 'backend_unreachable' }; }
+  if (resp.status === 401) { await clearAuth(); return { error: 'signed_out' }; }
+  if (!resp.ok) return { error: `to-check ${resp.status}` };
+  const cars = ((await resp.json().catch(() => ({}))).cars) || [];
+  return { cars };
+}
+
+// Cross-site sweep (3h alarm): check every listed car whose host is granted AND not checked in the
+// last 3h (the same-site path may have covered it already). A missing permission or a challenged
+// fetch yields 'unknown', which the backend ignores.
 async function runInventoryCheck() {
   if (invChecking) return { ok: false, skipped: 'in_progress' };
   invChecking = true;
   try {
-    if (!(await getToken())) return { ok: false, reason: 'signed_out' };
-    const backend = await getBackendUrl();
-    let cars = [];
-    try {
-      const resp = await fetch(`${backend}/api/inventory/to-check`, { headers: await authHeaders() });
-      if (resp.status === 401) { await clearAuth(); return { ok: false, reason: 'signed_out' }; }
-      if (!resp.ok) return { ok: false, reason: `to-check ${resp.status}` };
-      cars = ((await resp.json().catch(() => ({}))).cars) || [];
-    } catch { return { ok: false, reason: 'backend_unreachable' }; }
+    const res = await fetchCarsToCheck();
+    if (res.error) return { ok: false, reason: res.error };
+    const cars = res.cars;
     if (!cars.length) return { ok: true, checked: 0 };
 
-    // Credentialed same-session fetch of the dealer's detail page (needs the granted host permission).
-    const dealerFetch = (url) => fetch(url, { credentials: 'include', cache: 'no-store', redirect: 'follow' });
-    const reports = [];
-    for (const car of cars.slice(0, INV_CHECK_MAX)) {
-      const verdict = await self.CarxpertInventoryCheck.checkOne(dealerFetch, { sourceUrl: car.sourceUrl, vin: car.vin });
-      reports.push({ clientKey: car.clientKey, present: verdict.present, checkedAt: new Date().toISOString() });
-      if (reports.length < Math.min(cars.length, INV_CHECK_MAX)) await sleep(INV_CHECK_GAP_MS);
+    const throttle = await getInvThrottle();
+    const due = [];
+    for (const car of cars) {
+      const host = hostOf(car.sourceUrl);
+      if (!host || !hostDue(throttle, host)) continue;      // recently checked (likely same-site) → skip
+      if (!(await hostGranted(host))) continue;             // no host permission → can't fetch cross-site
+      due.push(car);
     }
+    if (!due.length) return { ok: true, checked: 0, skipped: 'none_due_or_granted' };
+
+    const reports = [];
+    const touched = new Set();
+    const batch = due.slice(0, INV_CHECK_MAX);
+    for (let i = 0; i < batch.length; i += 1) {
+      const car = batch[i];
+      const verdict = await self.CarxpertInventoryCheck.checkOne(dealerVdpFetch, { sourceUrl: car.sourceUrl, vin: car.vin });
+      reports.push({ clientKey: car.clientKey, present: verdict.present, checkedAt: new Date().toISOString() });
+      touched.add(hostOf(car.sourceUrl));
+      if (i < batch.length - 1) await sleep(INV_CHECK_GAP_MS);
+    }
+    await markHostsChecked([...touched]);
     const server = await postBackend('/api/inventory/presence', { reports }).catch(() => null);
-    console.log(`inventory-check: ${reports.length} car(s) checked`, server || '');
+    console.log(`inventory-check (cross-site): ${reports.length} car(s) checked`, server || '');
     return { ok: true, checked: reports.length, server };
   } catch (e) {
     console.warn('inventory-check failed:', (e && e.message) || e);
@@ -1057,6 +1137,31 @@ async function runInventoryCheck() {
   } finally {
     invChecking = false;
   }
+}
+
+// Same-site path — the dealer content script asks for THIS host's due cars. We optimistically stamp
+// the throttle on hand-out so a second content-script instance (or a page reload) doesn't re-probe;
+// the 3h alarm is the retry if the run never reports. Returns { cars: [{clientKey, vin, sourceUrl}] }.
+async function inventoryCarsForHost(host) {
+  if (!host) return { cars: [] };
+  const throttle = await getInvThrottle();
+  if (!hostDue(throttle, host)) return { cars: [] };
+  const res = await fetchCarsToCheck();
+  if (res.error) return { cars: [] };
+  const mine = res.cars.filter((c) => sameHostName(hostOf(c.sourceUrl), host)).slice(0, INV_CHECK_MAX);
+  if (!mine.length) return { cars: [] };
+  await markHostsChecked([host]);   // optimistic — prevents duplicate same-site storms
+  return { cars: mine };
+}
+
+// The content script's same-site verdicts → backend (telemetry only).
+async function reportSameSitePresence(host, reports) {
+  const list = Array.isArray(reports) ? reports : [];
+  if (!list.length) return { ok: true, checked: 0 };
+  await markHostsChecked(host ? [host] : []);
+  const server = await postBackend('/api/inventory/presence', { reports: list }).catch(() => null);
+  console.log(`inventory-check (same-site ${host || '?'}): ${list.length} car(s) reported`, server || '');
+  return { ok: true, checked: list.length, server };
 }
 
 // Fire every 3h (matches the DealerOn server worker's new cadence). chrome.alarms persists and
@@ -1069,6 +1174,11 @@ function armInventoryAlarm() {
 if (chrome.alarms) {
   chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === INV_ALARM) runInventoryCheck().catch(() => {}); });
 }
+
+// Arm the 3h inventory-presence alarm on every worker boot (idempotent). Must run AFTER INV_ALARM
+// is initialized above — calling it at the top of the file hits the const's temporal dead zone and
+// crashes the whole service worker on registration.
+armInventoryAlarm();
 
 // New device / post-purge restore: the server is the source of truth for what's already
 // published. When local green-button state is empty, rebuild it from the server so a
