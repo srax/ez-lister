@@ -1,6 +1,6 @@
 'use strict';
 
-importScripts('lib/lease.js', 'lib/platforms.js'); // ES256 lease verifier + platform registry
+importScripts('lib/lease.js', 'lib/platforms.js', 'lib/inventoryCheck.js'); // lease verifier + platform registry + inventory presence check
 
 const { getPlatform } = globalThis.CarxpertPlatforms;
 
@@ -89,6 +89,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // host permission, clearing the bot wall the way the FB photo fetch does.
     case 'EZLIST_FETCH_HTML':
       fetchDealerHtml(message.url).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+
+    // Manual trigger for the inventory-presence check (also runs on the 3h alarm).
+    case 'EZLIST_CHECK_INVENTORY':
+      runInventoryCheck().then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
     // EZLIST_OPEN_FACEBOOK kept for the FB-only dealer/panel callers; platform defaults to fb.
@@ -774,6 +779,9 @@ async function ensureDealerScripts(me) {
   if (me) ensureDealerScripts(me).catch(() => {});
 })();
 
+// Arm the 3h inventory-presence alarm on every worker boot (idempotent).
+armInventoryAlarm();
+
 // Cached JWKS; refetch on force (unknown kid → rotation) and cache.
 async function getJwks(force) {
   if (!force) {
@@ -1005,6 +1013,61 @@ async function getServerListings() {
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok || !data.ok) return { ok: false, reason: `http_${resp.status}` };
   return { ok: true, listings: data.listings || [] };
+}
+
+// ---- inventory presence check (Part 1) ----
+// Every 3h: ask the backend which listed cars to check, fetch each car's detail page in the
+// browser session (clears Akamai/Cloudflare — a server fetch can't), judge present/gone with the
+// shared page-gone logic, and report the verdicts back. Telemetry only for now; the backend does
+// NOT sell yet (Part 2). Polite: capped per run, spaced out, and a fetch failure = 'unknown'
+// (never acted on).
+const INV_CHECK_MAX = 25;          // cars checked per run
+const INV_CHECK_GAP_MS = 1500;     // spacing between detail-page fetches (per host politeness)
+let invChecking = false;
+
+async function runInventoryCheck() {
+  if (invChecking) return { ok: false, skipped: 'in_progress' };
+  invChecking = true;
+  try {
+    if (!(await getToken())) return { ok: false, reason: 'signed_out' };
+    const backend = await getBackendUrl();
+    let cars = [];
+    try {
+      const resp = await fetch(`${backend}/api/inventory/to-check`, { headers: await authHeaders() });
+      if (resp.status === 401) { await clearAuth(); return { ok: false, reason: 'signed_out' }; }
+      if (!resp.ok) return { ok: false, reason: `to-check ${resp.status}` };
+      cars = ((await resp.json().catch(() => ({}))).cars) || [];
+    } catch { return { ok: false, reason: 'backend_unreachable' }; }
+    if (!cars.length) return { ok: true, checked: 0 };
+
+    // Credentialed same-session fetch of the dealer's detail page (needs the granted host permission).
+    const dealerFetch = (url) => fetch(url, { credentials: 'include', cache: 'no-store', redirect: 'follow' });
+    const reports = [];
+    for (const car of cars.slice(0, INV_CHECK_MAX)) {
+      const verdict = await self.CarxpertInventoryCheck.checkOne(dealerFetch, { sourceUrl: car.sourceUrl, vin: car.vin });
+      reports.push({ clientKey: car.clientKey, present: verdict.present, checkedAt: new Date().toISOString() });
+      if (reports.length < Math.min(cars.length, INV_CHECK_MAX)) await sleep(INV_CHECK_GAP_MS);
+    }
+    const server = await postBackend('/api/inventory/presence', { reports }).catch(() => null);
+    console.log(`inventory-check: ${reports.length} car(s) checked`, server || '');
+    return { ok: true, checked: reports.length, server };
+  } catch (e) {
+    console.warn('inventory-check failed:', (e && e.message) || e);
+    return { ok: false, error: (e && e.message) || 'error' };
+  } finally {
+    invChecking = false;
+  }
+}
+
+// Fire every 3h (matches the DealerOn server worker's new cadence). chrome.alarms persists and
+// wakes the service worker; creating with the same name is idempotent.
+const INV_ALARM = 'cx-inventory-check';
+function armInventoryAlarm() {
+  if (!chrome.alarms) return;
+  chrome.alarms.create(INV_ALARM, { periodInMinutes: 180, delayInMinutes: 10 });
+}
+if (chrome.alarms) {
+  chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === INV_ALARM) runInventoryCheck().catch(() => {}); });
 }
 
 // New device / post-purge restore: the server is the source of truth for what's already

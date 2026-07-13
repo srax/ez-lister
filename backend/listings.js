@@ -205,3 +205,50 @@ export async function getListings(ownerId, db = pool) {
   );
   return rows;
 }
+
+// ---- inventory presence check (Part 1: telemetry only, no selling) ----
+
+// The user's currently-listed cars that have a detail-page URL to check. Device-independent
+// (the backend is the source of truth), so the extension checks the right set regardless of
+// which device did the listing.
+export async function getCarsToCheck(ownerId, db = pool) {
+  const { rows } = await db.query(
+    `select client_key as "clientKey", vin, source_url as "sourceUrl"
+       from listings
+      where owner_id = $1 and status = 'listed' and vin is not null and source_url is not null`,
+    [ownerId]
+  );
+  return rows;
+}
+
+// Record the extension's per-car presence verdicts. PART 1 = telemetry ONLY (no status change,
+// no selling): a car seen present updates last_seen + clears the miss clock; a car whose page is
+// gone starts the first_missed clock; 'unknown' (null) changes nothing. Only touches 'listed'
+// rows. Part 2 will read first_missed_at to drive the confirmed sold decision.
+export async function recordPresence(ownerId, reports = [], db = pool) {
+  const counts = { present: 0, gone: 0, unknown: 0, total: Array.isArray(reports) ? reports.length : 0 };
+  for (const r of Array.isArray(reports) ? reports : []) {
+    const key = r && r.clientKey;
+    if (!key) { counts.unknown += 1; continue; }
+    const parsed = r.checkedAt ? new Date(r.checkedAt) : new Date();
+    const at = Number.isNaN(parsed.getTime()) ? new Date().toISOString() : parsed.toISOString();
+    if (r.present === true) {
+      await db.query(
+        `update listings set last_seen_in_inventory_at = $3, first_missed_at = null, updated_at = now()
+          where owner_id = $1 and client_key = $2 and status = 'listed'`,
+        [ownerId, key, at]
+      );
+      counts.present += 1;
+    } else if (r.present === false) {
+      await db.query(
+        `update listings set first_missed_at = coalesce(first_missed_at, $3), updated_at = now()
+          where owner_id = $1 and client_key = $2 and status = 'listed'`,
+        [ownerId, key, at]
+      );
+      counts.gone += 1;
+    } else {
+      counts.unknown += 1; // null/unknown → never act
+    }
+  }
+  return counts;
+}
