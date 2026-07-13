@@ -164,6 +164,20 @@
     } catch { /* telemetry must never break listing */ }
   }
 
+  // Recompose the draft's description via the SHARED template (lib/mappers.core.js) with the
+  // user's saved prefs (emoji, unit, mileage toggle) — so the auto-filled marketplace description
+  // is exactly what the side panel shows. Without this, the extractor's own default got posted
+  // while the panel displayed a different rendering. Best-effort: on any failure the draft keeps
+  // the extractor's default (same full details, minor formatting differences at worst).
+  async function applyDescriptionPrefs(draft) {
+    try {
+      const compose = globalThis.CarxpertCore && globalThis.CarxpertCore.composeDescription;
+      if (!compose) return;
+      const prefs = (await chrome.storage.local.get('ezlistPrefs')).ezlistPrefs || {};
+      draft.description = compose(draft, prefs);
+    } catch { /* keep the extractor default */ }
+  }
+
   async function onList(scope, btn, sourceUrl) {
     if (!entitled) {
       // Not entitled → open the panel to sign in / subscribe instead of filling.
@@ -179,6 +193,7 @@
       const draft = await provider.extractVehicle(scope, sourceUrl, { location: DEALER.location });
       reportExtraction(draft); // capture quality before the VIN gate — incomplete drafts are the signal
       if (!draft.vin) throw new Error('no VIN found on this card');
+      await applyDescriptionPrefs(draft); // saved draft must match what the panel shows (one template)
       await chrome.runtime.sendMessage({ type: 'EZLIST_SAVE_DRAFT', draft, autoFill: true, platform, key: (draft.vin || '').toUpperCase() });
       // Overlap: start downloading photos now, in parallel with the FB tab opening + form fill.
       // (FB uploads photos during the fill; Craigslist adds them on a later step, so skip there.)
@@ -261,6 +276,7 @@
       try {
         const draft = await provider.extractVehicle(provider.vdpVehicleEl(), location.href, { location: DEALER.location });
         if (!draft.vin) { sendResponse({ ok: false, error: 'No vehicle data found on this page.' }); return; }
+        await applyDescriptionPrefs(draft); // same shared template as the panel (see onList)
         await chrome.runtime.sendMessage({ type: 'EZLIST_SAVE_DRAFT', draft, autoFill: true, platform, key: (draft.vin || '').toUpperCase() });
         await chrome.runtime.sendMessage({ type: 'EZLIST_OPEN_PLATFORM', platform });
         sendResponse({ ok: true, draft });
@@ -271,11 +287,43 @@
     return true; // async sendResponse
   });
 
+  // Same-site inventory presence check. Runs while the user is on their own dealer site, so the
+  // detail-page fetches are same-origin and always carry the site's Cloudflare/Akamai clearance
+  // cookie — the reliable path that clears every bot wall. The background worker gates this to
+  // once per host / 3h and returns only THIS host's due cars; we fetch each, judge with the shared
+  // page-gone logic, and report the verdicts back. Best-effort and silent — never blocks the UI.
+  async function runSameSiteInventoryCheck() {
+    try {
+      const check = self.CarxpertInventoryCheck;
+      if (!check || !chrome.runtime || !chrome.runtime.id) return;
+      const res = await chrome.runtime.sendMessage({ type: 'EZLIST_INV_SAMESITE_CARS', host: HOST }).catch(() => null);
+      const cars = (res && res.cars) || [];
+      if (!cars.length) return;
+
+      const fetchImpl = (url) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 12000);
+        return fetch(url, { credentials: 'include', cache: 'no-store', redirect: 'follow', signal: controller.signal })
+          .finally(() => clearTimeout(timer));
+      };
+      const reports = [];
+      for (let i = 0; i < cars.length; i += 1) {
+        const car = cars[i];
+        const verdict = await check.checkOne(fetchImpl, { sourceUrl: car.sourceUrl, vin: car.vin });
+        reports.push({ clientKey: car.clientKey, present: verdict.present, checkedAt: new Date().toISOString() });
+        if (i < cars.length - 1) await new Promise((r) => setTimeout(r, 1500));
+      }
+      await chrome.runtime.sendMessage({ type: 'EZLIST_INV_SAMESITE_REPORT', host: HOST, reports }).catch(() => {});
+    } catch { /* best-effort telemetry — ignore */ }
+  }
+
   let scanTimer = null;
   const debouncedScan = () => { clearTimeout(scanTimer); scanTimer = setTimeout(scan, 300); };
   const start = () => {
     scan();
     new MutationObserver(debouncedScan).observe(document.body, { childList: true, subtree: true });
+    // Kick the presence check a little after load so it never competes with page render / extraction.
+    setTimeout(() => { runSameSiteInventoryCheck(); }, 8000);
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();

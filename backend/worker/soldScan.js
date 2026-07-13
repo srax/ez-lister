@@ -6,8 +6,9 @@ import { pruneExpiredAuthCodes } from '../auth-codes.js';
 import { fetchRoster, checkVdpAlive } from './adapters/dealeron.js';
 
 const HOUR_MS = 3600 * 1000;
-const SCAN_INTERVAL_MS = 30 * 60 * 1000; // roster check cadence
+const SCAN_INTERVAL_MS = 3 * HOUR_MS; // roster check cadence (3h)
 const CONFIRM_GAP_MS = 25 * 60 * 1000; // second gone-confirmation must be ≥25min after the first
+                                       // (at a 3h cadence the real gap is ~3h, so a sale lands ~6h after the car leaves)
 const RESUME_STALE_MS = 48 * HOUR_MS; // clear miss/confirm clocks older than this (worker pause)
 const PROBE_BUDGET = 10; // VDP ground-truth fetches per dealership per cycle (politeFetch spaces them ≥2s)
 
@@ -292,8 +293,8 @@ export async function runScanCycle({ db = pool, now = Date.now(), condStates = n
   return results;
 }
 
-// ---- the in-process loop (every 30 min; sale needs two gone-confirms ≥25 min apart,
-// so real-world sold detection lands ~30–60 min after the car leaves the dealer site) ----
+// ---- the in-process loop (every 3h; sale needs two gone-confirms, so real-world sold
+// detection lands ~6h after the car leaves the dealer site) ----
 let timer = null;
 export function startWorker({ intervalMs = SCAN_INTERVAL_MS } = {}) {
   if (timer) return;

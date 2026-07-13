@@ -318,6 +318,60 @@ body{
   background:none; border:0; border-radius:7px; padding:8px 10px; cursor:pointer; font-family:inherit; }
 .lst-menu-item:hover{ background:var(--line); }
 
+/* ---- Part 2: dealership inventory outcomes ---- */
+/* Red-orange attention dot on the Stats button */
+.stats-dot{ width:8px; height:8px; border-radius:50%; background:#ff5a1f; box-shadow:0 0 0 2px #fff, 0 0 5px rgba(255,90,31,.7);
+  margin-left:1px; flex-shrink:0; animation:cxpulse 1.8s ease-in-out infinite; }
+@keyframes cxpulse{ 0%,100%{ opacity:1; } 50%{ opacity:.45; } }
+
+/* "Sold by dealership" card — same filled/rounded hero treatment as "Vehicles sold" (it reuses
+   .stat-hero), in a gold fill so it reads as a sibling card rather than a duplicate of the accent. */
+.dealer-card{ background:linear-gradient(180deg,#f7d64e,#f0c62f); margin-bottom:12px; }
+.info-ico{ display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; padding:0; border:0; border-radius:50%;
+  background:none; color:#a5851f; cursor:help; flex-shrink:0; }
+.info-ico:hover{ color:#7a5c12; }
+.dealer-card .stat-hero-label{ color:#6a5310; }
+.dealer-card .info-ico{ color:#6a5310; }
+.dealer-card .info-ico:hover{ color:#4a390a; }
+.dealer-cols{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-top:10px; }
+.dealer-col{ display:flex; flex-direction:column; }
+.dealer-num{ font-size:30px; font-weight:800; color:var(--ink); line-height:.9; letter-spacing:-1px; }
+.dealer-lbl{ font-size:11px; font-weight:700; color:#6a5310; margin-top:6px; }
+
+/* "Needs action" pill on a removed-from-dealership row */
+.needs-pill{ font-size:10px; font-weight:800; padding:2px 9px; border-radius:999px; color:#fff; background:#ff5a1f; border:0;
+  cursor:pointer; font-family:inherit; white-space:nowrap; animation:cxpulse 1.8s ease-in-out infinite; }
+.needs-pill:hover{ background:#e64d15; }
+.needs-pill:active{ transform:scale(.96); }
+.listing-row.needs{ border-color:#f4b98a; background:#fff6f0; }
+
+/* Outcome badges on a classified row */
+.lst-badge.dealer{ background:#7a5c12; }
+.lst-badge.delisted{ background:#8a8d9b; }
+
+/* Select-then-Submit popup (modal) */
+.inv-modal-back{ position:fixed; inset:0; z-index:400; background:rgba(20,22,30,.42); display:flex; align-items:center; justify-content:center; padding:18px; animation:cselIn .12s ease; }
+.inv-modal{ width:100%; max-width:320px; background:#fff; border-radius:16px; box-shadow:0 18px 48px rgba(20,24,55,.28); padding:16px 16px 14px; }
+.inv-modal-title{ font-size:14px; font-weight:800; color:var(--ink); }
+.inv-modal-sub{ font-size:12px; font-weight:600; color:#8a8d9b; margin-top:5px; line-height:1.45; }
+.inv-opts{ display:flex; flex-direction:column; gap:7px; margin:13px 0 4px; }
+.inv-opt{ display:flex; align-items:center; gap:9px; padding:10px 12px; border:1.5px solid var(--input-border); border-radius:11px;
+  background:var(--input-bg); cursor:pointer; font-family:inherit; text-align:left; transition:border-color .13s ease, background .13s ease; }
+.inv-opt:hover{ border-color:#c9cbd6; }
+.inv-opt.sel{ border-color:var(--ink); background:#fff; box-shadow:0 0 0 3px rgba(28,30,18,.08); }
+.inv-opt-radio{ width:15px; height:15px; border-radius:50%; border:2px solid #c3c5d0; flex-shrink:0; position:relative; }
+.inv-opt.sel .inv-opt-radio{ border-color:var(--ink); }
+.inv-opt.sel .inv-opt-radio::after{ content:''; position:absolute; inset:2.5px; border-radius:50%; background:var(--ink); }
+.inv-opt-label{ font-size:13px; font-weight:700; color:var(--text); }
+.inv-opt .info-ico{ margin-left:auto; color:#b3b5c0; }
+.inv-opt .info-ico:hover{ color:#6b7280; }
+.inv-modal-actions{ display:flex; gap:8px; margin-top:12px; }
+.inv-btn{ flex:1; font-size:13px; font-weight:800; border-radius:11px; padding:10px; cursor:pointer; font-family:inherit; border:1px solid var(--input-border); background:#fff; color:#5d6070; }
+.inv-btn:hover{ border-color:var(--ink); color:var(--ink); }
+.inv-btn.primary{ background:var(--accent); border-color:var(--accent); color:var(--ink); }
+.inv-btn.primary:disabled{ background:#eceef2; border-color:#eceef2; color:#b3b5c0; cursor:default; }
+.inv-btn.primary:not(:disabled):hover{ box-shadow:0 4px 12px -5px var(--accent-shadow); }
+
 /* footer */
 .foot{ flex-shrink:0; border-top:1px solid var(--line); padding:12px 16px 14px; background:#fff; }
 .status{ font-size:12px; font-weight:600; color:#6f7257; min-height:16px; margin-bottom:9px; line-height:1.4; }

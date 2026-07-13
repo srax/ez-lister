@@ -24,6 +24,7 @@
     <button id="stats-btn" class="stats-btn" title="Sales stats">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#1c1e12" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="20" x2="6" y2="13"/><line x1="12" y1="20" x2="12" y2="8"/><line x1="18" y1="20" x2="18" y2="4"/></svg>
       Stats
+      <span id="stats-dot" class="stats-dot" hidden title="Some listings need your attention"></span>
     </button>
     <button id="account-btn" class="icon-btn" title="Account" hidden>
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
@@ -158,11 +159,6 @@
         <span class="toggle-label">Auto A.I. description <span class="toggle-hint">drafts on every car pick</span></span>
       </button>
       <div class="hairline"></div>
-      <button class="toggle" id="t-dealer">
-        <span class="track"><span class="knob"></span></span>
-        <span class="toggle-label">Add dealership description</span>
-      </button>
-      <div class="hairline"></div>
       <button class="toggle" id="t-mileage">
         <span class="track"><span class="knob"></span></span>
         <span class="toggle-label">Add mileage</span>
@@ -206,6 +202,24 @@
     </header>
 
     <main class="body vsl-scroll stats-body">
+
+      <!-- Sold by dealership: cars that left the dealership's own inventory (sold by someone other
+           than this user, or delisted). Separate from the user's personal sales below. Hidden until
+           there's at least one. -->
+      <div class="stat-hero dealer-card" id="st-dealer-card" hidden>
+        <div class="stat-hero-top">
+          <span class="stat-hero-label">Sold by dealership</span>
+          <button type="button" class="info-ico" id="dealer-card-info" aria-label="What is this?"
+            title="Cars that left your dealership's inventory — sold by the dealership (not by you), or delisted. Tracked separately from your own sales.">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+          </button>
+        </div>
+        <div class="dealer-cols">
+          <div class="dealer-col"><span class="dealer-num" id="st-dealer-fb">0</span><span class="dealer-lbl">Sold at FB</span></div>
+          <div class="dealer-col"><span class="dealer-num" id="st-dealer-cl">0</span><span class="dealer-lbl">Sold at Craigslist</span></div>
+          <div class="dealer-col"><span class="dealer-num" id="st-dealer-de">0</span><span class="dealer-lbl">Delisted</span></div>
+        </div>
+      </div>
 
       <!-- Hero: vehicles sold (live) -->
       <div class="stat-hero">
@@ -368,6 +382,8 @@
     </div>
   </div>
 
+  <script src="lib/mappers.core.js"></script>
+  <script src="lib/dealerOutcome.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

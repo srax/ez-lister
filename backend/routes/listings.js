@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { requireUser } from '../mw.js';
 import { requireEntitled } from '../entitlement/gate.js';
-import { syncListings, getListings } from '../listings.js';
+import { syncListings, getListings, getCarsToCheck, recordPresence } from '../listings.js';
 
 const router = Router();
 
@@ -25,6 +25,29 @@ router.get('/api/listings', requireUser, requireEntitled, async (req, res, next)
   try {
     const listings = await getListings(req.user.id);
     res.json({ ok: true, listings });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---- inventory presence check (Part 1) ----
+
+// What the extension should check: the user's listed cars + their detail-page URLs.
+router.get('/api/inventory/to-check', requireUser, async (req, res, next) => {
+  try {
+    res.json({ ok: true, cars: await getCarsToCheck(req.user.id) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// The extension's per-car verdicts. Body: { reports: [{ clientKey, present: true|false|null, checkedAt }] }.
+// Telemetry only for now — updates last_seen / first_missed, never sells.
+router.post('/api/inventory/presence', requireUser, async (req, res, next) => {
+  try {
+    const reports = Array.isArray(req.body && req.body.reports) ? req.body.reports : [];
+    const counts = await recordPresence(req.user.id, reports);
+    res.json({ ok: true, ...counts });
   } catch (err) {
     next(err);
   }

@@ -39,7 +39,58 @@
       ?? pick(/^msrp$/);
   }
 
-  const api = { norm, cleanAttr, plausiblePrice, decodePriceLib };
+  // ---- listing description (single source of truth) ----
+  // The ONE description template, shared by the side panel (what the user sees/edits) and
+  // dealerContent's ⚡ List save (what the marketplace fill engine posts). Both MUST render
+  // identically — they used to diverge (the panel trimmed by prefs while the auto-fill posted the
+  // extractor's raw default). Vehicle details (VIN/stock/colours/engine/fuel) are ALWAYS included —
+  // that's the full version dealers want posted; emoji, distance unit and the mileage toggle are
+  // the only preferences, and they apply to BOTH sides.
+  const formatDistance = (mi, unit) => (unit === 'km'
+    ? `${Math.round(mi * 1.60934).toLocaleString('en-US')} km`
+    : `${Number(mi).toLocaleString('en-US')} miles`);
+
+  function composeDescription(d, prefs) {
+    if (!d) return '';
+    const p = { emoji: '', unit: 'mi', mileage: true, ...(prefs || {}) };
+    const lines = [];
+    const title = [d.year, d.make, d.model].filter(Boolean).join(' ');
+    lines.push((p.emoji ? p.emoji + ' ' : '') + title);
+    if (p.mileage && typeof d.mileage === 'number') lines.push(`• Mileage: ${formatDistance(d.mileage, p.unit)}`);
+    if (d.vin) lines.push(`• VIN: ${d.vin}`);
+    if (d.stock) lines.push(`• Stock #: ${d.stock}`);
+    if (d.exteriorColor) lines.push(`• Exterior: ${d.exteriorColor}`);
+    if (d.interiorColor) lines.push(`• Interior: ${d.interiorColor}`);
+    if (d.engine) lines.push(`• Engine: ${d.engine}`);
+    if (d.fuelType) lines.push(`• Fuel: ${d.fuelType}`);
+    lines.push('');
+    lines.push('Message us to schedule a test drive!');
+    if (d.sourceUrl) lines.push(d.sourceUrl);
+    return lines.join('\n');
+  }
+
+  // Convert every "<number> <unit>" distance in free text to the target unit, IN PLACE — all
+  // other text stays byte-identical. Powers the mi/km switch on the description box: switching
+  // units must never regenerate the template (that resurrected wiped text and clobbered custom
+  // edits) — it only rewrites the distance tokens. Users type units many ways, so both families
+  // are recognized: mi/ml/mls/mile/miles and km/kms/kilometer(s)/kilometre(s), any case.
+  // Values already in the target unit are left completely untouched (no reformatting).
+  const MILE_WORDS = /^(?:miles|mile|mls|ml|mi)$/i;
+  const DIST_RE = /(\d[\d,]*(?:\.\d+)?)(\s*)(kilometers|kilometres|kilometer|kilometre|kms|km|miles|mile|mls|ml|mi)\b/gi;
+
+  function convertDistances(text, toUnit) {
+    if (typeof text !== 'string' || !text) return text || '';
+    return text.replace(DIST_RE, (whole, num, gap, unitWord) => {
+      const isMiles = MILE_WORDS.test(unitWord);
+      if ((toUnit === 'km') === !isMiles) return whole; // already in the target unit — untouched
+      const value = parseFloat(num.replace(/,/g, ''));
+      if (!Number.isFinite(value)) return whole;
+      const converted = toUnit === 'km' ? Math.round(value * 1.60934) : Math.round(value / 1.60934);
+      return `${converted.toLocaleString('en-US')}${gap}${toUnit === 'km' ? 'km' : 'miles'}`;
+    });
+  }
+
+  const api = { norm, cleanAttr, plausiblePrice, decodePriceLib, formatDistance, composeDescription, convertDistances };
   root.CarxpertCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(globalThis);
