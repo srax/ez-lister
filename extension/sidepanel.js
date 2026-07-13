@@ -4,7 +4,7 @@
 // tune the listing (description, emoji, unit, toggles), then hands off to the
 // Facebook content script to fill the form. The user always reviews + Publishes.
 
-const DEFAULT_PREFS = { emoji: '', unit: 'mi', category: '', dealerDesc: true, mileage: true, lang: 'en', aiDesc: false, platform: 'fb' };
+const DEFAULT_PREFS = { emoji: '', unit: 'mi', category: '', mileage: true, lang: 'en', aiDesc: false, platform: 'fb' };
 
 // Where-to-post labels for status copy (must match the #platform <option> values).
 const PLATFORM_LABEL = { fb: 'Facebook Marketplace', craigslist: 'Craigslist', offerup: 'OfferUp', cars: 'Cars.com' };
@@ -30,7 +30,7 @@ const ui = {
   unitMi: el('unit-mi'), unitKm: el('unit-km'),
   desc: el('desc'), charcount: el('charcount'),
   aiDraft: el('ai-draft'), lang: el('lang'), translate: el('translate'),
-  tAi: el('t-ai'), tDealer: el('t-dealer'), tMileage: el('t-mileage'),
+  tAi: el('t-ai'), tMileage: el('t-mileage'),
   fill: el('fill'), openfb: el('openfb'), openInv: el('open-inventory'),
   status: el('status'),
   statsBtn: el('stats-btn'), statsBack: el('stats-back'),
@@ -167,33 +167,16 @@ function setVehiclePhoto(d) {
   img.src = candidates[0];
 }
 
+// Description template + distance formatting live in lib/mappers.core.js (CarxpertCore) — the ONE
+// template shared with dealerContent's ⚡ List save, so the panel preview and the auto-filled
+// marketplace description can never diverge. Vehicle details are always included (the old
+// "Add dealership description" trim toggle is gone — the full version is what gets posted).
 function formatDistance(mi) {
-  if (state.prefs.unit === 'km') return `${Math.round(mi * 1.60934).toLocaleString('en-US')} km`;
-  return `${Number(mi).toLocaleString('en-US')} mi`;
-}
-
-function composeDescription(d, prefs) {
-  if (!d) return '';
-  const lines = [];
-  const title = [d.year, d.make, d.model].filter(Boolean).join(' ');
-  lines.push((prefs.emoji ? prefs.emoji + ' ' : '') + title);
-  if (prefs.mileage && typeof d.mileage === 'number') lines.push(`• Mileage: ${formatDistance(d.mileage)}`);
-  if (prefs.dealerDesc) {
-    if (d.vin) lines.push(`• VIN: ${d.vin}`);
-    if (d.stock) lines.push(`• Stock #: ${d.stock}`);
-    if (d.exteriorColor) lines.push(`• Exterior: ${d.exteriorColor}`);
-    if (d.interiorColor) lines.push(`• Interior: ${d.interiorColor}`);
-    if (d.engine) lines.push(`• Engine: ${d.engine}`);
-    if (d.fuelType) lines.push(`• Fuel: ${d.fuelType}`);
-  }
-  lines.push('');
-  lines.push('Message us to schedule a test drive!');
-  if (d.sourceUrl) lines.push(d.sourceUrl);
-  return lines.join('\n');
+  return globalThis.CarxpertCore.formatDistance(mi, state.prefs.unit);
 }
 
 function recomposeDesc() {
-  ui.desc.value = composeDescription(state.draft, state.prefs).slice(0, 1000);
+  ui.desc.value = globalThis.CarxpertCore.composeDescription(state.draft, state.prefs).slice(0, 1000);
   state.userEdited = false;
   updateCharCount();
 }
@@ -211,7 +194,6 @@ function applyPrefsToUI() {
   ui.unitMi.classList.toggle('on', state.prefs.unit === 'mi');
   ui.unitKm.classList.toggle('on', state.prefs.unit === 'km');
   ui.tAi.classList.toggle('on', !!state.prefs.aiDesc);
-  ui.tDealer.classList.toggle('on', !!state.prefs.dealerDesc);
   ui.tMileage.classList.toggle('on', !!state.prefs.mileage);
   syncSelects();
 }
@@ -1000,7 +982,6 @@ function wireEvents() {
   ui.category.addEventListener('change', () => savePref('category', ui.category.value, false));
   ui.unitMi.addEventListener('click', () => savePref('unit', 'mi', true));
   ui.unitKm.addEventListener('click', () => savePref('unit', 'km', true));
-  ui.tDealer.addEventListener('click', () => savePref('dealerDesc', !state.prefs.dealerDesc, true));
   ui.tMileage.addEventListener('click', () => savePref('mileage', !state.prefs.mileage, true));
 
   // auth + gate

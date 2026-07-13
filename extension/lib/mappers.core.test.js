@@ -50,3 +50,57 @@ test('plausiblePrice: bounds', () => {
   assert.equal(M.plausiblePrice(500001), false);
   assert.equal(M.plausiblePrice('7495'), false); // must be a number
 });
+
+// ---- composeDescription: the ONE template (panel preview ≡ auto-fill output, details ALWAYS in) ----
+const EQUINOX = {
+  year: 2027, make: 'Chevrolet', model: 'Equinox AWD LT', mileage: 2,
+  vin: '3GNAXPEGXVL103457', stock: 'B27100061',
+  exteriorColor: 'Sterling Gray Metallic', interiorColor: 'Black, Cloth seat trim',
+  engine: '1.5L i-4', fuelType: 'Gasoline Fuel',
+  sourceUrl: 'https://www.burdickgm.com/new/Chevrolet/2027-Chevrolet-Equinox-fad7a046ac1823d859b5afae73c13957.htm'
+};
+
+const FULL_EQUINOX = (head) => [
+  head,
+  '• Mileage: 2 miles',
+  '• VIN: 3GNAXPEGXVL103457',
+  '• Stock #: B27100061',
+  '• Exterior: Sterling Gray Metallic',
+  '• Interior: Black, Cloth seat trim',
+  '• Engine: 1.5L i-4',
+  '• Fuel: Gasoline Fuel',
+  '',
+  'Message us to schedule a test drive!',
+  EQUINOX.sourceUrl
+].join('\n');
+
+test('composeDescription: default prefs → the full detailed version', () => {
+  assert.equal(M.composeDescription(EQUINOX, {}), FULL_EQUINOX('2027 Chevrolet Equinox AWD LT'));
+});
+
+test('composeDescription: emoji pref applies, details stay in', () => {
+  assert.equal(M.composeDescription(EQUINOX, { emoji: '🚗' }), FULL_EQUINOX('🚗 2027 Chevrolet Equinox AWD LT'));
+});
+
+test('composeDescription: an old stored dealerDesc:false pref can NO LONGER trim the details', () => {
+  const out = M.composeDescription(EQUINOX, { emoji: '🚗', dealerDesc: false, mileage: true, unit: 'mi' });
+  assert.ok(out.includes('• VIN: 3GNAXPEGXVL103457'), 'VIN must be present');
+  assert.ok(out.includes('• Stock #: B27100061'), 'stock must be present');
+  assert.ok(out.includes('• Engine: 1.5L i-4'), 'engine must be present');
+});
+
+test('composeDescription: km unit + "Add mileage" toggle off', () => {
+  assert.ok(M.composeDescription(EQUINOX, { unit: 'km' }).includes('• Mileage: 3 km'));
+  assert.ok(!M.composeDescription(EQUINOX, { mileage: false }).includes('Mileage'));
+});
+
+test('composeDescription: deterministic (panel ≡ fill) and null-safe', () => {
+  const prefs = { emoji: '⚡', unit: 'mi', mileage: true };
+  assert.equal(M.composeDescription(EQUINOX, prefs), M.composeDescription({ ...EQUINOX }, { ...prefs }));
+  assert.equal(M.composeDescription(null, {}), '');
+});
+
+test('formatDistance: miles wording matches the posted description', () => {
+  assert.equal(M.formatDistance(146787, 'mi'), '146,787 miles');
+  assert.equal(M.formatDistance(146787, 'km'), '236,230 km');
+});
