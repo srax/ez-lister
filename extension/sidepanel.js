@@ -980,8 +980,8 @@ function wireEvents() {
   });
   ui.emoji.addEventListener('change', () => savePref('emoji', ui.emoji.value, true));
   ui.category.addEventListener('change', () => savePref('category', ui.category.value, false));
-  ui.unitMi.addEventListener('click', () => savePref('unit', 'mi', true));
-  ui.unitKm.addEventListener('click', () => savePref('unit', 'km', true));
+  ui.unitMi.addEventListener('click', () => switchUnit('mi'));
+  ui.unitKm.addEventListener('click', () => switchUnit('km'));
   ui.tMileage.addEventListener('click', () => savePref('mileage', !state.prefs.mileage, true));
 
   // auth + gate
@@ -1030,6 +1030,16 @@ function wireEvents() {
 }
 
 // Update a preference; `recompose` regenerates the description (overwriting manual edits).
+// The mi/km switch converts the distances IN PLACE in whatever text is in the box — it never
+// regenerates the template (that resurrected cleared text and clobbered custom edits). Handles
+// user-typed units too (km/kms/kilometers, mi/ml/mls/mile/miles); everything else stays as typed.
+function switchUnit(unit) {
+  if (state.prefs.unit === unit) return;
+  savePref('unit', unit, false); // pref + seg highlight + vehicle summary; NO recompose
+  ui.desc.value = globalThis.CarxpertCore.convertDistances(ui.desc.value, unit).slice(0, 1000);
+  updateCharCount();
+}
+
 function savePref(key, value, recompose) {
   state.prefs[key] = value;
   chrome.storage.local.set({ ezlistPrefs: state.prefs });

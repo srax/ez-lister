@@ -104,3 +104,54 @@ test('formatDistance: miles wording matches the posted description', () => {
   assert.equal(M.formatDistance(146787, 'mi'), '146,787 miles');
   assert.equal(M.formatDistance(146787, 'km'), '236,230 km');
 });
+
+// ---- convertDistances: the mi/km switch rewrites ONLY distance tokens, never the text ----
+test('convertDistances: mi→km converts the template mileage line, all else untouched', () => {
+  const out = M.convertDistances('🚗 2012 Chevrolet Tahoe LS\n• Mileage: 146,787 miles\n\nCall us!', 'km');
+  assert.equal(out, '🚗 2012 Chevrolet Tahoe LS\n• Mileage: 236,230 km\n\nCall us!');
+});
+
+test('convertDistances: recognizes every user spelling of miles (mi, ml, mls, mile, miles)', () => {
+  assert.equal(M.convertDistances('10 mi', 'km'), '16 km');
+  assert.equal(M.convertDistances('10 ml', 'km'), '16 km');
+  assert.equal(M.convertDistances('10 mls', 'km'), '16 km');
+  assert.equal(M.convertDistances('1 mile', 'km'), '2 km');
+  assert.equal(M.convertDistances('10 MILES', 'km'), '16 km'); // any case
+});
+
+test('convertDistances: recognizes every user spelling of km (km, kms, kilometers, kilometres)', () => {
+  assert.equal(M.convertDistances('16 km', 'mi'), '10 miles');
+  assert.equal(M.convertDistances('16 kms', 'mi'), '10 miles');
+  assert.equal(M.convertDistances('16 kilometers', 'mi'), '10 miles');
+  assert.equal(M.convertDistances('16 Kilometres', 'mi'), '10 miles');
+});
+
+test('convertDistances: values already in the target unit are left byte-identical', () => {
+  const text = 'Driven 236,230 km since new';
+  assert.equal(M.convertDistances(text, 'km'), text);
+  const mi = 'Only 5,000 miles!';
+  assert.equal(M.convertDistances(mi, 'mi'), mi);
+});
+
+test('convertDistances: custom user text survives — only the distances change', () => {
+  const custom = 'GREAT DEAL!! runs perfect, 88,500 miles, new tires. $12,999 firm. VIN 3GNAXPEGXVL103457. Call 555-0123';
+  const out = M.convertDistances(custom, 'km');
+  assert.equal(out, 'GREAT DEAL!! runs perfect, 142,427 km, new tires. $12,999 firm. VIN 3GNAXPEGXVL103457. Call 555-0123');
+  // prices, VINs, phone numbers untouched
+  assert.ok(out.includes('$12,999 firm') && out.includes('VIN 3GNAXPEGXVL103457') && out.includes('555-0123'));
+});
+
+test('convertDistances: empty / cleared box stays empty (never resurrects the template)', () => {
+  assert.equal(M.convertDistances('', 'km'), '');
+  assert.equal(M.convertDistances('no numbers here', 'km'), 'no numbers here');
+});
+
+test('convertDistances: round-trip is stable within rounding', () => {
+  const there = M.convertDistances('100,000 miles', 'km');   // 160,934 km
+  const back = M.convertDistances(there, 'mi');
+  assert.equal(back, '100,000 miles');
+});
+
+test('convertDistances: no-space and multiple occurrences', () => {
+  assert.equal(M.convertDistances('10mi and 20 miles apart', 'km'), '16km and 32 km apart');
+});

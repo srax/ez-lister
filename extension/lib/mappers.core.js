@@ -69,7 +69,28 @@
     return lines.join('\n');
   }
 
-  const api = { norm, cleanAttr, plausiblePrice, decodePriceLib, formatDistance, composeDescription };
+  // Convert every "<number> <unit>" distance in free text to the target unit, IN PLACE — all
+  // other text stays byte-identical. Powers the mi/km switch on the description box: switching
+  // units must never regenerate the template (that resurrected wiped text and clobbered custom
+  // edits) — it only rewrites the distance tokens. Users type units many ways, so both families
+  // are recognized: mi/ml/mls/mile/miles and km/kms/kilometer(s)/kilometre(s), any case.
+  // Values already in the target unit are left completely untouched (no reformatting).
+  const MILE_WORDS = /^(?:miles|mile|mls|ml|mi)$/i;
+  const DIST_RE = /(\d[\d,]*(?:\.\d+)?)(\s*)(kilometers|kilometres|kilometer|kilometre|kms|km|miles|mile|mls|ml|mi)\b/gi;
+
+  function convertDistances(text, toUnit) {
+    if (typeof text !== 'string' || !text) return text || '';
+    return text.replace(DIST_RE, (whole, num, gap, unitWord) => {
+      const isMiles = MILE_WORDS.test(unitWord);
+      if ((toUnit === 'km') === !isMiles) return whole; // already in the target unit — untouched
+      const value = parseFloat(num.replace(/,/g, ''));
+      if (!Number.isFinite(value)) return whole;
+      const converted = toUnit === 'km' ? Math.round(value * 1.60934) : Math.round(value / 1.60934);
+      return `${converted.toLocaleString('en-US')}${gap}${toUnit === 'km' ? 'km' : 'miles'}`;
+    });
+  }
+
+  const api = { norm, cleanAttr, plausiblePrice, decodePriceLib, formatDistance, composeDescription, convertDistances };
   root.CarxpertCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(globalThis);
