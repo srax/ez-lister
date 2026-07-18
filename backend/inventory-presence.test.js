@@ -61,7 +61,7 @@ test('recordPresence: present → last_seen set, BOTH miss clocks cleared (auto-
   const db = fakeDb([{ ownerId: OWNER, clientKey: 'VIN1', status: 'listed',
     first_missed_at: '2026-01-01T00:00:00Z', gone_confirmed_at: '2026-01-01T03:00:00Z' }]);
   const c = await recordPresence(OWNER, [{ clientKey: 'VIN1', present: true, checkedAt: T0 }], db);
-  assert.deepEqual(c, { present: 1, gone: 0, unknown: 0, total: 1 });
+  assert.deepEqual(c, { present: 1, gone: 0, unknown: 0, total: 1, dropped: 0 });
   const row = db.rows[0];
   assert.equal(row.last_seen_in_inventory_at, new Date(T0).toISOString());
   assert.equal(row.first_missed_at, null);
@@ -108,7 +108,7 @@ test('recordPresence: unknown (null) changes nothing; counts are right', async (
     { clientKey: 'VIN6', present: null, checkedAt: T0 },
     { present: true }, // missing clientKey → unknown, skipped
   ], db);
-  assert.deepEqual(c, { present: 0, gone: 0, unknown: 2, total: 2 });
+  assert.deepEqual(c, { present: 0, gone: 0, unknown: 2, total: 2, dropped: 0 });
   assert.equal(db.rows[0].first_missed_at, '2026-06-01T00:00:00Z'); // untouched
 });
 

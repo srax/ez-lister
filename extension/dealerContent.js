@@ -190,6 +190,14 @@
     btn.dataset.busy = '1';
     btn.textContent = '…'; btn.disabled = true;
     try {
+      // Host gate: List only works on the user's LINKED dealership site (one dealership per
+      // user). Entitlement alone isn't enough — static/granted hosts exist on every install,
+      // so an entitled user on another dealer's site must be stopped here, not at fill time.
+      const gate = await chrome.runtime.sendMessage({ type: 'EZLIST_CAN_LIST', host: location.hostname }).catch(() => null);
+      if (gate && !gate.ok && gate.reason === 'wrong_dealership') {
+        btn.textContent = 'Not your dealership';
+        return; // finally still restores the steady state
+      }
       const draft = await provider.extractVehicle(scope, sourceUrl, { location: DEALER.location });
       reportExtraction(draft); // capture quality before the VIN gate — incomplete drafts are the signal
       if (!draft.vin) throw new Error('no VIN found on this card');

@@ -1078,7 +1078,16 @@ async function onFill() {
   if (!state.draft || state.filling) return;
   // Entitlement gate (belt-and-braces: the gate overlay normally covers Fill already).
   const gate = await chrome.runtime.sendMessage({ type: 'EZLIST_CAN_LIST' }).catch(() => null);
-  if (!gate || !gate.ok) { await refreshAuth({ refresh: true }); return; }
+  if (!gate || !gate.ok) {
+    // wrong_dealership isn't a gate step (the user IS entitled) — refreshing the auth gate
+    // would show nothing. Say what's wrong with THIS car instead.
+    if (gate && gate.reason === 'wrong_dealership') {
+      setStatus("This car isn't from your linked dealership — CarXprt only lists your own inventory.", true);
+    } else {
+      await refreshAuth({ refresh: true });
+    }
+    return;
+  }
   state.filling = true;
   ui.fill.disabled = true;
   const original = ui.fill.textContent;

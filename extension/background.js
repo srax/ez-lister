@@ -867,17 +867,39 @@ async function maybeRefreshLease(claims) {
 
 // Gate check for a paid action (List/Fill). Lease-first (offline tolerant — no network in the
 // hot path), falling back to a /me pull. Returns { ok, reason }. reason mirrors /api/me so the
-// panel can render the right gate step: signed_out | no_dealership | no_subscription | expired.
+// panel can render the right gate step: signed_out | no_dealership | no_subscription | expired,
+// plus 'wrong_dealership' when the car/site isn't the user's linked dealership.
 async function canList(host) {
+  // Which dealer site does this action concern? An explicit host (dealer-page buttons), else
+  // the current draft's source host (fill paths: the car being filled must come from the
+  // linked dealership — one dealership per user is the product rule, and without this an
+  // entitled user could list any granted dealer site's inventory). A draft with no sourceUrl
+  // (pre-host-enforcement data) is grandfathered: entitlement-only.
+  let checkHost = host || null;
+  if (!checkHost) {
+    const draft = (await chrome.storage.local.get('ezlistDraft')).ezlistDraft;
+    if (draft && draft.sourceUrl) {
+      try { checkHost = new URL(draft.sourceUrl).hostname.toLowerCase(); } catch { checkHost = null; }
+    }
+  }
   const res = await verifyCachedLease();
-  if (res.valid && (!host || CarxpertLease.leaseCoversHost(res.claims, host))) {
+  if (res.valid) {
     maybeRefreshLease(res.claims);
-    return { ok: true, reason: 'ok', via: 'lease' };
+    if (!checkHost || CarxpertLease.leaseCoversHost(res.claims, checkHost)) return { ok: true, reason: 'ok', via: 'lease' };
+    // Host not covered by the lease: do NOT deny yet — a just-switched dealership leaves a
+    // stale (≤90 min) lease behind; let the fresh /me below decide with current domains.
   }
   let me;
   try { me = await refreshMe(); } catch { me = (await chrome.storage.local.get('ezlistMe')).ezlistMe || null; }
   if (!me) return { ok: false, reason: (await getToken()) ? 'unknown' : 'signed_out' };
   if (!me.entitled) return { ok: false, reason: me.reason || 'not_entitled' };
+  // Same coverage rule as the lease path, against the CURRENT dealership's domains. A
+  // dealership row with no domains configured skips the check (fail-open on missing config,
+  // matching the backend's source_url rule) rather than locking every site out.
+  const domains = (me.dealership && me.dealership.domains) || [];
+  if (checkHost && domains.length && !CarxpertLease.leaseCoversHost({ dom: domains }, checkHost)) {
+    return { ok: false, reason: 'wrong_dealership', via: 'me' };
+  }
   return { ok: true, reason: 'ok', via: 'me' };
 }
 

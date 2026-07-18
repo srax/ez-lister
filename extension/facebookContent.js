@@ -25,7 +25,7 @@
   // Facebook's value taxonomy (lib/mappers.fb.js, loaded first per manifest); unit-tested
   // in lib/mappers.fb.test.js. Canonical values are the US composer's options;
   // optionCandidates() expands each to [US, UK] so a UK-locale composer still matches.
-  const { mapColor, mapBody, mapFuel, mapTransmission, optionCandidates } = globalThis.CarxpertFb;
+  const { mapColor, mapBody, mapFuel, mapTransmission, optionCandidates, judgePublishNav } = globalThis.CarxpertFb;
 
   // Every FB dropdown fill goes through the locale-candidate expansion (US first, UK second).
   const selectOpt = (name, value) =>
@@ -131,7 +131,12 @@
       // Entitlement guard (belt-and-braces; the panel/dealer path gates first). No host —
       // just "is the user entitled to fill"; lease-first with /api/me fallback in the worker.
       const gate = await chrome.runtime.sendMessage({ type: 'EZLIST_CAN_LIST' }).catch(() => null);
-      if (!gate || !gate.ok) { postStatus('Sign in to CarXprt to fill listings.', true); return; }
+      if (!gate || !gate.ok) {
+        postStatus(gate && gate.reason === 'wrong_dealership'
+          ? "This car isn't from your linked dealership — CarXprt only lists your own inventory."
+          : 'Sign in to CarXprt to fill listings.', true);
+        return;
+      }
       const resp = await getStored();
       const draft = resp && resp.ezlistDraft;
       if (!draft) { postStatus('No vehicle draft found.', true); return; }
@@ -245,23 +250,35 @@
 
   function installPublishDetection() {
     let lastPath = location.pathname;
+    // Post-publish FB lands on the new item, "your listings", or (observed live 2026-07) plain
+    // marketplace home. Home is ambiguous — the form's close (X) button produces the same
+    // create→home transition — so judgePublishNav accepts it only when a Publish button was
+    // clicked moments before. We OBSERVE the user's click (capture phase, works for keyboard
+    // activation too); we never click Publish ourselves. A Publish click that does NOT navigate
+    // (client-side validation failure) ages out of the window, so a later X-close stays safe.
+    let publishClickAt = null;
+    document.addEventListener('click', (e) => {
+      if (!isCreatePage()) return;
+      const btn = e.target && e.target.closest ? e.target.closest('[role="button"], button') : null;
+      if (!btn) return;
+      const text = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.textContent || '')).trim().toLowerCase();
+      if (/^publish$|(^|\s)publish($|\s)/.test(text)) publishClickAt = Date.now();
+    }, true);
     const check = () => {
       const path = location.pathname;
       if (path === lastPath) return;
       const left = lastPath;
       lastPath = path;
       if (!lastFilledKey) return;
-      // Post-publish FB lands on the new item, "your listings", or (observed live 2026-07)
-      // plain marketplace home. Home is accepted only right after OUR fill (lastFilledKey set):
-      // the create tab is opened directly with no history, so bailing out of the form almost
-      // never produces a create→home SPA transition — publishing does.
-      const published = /\/marketplace\/item\/\d+/.test(path)
-        || /\/marketplace\/you(\/|$)/.test(path)
-        || /\/marketplace\/?$/.test(path)
-        || /\/marketplace\/selling(\/|$)/.test(path);
-      if (published && /\/marketplace\/create\/vehicle/.test(left)) {
+      const published = judgePublishNav({
+        fromCreate: /\/marketplace\/create\/vehicle/.test(left),
+        path,
+        publishClickMsAgo: publishClickAt == null ? null : Date.now() - publishClickAt
+      });
+      if (published) {
         markListed(lastFilledKey);
         lastFilledKey = '';
+        publishClickAt = null;
       }
     };
     // FB is a SPA; the content script can't hook the page's pushState across worlds,

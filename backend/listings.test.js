@@ -78,3 +78,54 @@ test('incoming sold without soldPlatform preserves the existing attribution', ()
   const r = mergeStatus(existing, { status: 'sold', soldSource: 'manual' });
   assert.equal(r.sold_platform, 'craigslist');
 });
+
+// ---- sanitizeSourceUrl: the SSRF/attribution gate on client-supplied URLs ----
+import { sanitizeSourceUrl, recordPresence, MAX_PRESENCE_REPORTS } from './listings.js';
+
+test('sanitizeSourceUrl: valid dealer URL passes; alias pinning enforced when domains given', () => {
+  const domains = ['www.alexandriatoyota.com', 'alexandriatoyota.com'];
+  const url = 'https://www.alexandriatoyota.com/used-Alexandria-2021-Toyota-Corolla';
+  assert.equal(sanitizeSourceUrl(url, domains), url);
+  assert.equal(sanitizeSourceUrl('https://inventory.alexandriatoyota.com/vdp/1', domains),
+    'https://inventory.alexandriatoyota.com/vdp/1'); // subdomain of an alias
+  assert.equal(sanitizeSourceUrl('https://www.othertoyota.com/used-car', domains), null); // foreign dealer
+  assert.equal(sanitizeSourceUrl('https://evil-alexandriatoyota.com/x', domains), null);  // lookalike
+});
+
+test('sanitizeSourceUrl: scheme + blocked-host hygiene applies with or without domains', () => {
+  assert.equal(sanitizeSourceUrl('javascript:alert(1)'), null);
+  assert.equal(sanitizeSourceUrl('file:///etc/passwd'), null);
+  assert.equal(sanitizeSourceUrl('https://127.0.0.1/admin'), null);
+  assert.equal(sanitizeSourceUrl('https://0x7f.0.0.1/admin'), null);           // URL-normalized to 127.0.0.1
+  assert.equal(sanitizeSourceUrl('https://postgres.railway.internal/'), null); // platform-internal
+  assert.equal(sanitizeSourceUrl('https://localhost:3737/x'), null);
+  assert.equal(sanitizeSourceUrl('not a url'), null);
+  assert.equal(sanitizeSourceUrl(''), null);
+  assert.equal(sanitizeSourceUrl(null), null);
+  // No domains (unlinked user): sanity-only, a public https URL is kept.
+  assert.equal(sanitizeSourceUrl('https://www.example.com/car'), 'https://www.example.com/car');
+});
+
+test('recordPresence: caps the batch — oversized payloads are dropped, not processed', async () => {
+  let updates = 0;
+  const db = { query: async () => { updates += 1; return { rows: [] }; } };
+  const reports = Array.from({ length: MAX_PRESENCE_REPORTS + 100 }, (_, i) => ({ clientKey: `K${i}`, present: true }));
+  const counts = await recordPresence('u1', reports, db);
+  assert.equal(counts.present, MAX_PRESENCE_REPORTS);
+  assert.equal(counts.dropped, 100);
+  assert.equal(counts.total, MAX_PRESENCE_REPORTS + 100);
+  assert.equal(updates, MAX_PRESENCE_REPORTS); // present = 1 update each
+});
+
+test('recordPresence: non-string / oversized clientKeys are ignored as unknown', async () => {
+  let updates = 0;
+  const db = { query: async () => { updates += 1; return { rows: [] }; } };
+  const counts = await recordPresence('u1', [
+    { clientKey: { $ne: null }, present: true },
+    { clientKey: 'X'.repeat(300), present: false },
+    { clientKey: 'OK1', present: true }
+  ], db);
+  assert.equal(counts.unknown, 2);
+  assert.equal(counts.present, 1);
+  assert.equal(updates, 1);
+});

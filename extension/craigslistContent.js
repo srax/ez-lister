@@ -138,7 +138,16 @@
     filling = true;
     try {
       const gate = await chrome.runtime.sendMessage({ type: 'EZLIST_CAN_LIST' }).catch(() => null);
-      if (!gate || !gate.ok) { setBtn('Sign in to CarXprt to fill'); postStatus('Sign in to CarXprt to fill listings.', true); return; }
+      if (!gate || !gate.ok) {
+        if (gate && gate.reason === 'wrong_dealership') {
+          setBtn('Not your dealership');
+          postStatus("This car isn't from your linked dealership — CarXprt only lists your own inventory.", true);
+        } else {
+          setBtn('Sign in to CarXprt to fill');
+          postStatus('Sign in to CarXprt to fill listings.', true);
+        }
+        return;
+      }
       const draft = await getDraft();
       if (!draft) { setBtn('No car — List one first'); postStatus('No vehicle draft found — List a car first.', true); return; }
       setBtn('Filling…');

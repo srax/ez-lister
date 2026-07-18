@@ -1,6 +1,28 @@
 import crypto from 'node:crypto';
 import { pool } from './db.js';
 import { normalizeVin } from './vin.js';
+import { isBlockedHost, hostMatchesDomains } from './dealer-url.js';
+
+// ---- source_url hygiene (host enforcement) ----
+// A listing's source_url is fetched later by the sold-scan worker AND the extension's
+// presence check, so a client-controlled arbitrary URL is an SSRF vector (the worker would
+// probe it server-side, attributed to a dealership the client merely claimed). Rules:
+//   • must parse as http(s) with a non-blocked host (never an IP / localhost / *.internal);
+//   • when the listing belongs to a dealership (aliasDomains given), the host must belong to
+//     that dealership's alias domains — subdomains included, lookalike domains rejected;
+//   • no aliasDomains (unlinked user / platform listing URL) → scheme + blocklist sanity only:
+//     the worker never probes dealership-less rows, and the extension only re-fetches the
+//     user's own URLs.
+export function sanitizeSourceUrl(url, aliasDomains = null) {
+  if (!url) return null;
+  let u;
+  try { u = new URL(String(url)); } catch { return null; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+  const host = u.hostname.toLowerCase().replace(/\.$/, '');
+  if (!host || isBlockedHost(host)) return null;
+  if (aliasDomains && aliasDomains.length && !hostMatchesDomains(host, aliasDomains)) return null;
+  return u.toString();
+}
 
 // The extension's local schema says 'active' where the contract says 'listed'. Accept both,
 // and never store a status outside the contract's set. null/undefined stays null (partial
@@ -41,7 +63,7 @@ export function mergeStatus(existing, incoming) {
 }
 
 // ---- DB upsert of one listing ----
-async function upsertListing(ownerId, item, db, defaultDealershipId = null) {
+async function upsertListing(ownerId, item, db, defaultDealershipId = null, getAliases = null) {
   const clientKey = item.clientKey;
   if (!clientKey) return { skipped: 'no clientKey' };
 
@@ -53,6 +75,20 @@ async function upsertListing(ownerId, item, db, defaultDealershipId = null) {
   const merged = mergeStatus(existing, item);
   const vin = normalizeVin(item.vin);
   const id = existing ? existing.id : crypto.randomUUID();
+
+  // Dealership attribution is SERVER-resolved, never client-supplied: an existing row keeps
+  // its dealership (historical attribution survives a dealership switch); a new row gets the
+  // user's linked dealership. `item.dealershipId` is deliberately ignored — trusting it let a
+  // client tag listings into another dealership's stats and scan set.
+  const dealershipId = (existing && existing.dealership_id) || defaultDealershipId;
+
+  // Pin source_url to the row's OWN dealership (not the current link — a switched user's old
+  // cars keep their old dealer's still-valid URLs). The stored value is re-validated too, so a
+  // URL that predates the user's link (or a rule change) can't survive via the merge below.
+  const aliases = (dealershipId && getAliases) ? await getAliases(dealershipId) : null;
+  const incomingSourceUrl = sanitizeSourceUrl(item.sourceUrl, aliases);
+  const existingSourceUrl = existing ? sanitizeSourceUrl(existing.source_url, aliases) : null;
+  const sourceUrl = incomingSourceUrl || existingSourceUrl;
 
   await db.query(
     `insert into listings (
@@ -79,16 +115,16 @@ async function upsertListing(ownerId, item, db, defaultDealershipId = null) {
        sold_at = excluded.sold_at,
        sold_price = excluded.sold_price,
        sold_platform = excluded.sold_platform,
-       source_url = coalesce(excluded.source_url, listings.source_url),
+       source_url = excluded.source_url,
        facebook_listing_id = coalesce(excluded.facebook_listing_id, listings.facebook_listing_id),
        facebook_listing_url = coalesce(excluded.facebook_listing_url, listings.facebook_listing_url),
        facebook_published_at = coalesce(excluded.facebook_published_at, listings.facebook_published_at),
        updated_at = now()`,
     [
-      id, ownerId, item.dealershipId || defaultDealershipId, clientKey, vin, item.stock || null, item.title || null,
+      id, ownerId, dealershipId, clientKey, vin, item.stock || null, item.title || null,
       item.year || null, item.make || null, item.model || null, item.price ?? null,
       item.platform || 'fb', merged.status, merged.sold_source, item.listedAt || null,
-      merged.sold_at, merged.sold_price, merged.sold_platform, item.sourceUrl || null,
+      merged.sold_at, merged.sold_price, merged.sold_platform, sourceUrl,
       item.facebookListingId || null, item.facebookListingUrl || null, item.facebookPublishedAt || null,
       item.viewsCount ?? null, item.viewsObservedAt || null
     ]
@@ -108,7 +144,7 @@ async function upsertListing(ownerId, item, db, defaultDealershipId = null) {
            listed_at = coalesce(listing_platforms.listed_at, excluded.listed_at),
            listing_url = coalesce(excluded.listing_url, listing_platforms.listing_url),
            updated_at = now()`,
-        [id, String(p.platform), p.status === 'removed' ? 'removed' : 'listed', p.listedAt || null, p.url || null]
+        [id, String(p.platform), p.status === 'removed' ? 'removed' : 'listed', p.listedAt || null, sanitizeSourceUrl(p.url)]
       );
     }
   }
@@ -180,15 +216,24 @@ async function insertEvent(ownerId, ev, db) {
 // ---- the sync entrypoint (auth only, not entitlement) ----
 export async function syncListings(ownerId, { listings = [], events = [] } = {}, db = pool) {
   const results = { listings: 0, events: 0 };
-  // Listings synced without an explicit dealershipId inherit the user's linked dealership —
-  // the sold-scan worker only sees listings that carry a dealership_id.
+  // Every listing's dealership is the user's SERVER-side link (existing rows keep theirs);
+  // the client's claim is ignored — see upsertListing. Aliases are loaded once per dealership
+  // to pin each row's source_url to that dealership's domains.
   let defaultDealershipId = null;
   if (listings.length) {
     const { rows } = await db.query('select dealership_id from user_dealerships where user_id = $1', [ownerId]);
     defaultDealershipId = rows.length ? rows[0].dealership_id : null;
   }
+  const aliasCache = new Map();
+  const getAliases = async (dealershipId) => {
+    if (!aliasCache.has(dealershipId)) {
+      const { rows } = await db.query('select domain from dealership_aliases where dealership_id = $1', [dealershipId]);
+      aliasCache.set(dealershipId, rows.map((r) => r.domain));
+    }
+    return aliasCache.get(dealershipId);
+  };
   for (const item of listings) {
-    const r = await upsertListing(ownerId, item, db, defaultDealershipId);
+    const r = await upsertListing(ownerId, item, db, defaultDealershipId, getAliases);
     if (r && r.id) results.listings += 1;
   }
   for (const ev of events) {
@@ -252,10 +297,15 @@ export const GONE_CONFIRM_MIN_GAP = '2 hours';
 //   unknown (null) → no-op, never acted on (bot-wall / network / 5xx).
 // Only touches 'listed' rows without a dealer_outcome (classified cars are settled). Selling
 // still never happens here — the user decides in the panel.
+// Capped: each report costs up to two UPDATEs, and the legit set (the user's own listed cars)
+// is far below the cap — an oversized payload is abuse, not data.
+export const MAX_PRESENCE_REPORTS = 500;
 export async function recordPresence(ownerId, reports = [], db = pool) {
-  const counts = { present: 0, gone: 0, unknown: 0, total: Array.isArray(reports) ? reports.length : 0 };
-  for (const r of Array.isArray(reports) ? reports : []) {
-    const key = r && r.clientKey;
+  const all = Array.isArray(reports) ? reports : [];
+  const capped = all.slice(0, MAX_PRESENCE_REPORTS);
+  const counts = { present: 0, gone: 0, unknown: 0, total: all.length, dropped: all.length - capped.length };
+  for (const r of capped) {
+    const key = r && typeof r.clientKey === 'string' && r.clientKey.length <= 200 ? r.clientKey : null;
     if (!key) { counts.unknown += 1; continue; }
     const parsed = r.checkedAt ? new Date(r.checkedAt) : new Date();
     const at = Number.isNaN(parsed.getTime()) ? new Date().toISOString() : parsed.toISOString();

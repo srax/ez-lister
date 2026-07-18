@@ -10,9 +10,12 @@ const router = Router();
 router.post('/api/listings/sync', requireUser, async (req, res, next) => {
   try {
     const { listings, events } = req.body || {};
+    // Caps: generous for the legit worst case (a first sign-in bulk upload of a whole
+    // dealership's inventory is a few hundred rows), tight enough that an abusive payload
+    // can't turn one request into tens of thousands of row upserts.
     const result = await syncListings(req.user.id, {
-      listings: Array.isArray(listings) ? listings : [],
-      events: Array.isArray(events) ? events : []
+      listings: (Array.isArray(listings) ? listings : []).slice(0, 2000),
+      events: (Array.isArray(events) ? events : []).slice(0, 5000)
     });
     res.json({ ok: true, ...result });
   } catch (err) {
