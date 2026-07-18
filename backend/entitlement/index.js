@@ -18,11 +18,15 @@ const LEASE_TTL_SECONDS = 90 * 60;
 // Is there a LIVE paid subscription? active/trialing with no period end (or one still in the
 // future); a stale 'active' row whose period already passed counts as expired (belt-and-braces).
 // Shared by entitlement AND the dealership-switch lock so the two can never drift apart.
+// A user can hold SEVERAL active/trialing rows at once (plan change, resubscribe before the
+// webhook retires the old row) — order by LIVENESS first, so a stale dated row can never
+// shadow a live one (`nulls last` once picked a past-dated 'active' row over a live
+// null-periodEnd subscription and wrongly gated a paying user).
 export async function activeSubscription(userId, db = pool) {
   const { rows } = await db.query(
     `select "periodEnd" from "subscription"
       where "referenceId" = $1 and status in ('active', 'trialing')
-      order by "periodEnd" desc nulls last
+      order by ("periodEnd" is null or "periodEnd" > now()) desc, "periodEnd" desc nulls first
       limit 1`,
     [userId]
   );

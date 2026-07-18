@@ -58,3 +58,19 @@ test('comp grant but no dealership → no_dealership', async () => {
   assert.equal(r.entitled, false);
   assert.equal(r.reason, 'no_dealership');
 });
+
+// The mock db can't run SQL, so pin the ordering clause itself: the subscription pick MUST be
+// liveness-first. `order by "periodEnd" desc nulls last` once picked a stale past-dated 'active'
+// row over a live null-periodEnd one and gated a paying user with two subscription rows.
+test('subscription query orders by liveness before periodEnd', async () => {
+  let subSql = '';
+  const db = {
+    query: async (sql) => {
+      if (sql.includes('"subscription"')) { subSql = sql; return { rows: [] }; }
+      return { rows: [] };
+    }
+  };
+  await isEntitled('u', db);
+  assert.match(subSql, /order by \("periodEnd" is null or "periodEnd" > now\(\)\) desc/);
+  assert.doesNotMatch(subSql, /nulls last/);
+});
