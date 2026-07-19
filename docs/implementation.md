@@ -26,6 +26,8 @@ organization contract is `0.3.0`; backend rollout remains independently feature-
   access flows, Better Auth organization membership, $499 rooftop Checkout, seat management,
   and the extension team dashboard are implemented on `feature/organizations-v1`.
 - The automated baseline is 290 passing Node tests plus 113 syntax-checked JavaScript files.
+  PR `#10` repeats those checks, builds the staging extension, applies migrations twice, and
+  runs the PostgreSQL integration suites against PostgreSQL 18.
 - Railway staging has organizations enabled, auto-onboarding disabled, Stripe sandbox billing,
   and all migrations applied. A fresh-user E2E has passed Google sign-in, supported-rooftop
   detection, pending claim, admin approval, $499 sandbox Checkout, webhook activation, owner
@@ -33,8 +35,10 @@ organization contract is `0.3.0`; backend rollout remains independently feature-
   lease V2, and an organization-stamped dealer draft.
 - Remaining staging gates are the final Facebook Fill -> user Publish -> backend sync assertion
   in the dedicated staging Chrome profile, plus a second-user invitation acceptance smoke test.
-- Production remains unchanged and organization-disabled. It has live Stripe personal billing
-  only; no dealership price is configured. A private PostgreSQL 18 dump was restored locally and
+- Production remains organization-disabled. Its existing personal billing is unchanged. The
+  isolated live Stripe catalog objects have been created (`prod_UufwNRyv1W9mSH`, monthly price
+  `price_1TuqalDlENJF5h9JE4yH3f8B` at $499), but the dealership price is not yet wired into the
+  Railway environment. A private PostgreSQL 18 dump was restored locally and
   migrations `007`, `008`, and `010-018` applied twice: the first run backfilled all eight users,
   preserved all four subscriptions, and found no duplicate Stripe IDs; the second applied no
   migrations.
