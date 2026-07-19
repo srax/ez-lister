@@ -19,6 +19,33 @@ export function query(text, params) {
   return pool.query(text, params);
 }
 
+// Run a unit of work on one connection. Domain services use SERIALIZABLE when concurrent
+// requests could otherwise over-allocate seats or approve two claims for one rooftop.
+export async function withTransaction(work, {
+  db = pool,
+  isolation = 'read committed',
+  retries = 0
+} = {}) {
+  const allowed = new Set(['read committed', 'repeatable read', 'serializable']);
+  if (!allowed.has(isolation)) throw new Error(`unsupported transaction isolation: ${isolation}`);
+
+  for (let attempt = 0; ; attempt += 1) {
+    const client = await db.connect();
+    try {
+      await client.query(`begin isolation level ${isolation}`);
+      const result = await work(client);
+      await client.query('commit');
+      return result;
+    } catch (err) {
+      await client.query('rollback').catch(() => {});
+      const retryable = err && (err.code === '40001' || err.code === '40P01');
+      if (!retryable || attempt >= retries) throw err;
+    } finally {
+      client.release();
+    }
+  }
+}
+
 // Forward-only migration runner: applies every backend/migrations/*.sql not yet recorded
 // in schema_migrations, in filename order, each inside its own transaction. Runs on boot.
 export async function runMigrations() {

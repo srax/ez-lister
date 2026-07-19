@@ -34,7 +34,10 @@ const ui = {
   fill: el('fill'), openfb: el('openfb'), openInv: el('open-inventory'),
   status: el('status'),
   statsBtn: el('stats-btn'), statsBack: el('stats-back'),
-  viewLister: el('view-lister'), viewStats: el('view-stats'),
+  teamBtn: el('team-btn'), teamBack: el('team-back'), teamRefresh: el('team-refresh'),
+  viewLister: el('view-lister'), viewStats: el('view-stats'), viewTeam: el('view-team'),
+  workspaceBar: el('workspace-bar'), workspaceSelect: el('workspace-select'),
+  rooftopSelect: el('rooftop-select'), workspaceSeat: el('workspace-seat'),
   statsRange: el('stats-range'), statsRangeLabel: el('stats-range-label'),
   stActive: el('st-active'), stSold: el('st-sold'), stGross: el('st-gross'),
   stDays: el('st-days'), stHeroRange: el('st-hero-range'), stDelta: el('st-delta'),
@@ -49,6 +52,8 @@ const ui = {
   gatePrimary: el('gate-primary'), gateSecondary: el('gate-secondary'),
   gateErr: el('gate-err'), gateSignout: el('gate-signout'),
   dealerConnect: el('dealer-connect'), dealerPending: el('dealer-pending'),
+  joinInviteForm: el('join-invite-form'), joinInviteCode: el('join-invite-code'),
+  joinInviteSubmit: el('join-invite-submit'),
   dealerRequestToggle: el('dealer-request-toggle'), dealerRequest: el('dealer-request'),
   dealerSwitchToggle: el('dealer-switch-toggle'), dealerUrlRow: el('dealer-url-row'),
   dealerConnectUrl: el('dealer-connect-url'), dealerConnectDetect: el('dealer-connect-detect'),
@@ -58,6 +63,30 @@ const ui = {
   dealerRequestCancel: el('dealer-request-cancel'), dealerRequestSubmit: el('dealer-request-submit'),
   accountBtn: el('account-btn'), accountMenu: el('account-menu'), accountEmail: el('account-email'),
   accountPlan: el('account-plan'), acctBilling: el('acct-billing'), acctSignout: el('acct-signout'),
+  // organization dashboard
+  teamName: el('team-name'), teamRole: el('team-role'), teamRooftop: el('team-rooftop'),
+  teamError: el('team-error'), teamListed: el('team-listed'), teamActive: el('team-active'),
+  teamSold: el('team-sold'), teamViews: el('team-views'), teamViewsSub: el('team-views-sub'),
+  teamCapacity: el('team-capacity'), teamMembers: el('team-members'),
+  teamRequestsSection: el('team-requests-section'), teamRequests: el('team-requests'),
+  teamInviteToggle: el('team-invite-toggle'), teamInviteForm: el('team-invite-form'),
+  teamInviteEmail: el('team-invite-email'), teamInviteRole: el('team-invite-role'),
+  teamInviteRooftop: el('team-invite-rooftop'), teamInviteCancel: el('team-invite-cancel'),
+  teamInviteResult: el('team-invite-result'),
+  teamAddRooftopToggle: el('team-add-rooftop-toggle'), teamRooftopForm: el('team-rooftop-form'),
+  teamRooftopUrl: el('team-rooftop-url'), teamRooftopResult: el('team-rooftop-result'),
+  teamRooftopAttestRow: el('team-rooftop-attest-row'), teamRooftopAttested: el('team-rooftop-attested'),
+  teamRooftopCancel: el('team-rooftop-cancel'), teamRooftopSubmit: el('team-rooftop-submit'),
+  teamApprovedRooftops: el('team-approved-rooftops'),
+  teamApprovedRooftopsCopy: el('team-approved-rooftops-copy'),
+  teamActivateRooftops: el('team-activate-rooftops'),
+  teamTransferAcceptToggle: el('team-transfer-accept-toggle'), teamTransferForm: el('team-transfer-form'),
+  teamTransferCode: el('team-transfer-code'), teamTransferCancel: el('team-transfer-cancel'),
+  teamTransferResult: el('team-transfer-result'),
+  // organization onboarding
+  gateIntents: el('gate-intents'), claimForm: el('claim-form'), claimOrgName: el('claim-org-name'),
+  claimAttested: el('claim-attested'), claimRooftops: el('claim-rooftops'),
+  claimAddRooftop: el('claim-add-rooftop')
 };
 
 const state = {
@@ -70,6 +99,19 @@ const state = {
   filling: false,
   auth: null,
   plan: null,
+  plans: null,
+  intent: null,
+  claims: [],
+  claimsLoaded: false,
+  claimDealers: [],
+  detectedClaimed: false,
+  team: null,
+  teamMembers: [],
+  teamRequests: [],
+  teamLoading: false,
+  teamNewDealer: null,
+  teamAutoOpened: false,
+  accessRequested: null,
   dealerRequestOpen: false,
   autoDealerConnectTried: false,
   detectedDealer: null,   // resolved-but-NOT-linked dealership awaiting the user's confirmation
@@ -85,11 +127,13 @@ const state = {
 init();
 
 async function init() {
-  const store = await chrome.storage.local.get(['ezlistDraft', 'ezlistPrefs', 'ezlistListedVins', 'ezlistListings']);
+  const store = await chrome.storage.local.get(['ezlistDraft', 'ezlistPrefs', 'ezlistListedVins', 'ezlistListings', 'ezlistOnboardingIntent', 'ezlistAccessRequestPending']);
   state.draft = store.ezlistDraft || null;
   state.prefs = { ...DEFAULT_PREFS, ...(store.ezlistPrefs || {}) };
   state.listed = store.ezlistListedVins || {};
   state.listings = store.ezlistListings || {};
+  state.intent = store.ezlistOnboardingIntent || null;
+  state.accessRequested = store.ezlistAccessRequestPending || null;
   await migrateListings();
   applyPrefsToUI();
   renderVehicle();
@@ -100,12 +144,19 @@ async function init() {
     if (msg && msg.type === 'EZLIST_FILL_STATUS') setStatus(msg.text, msg.error);
   });
   // Re-check entitlement when the panel regains focus (e.g. returning from Stripe checkout).
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAuth({ refresh: true }); });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) refreshAuth({ refresh: true }).then(async (auth) => {
+      if (!auth || !auth.signedIn) return;
+      await loadClaims();
+      if (!ui.viewTeam.hidden) loadTeamData();
+    });
+  });
   loadBillingPlan().catch(() => {});
   // Best-effort: pull server listings once on load so the Stats-button attention dot can show
   // before the user ever opens the stats view. Silent on failure / not-entitled / offline.
   loadServerListings().then((ok) => { if (ok) updateNeedsActionDot(); }).catch(() => {});
   await refreshAuth();
+  if (state.auth && state.auth.signedIn) await loadClaims();
 }
 
 // ---------- rendering ----------
@@ -145,7 +196,7 @@ function renderVehicle() {
   ui.vehVin.textContent = d.vin ? `VIN ${d.vin}` : (d.stock ? `Stock #${d.stock}` : '');
   ui.vehListed.hidden = !isListed(d);
   setVehiclePhoto(d);
-  ui.fill.disabled = state.filling;
+  ui.fill.disabled = state.filling || !!(state.auth && !state.auth.canList);
   if (!state.filling) {
     setStatus(isListed(d) ? 'Already listed — fill again to re-list with changes.' : 'Ready. Tune the listing, then Fill.');
   }
@@ -370,16 +421,101 @@ function setStatus(text, isError) {
   ui.status.classList.toggle('working', working);
 }
 
-// ---------- stats view ----------
-// Switch between the lister and the Sales-overview screen (the design's two card faces).
+// ---------- views + workspace context ----------
+const hasCapability = (name) => !!(state.auth && Array.isArray(state.auth.capabilities) && state.auth.capabilities.includes(name));
+const activeOrganization = () => {
+  const workspace = state.auth && state.auth.activeWorkspace;
+  return workspace && workspace.type === 'organization' ? workspace.organization : null;
+};
+
+function renderWorkspaceContext() {
+  const auth = state.auth || {};
+  const workspaces = Array.isArray(auth.workspaces) ? auth.workspaces : [];
+  const active = auth.activeWorkspace;
+  ui.workspaceBar.hidden = !auth.signedIn || !active;
+  ui.teamBtn.hidden = !hasCapability('stats:team');
+  if (!active) return;
+
+  ui.workspaceSelect.innerHTML = workspaces.map((workspace) => {
+    const label = workspace.type === 'organization'
+      ? (workspace.organization && workspace.organization.name) || 'Dealership team'
+      : 'Personal';
+    return `<option value="${esc(workspace.id)}">${esc(label)}</option>`;
+  }).join('');
+  ui.workspaceSelect.value = active.id;
+  const rooftops = active.rooftops || [];
+  ui.rooftopSelect.innerHTML = rooftops.length
+    ? rooftops.map((item) => `<option value="${esc(item.dealership.id)}">${esc(item.dealership.name)}</option>`).join('')
+    : '<option value="">No rooftop selected</option>';
+  ui.rooftopSelect.disabled = rooftops.length === 0;
+  ui.rooftopSelect.value = auth.activeRooftop && auth.activeRooftop.dealership
+    ? auth.activeRooftop.dealership.id
+    : '';
+
+  ui.workspaceSeat.className = 'workspace-seat';
+  if (active.type === 'organization') {
+    if (auth.canList) {
+      ui.workspaceSeat.textContent = `${auth.workspaceAccess && auth.workspaceAccess.role || 'Member'} · listing seat active`;
+      ui.workspaceSeat.classList.add('ok');
+    } else if (auth.paid) {
+      ui.workspaceSeat.textContent = hasCapability('stats:team')
+        ? `${auth.workspaceAccess && auth.workspaceAccess.role || 'Manager'} · dashboard access, no listing seat`
+        : 'Waiting for a listing seat from your manager';
+      ui.workspaceSeat.classList.add('warn');
+    } else {
+      ui.workspaceSeat.textContent = 'Organization access is not active';
+      ui.workspaceSeat.classList.add('warn');
+    }
+  } else {
+    ui.workspaceSeat.textContent = auth.canList ? 'Individual listing access active' : 'Individual workspace';
+    if (auth.canList) ui.workspaceSeat.classList.add('ok');
+  }
+  ui.fill.disabled = state.filling || !auth.canList || !state.draft;
+}
+
+async function chooseWorkspaceContext() {
+  const workspaceId = ui.workspaceSelect.value;
+  const workspace = (state.auth.workspaces || []).find((item) => item.id === workspaceId);
+  const rooftopId = workspace && workspace.rooftops && workspace.rooftops.length
+    ? workspace.rooftops[0].dealership.id
+    : null;
+  await applyWorkspaceContext(workspaceId, rooftopId);
+}
+
+async function chooseRooftopContext() {
+  const workspaceId = state.auth && state.auth.activeWorkspace && state.auth.activeWorkspace.id;
+  if (workspaceId) await applyWorkspaceContext(workspaceId, ui.rooftopSelect.value || null);
+}
+
+async function applyWorkspaceContext(workspaceId, dealershipId) {
+  setStatus('Switching workspace…');
+  const res = await chrome.runtime.sendMessage({ type: 'EZLIST_SELECT_CONTEXT', workspaceId, dealershipId }).catch(() => null);
+  if (!res || !res.ok) {
+    setStatus((res && res.error) || 'Could not switch workspace.', true);
+    await refreshAuth({ refresh: true });
+    return;
+  }
+  state.auth = res.auth;
+  state.teamAutoOpened = false;
+  state.serverListings = {};
+  renderWorkspaceContext();
+  renderGate();
+  setStatus(state.auth.canList ? 'Workspace ready.' : 'Workspace selected.');
+  if (!ui.viewTeam.hidden) loadTeamData();
+}
+
+// Switch between the lister, personal Sales overview, and organization team overview.
 function showView(view) {
   const stats = view === 'stats';
-  ui.viewLister.hidden = stats;
+  const team = view === 'team';
+  ui.viewLister.hidden = stats || team;
   ui.viewStats.hidden = !stats;
+  ui.viewTeam.hidden = !team;
   if (stats) {
     renderStats(); // paint local immediately…
     loadServerListings().then((ok) => { if (ok) renderStats(); }); // …then refresh from the server
   }
+  if (team) loadTeamData();
 }
 
 // Seed ezlistListings from older ezlistListedVins keys (users who published before the
@@ -555,6 +691,444 @@ function renderStats() {
   renderDealerCard();
   renderListingList();
   updateNeedsActionDot();
+}
+
+async function loadTeamData() {
+  const organization = activeOrganization();
+  if (!organization || state.teamLoading || !hasCapability('stats:team')) return;
+  state.teamLoading = true;
+  ui.teamError.hidden = true;
+  try {
+    const filters = { dealershipId: ui.teamRooftop.value || null };
+    const dashboardRes = await chrome.runtime.sendMessage({
+      type: 'EZLIST_ORG_DASHBOARD',
+      organizationId: organization.id,
+      filters
+    });
+    if (!dashboardRes || !dashboardRes.ok) throw new Error((dashboardRes && dashboardRes.error) || 'Could not load team dashboard.');
+    state.team = dashboardRes.dashboard;
+    await loadClaims();
+
+    if (hasCapability('team:manage')) {
+      const membersRes = await chrome.runtime.sendMessage({ type: 'EZLIST_ORG_MEMBERS', organizationId: organization.id });
+      state.teamMembers = membersRes && membersRes.ok ? membersRes.members || [] : [];
+      const requestsRes = await chrome.runtime.sendMessage({ type: 'EZLIST_ORG_ACCESS_REQUESTS', organizationId: organization.id });
+      state.teamRequests = requestsRes && requestsRes.ok ? requestsRes.requests || [] : [];
+    } else {
+      state.teamMembers = state.team.members || [];
+      state.teamRequests = [];
+    }
+    renderTeamData();
+  } catch (error) {
+    ui.teamError.textContent = error.message || 'Could not load team dashboard.';
+    ui.teamError.hidden = false;
+  } finally {
+    state.teamLoading = false;
+  }
+}
+
+function renderTeamData() {
+  const dashboard = state.team;
+  const organization = activeOrganization();
+  if (!dashboard || !organization) return;
+  const metrics = dashboard.metrics || {};
+  ui.teamName.textContent = organization.name || 'Team overview';
+  ui.teamRole.textContent = `${dashboard.role || 'member'} · last 30 days`;
+  ui.teamListed.textContent = String(metrics.listingActions || 0);
+  ui.teamActive.textContent = String(metrics.currentlyListed || 0);
+  ui.teamSold.textContent = String(metrics.soldAtDealership || 0);
+  ui.teamViews.textContent = metrics.observedViews == null ? '—' : Number(metrics.observedViews).toLocaleString('en-US');
+  ui.teamViewsSub.textContent = metrics.observedViews == null
+    ? 'Not available'
+    : `${Number(metrics.viewsPerListing || 0).toLocaleString('en-US')} / listing · ${Math.round(Number(metrics.viewCoverage || 0) * 100)}% coverage`;
+
+  const rooftops = dashboard.rooftops || [];
+  const selected = ui.teamRooftop.value;
+  ui.teamRooftop.innerHTML = '<option value="">All accessible rooftops</option>'
+    + rooftops.map((item) => `<option value="${esc(item.dealership_id)}">${esc(item.name)}</option>`).join('');
+  ui.teamRooftop.value = rooftops.some((item) => item.dealership_id === selected) ? selected : '';
+  ui.teamInviteRooftop.innerHTML = rooftops.map((item) => `<option value="${esc(item.dealership_id)}">${esc(item.name)}</option>`).join('');
+  syncSelects();
+
+  const capacity = dashboard.capacity || [];
+  ui.teamCapacity.innerHTML = capacity.length ? capacity.map((item) => {
+    const reserved = Number(item.reserved || 0);
+    const available = Math.max(0, Number(item.purchased || 0) - Number(item.assigned || 0) - reserved);
+    const pending = item.requestedExtraSeats != null
+      && Number(item.requestedExtraSeats) !== Number(item.extraSeats || 0);
+    const extraPlan = state.plans && state.plans.extraSeat;
+    const pendingRemoval = item.status === 'pending_removal';
+    const canChange = dashboard.role === 'owner' && extraPlan && extraPlan.available && !pending && !pendingRemoval;
+    const controls = canChange
+      ? `<div class="team-capacity-controls"><button type="button" title="Remove one extra seat at renewal"`
+        + ` data-capacity-rooftop="${esc(item.dealershipId)}" data-capacity-extra="${Math.max(0, Number(item.extraSeats || 0) - 1)}"`
+        + `${Number(item.extraSeats || 0) < 1 ? ' disabled' : ''}>−</button>`
+        + `<span>${Number(item.extraSeats || 0)} extra</span>`
+        + `<button type="button" title="Add one prorated listing seat" data-capacity-rooftop="${esc(item.dealershipId)}"`
+        + ` data-capacity-extra="${Number(item.extraSeats || 0) + 1}">+</button></div>`
+      : '';
+    const pendingCapacityText = pending
+      ? ` · change to ${item.requestedExtraSeats} extra ${Number(item.requestedExtraSeats) > Number(item.extraSeats || 0) ? 'awaiting payment' : 'scheduled'}`
+      : '';
+    const removalDate = item.removalEffectiveAt
+      ? new Date(item.removalEffectiveAt).toLocaleDateString()
+      : '';
+    const removalText = pendingRemoval ? ` · removes ${removalDate || 'at renewal'}` : '';
+    const removalControl = dashboard.role === 'owner' && (capacity.length > 1 || pendingRemoval)
+      ? `<button class="team-rooftop-removal" type="button" data-rooftop-removal="${esc(item.dealershipId)}"`
+        + ` data-removal-cancel="${pendingRemoval ? '1' : '0'}">${pendingRemoval ? 'Keep rooftop' : 'Remove at renewal'}</button>`
+      : '';
+    return `<div class="team-row"><div class="team-row-main"><div class="team-row-title">${esc(item.dealershipName)}</div>`
+      + `<div class="team-row-sub">${item.assigned} assigned${reserved ? ` · ${reserved} reserved` : ''} · ${available} available${esc(pendingCapacityText + removalText)}</div>${controls}${removalControl}</div>`
+      + `<div class="team-row-value">${item.assigned}/${item.purchased}</div></div>`;
+  }).join('') : '<div class="team-empty">No active rooftop capacity.</div>';
+
+  const canManage = hasCapability('team:manage');
+  const canAddRooftop = dashboard.role === 'owner';
+  ui.teamAddRooftopToggle.hidden = !canAddRooftop;
+  if (!canAddRooftop) {
+    ui.teamRooftopForm.hidden = true;
+    state.teamNewDealer = null;
+  }
+  const approvedClaims = (state.claims || []).filter((claim) =>
+    claim.organizationId === organization.id
+      && ['approved', 'checkout_pending'].includes(claim.status)
+  );
+  ui.teamApprovedRooftops.hidden = !canAddRooftop || !approvedClaims.length;
+  if (approvedClaims.length) {
+    const names = approvedClaims.map((claim) => claim.dealershipName || 'approved rooftop');
+    ui.teamApprovedRooftopsCopy.textContent = `${names.join(', ')} ${approvedClaims.length === 1 ? 'is' : 'are'} verified and reserved. Activate through your organization subscription.`;
+    ui.teamActivateRooftops.textContent = approvedClaims.length === 1
+      ? 'Activate approved rooftop'
+      : `Activate ${approvedClaims.length} approved rooftops`;
+  }
+  const members = state.teamMembers || [];
+  ui.teamMembers.innerHTML = members.length ? members.map((member) => {
+    const activity = member.listingActions == null
+      ? `${member.role || 'member'}`
+      : `${member.role || 'member'} · ${member.listingActions} listing actions`;
+    const canManageSeats = canManage
+      && (dashboard.role === 'owner' || member.role === 'salesperson');
+    const seatControls = canManageSeats && Array.isArray(member.rooftops)
+      ? member.rooftops.map((rooftop) => {
+          const assigned = Boolean(rooftop.hasSeat);
+          return `<button class="team-seat-toggle${assigned ? ' on' : ''}" type="button"`
+            + ` data-seat-member="${esc(member.id)}" data-seat-rooftop="${esc(rooftop.dealershipId)}"`
+            + ` data-seat-assigned="${assigned ? '1' : '0'}">`
+            + `${esc(rooftop.dealershipName || 'Rooftop')} · ${assigned ? 'Seat active' : 'Assign seat'}</button>`;
+        }).join('')
+      : '';
+    const ownershipControl = dashboard.role === 'owner' && member.role !== 'owner'
+      ? `<button class="team-transfer-owner" type="button" data-transfer-owner="${esc(member.id)}">Transfer ownership to ${esc(member.name || member.email || 'member')}</button>`
+      : '';
+    return `<div class="team-row"><div class="team-row-main"><div class="team-row-title">${esc(member.name || member.email || 'Member')}</div>`
+      + `<div class="team-row-sub">${esc(activity)}</div>${seatControls ? `<div class="team-seat-controls">${seatControls}</div>` : ''}${ownershipControl}</div>`
+      + `<div class="team-row-value">${member.soldAtDealership == null ? '' : `${member.soldAtDealership} sold`}</div></div>`;
+  }).join('') : '<div class="team-empty">No team members yet.</div>';
+
+  ui.teamInviteToggle.hidden = !canManage;
+  ui.teamRequestsSection.hidden = !canManage || !state.teamRequests.length;
+  ui.teamRequests.innerHTML = (state.teamRequests || []).map((request) => {
+    const pending = ['pending', 'approved_awaiting_capacity'].includes(request.status);
+    const actions = pending
+      ? `<div class="team-actions"><button class="team-action approve" data-request="${esc(request.id)}" data-decision="approve">Approve</button>`
+        + `<button class="team-action reject" data-request="${esc(request.id)}" data-decision="reject">Reject</button></div>`
+      : `<div class="team-row-value">${esc(request.status)}</div>`;
+    return `<div class="team-row"><div class="team-row-main"><div class="team-row-title">${esc(request.user_name || request.email || 'Applicant')}</div>`
+      + `<div class="team-row-sub">${esc(request.requested_role || 'salesperson')}</div></div>${actions}</div>`;
+  }).join('');
+}
+
+async function submitTeamInvite(event) {
+  event.preventDefault();
+  const organization = activeOrganization();
+  if (!organization) return;
+  const dealershipId = ui.teamInviteRooftop.value;
+  const role = ui.teamInviteRole.value;
+  const res = await chrome.runtime.sendMessage({
+    type: 'EZLIST_ORG_INVITE',
+    organizationId: organization.id,
+    payload: {
+      email: ui.teamInviteEmail.value.trim(),
+      role,
+      dealershipIds: dealershipId ? [dealershipId] : [],
+      reserveSeat: role === 'salesperson'
+    }
+  }).catch(() => null);
+  if (!res || !res.ok) {
+    ui.teamInviteResult.textContent = (res && res.error) || 'Could not create invitation.';
+  } else {
+    const delivery = res.invitation.delivery;
+    ui.teamInviteResult.textContent = delivery && delivery.ok
+      ? `Invitation emailed to ${res.invitation.email}.`
+      : `Invitation created. Email delivery is unavailable; share this one-time code securely: ${res.invitation.token}`;
+    ui.teamInviteEmail.value = '';
+  }
+  ui.teamInviteResult.hidden = false;
+}
+
+function resetTeamRooftopForm() {
+  state.teamNewDealer = null;
+  ui.teamRooftopUrl.value = '';
+  ui.teamRooftopAttested.checked = false;
+  ui.teamRooftopAttestRow.hidden = true;
+  ui.teamRooftopResult.hidden = true;
+  ui.teamRooftopSubmit.textContent = 'Detect dealership';
+  ui.teamRooftopSubmit.disabled = false;
+}
+
+async function requestDealerProbe(url) {
+  try {
+    const parsed = new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`);
+    const bare = parsed.hostname.toLowerCase().replace(/^www\./, '');
+    return await chrome.permissions.request({
+      origins: [`https://${bare}/*`, `https://www.${bare}/*`]
+    });
+  } catch {
+    return false;
+  }
+}
+
+async function submitTeamRooftop(event) {
+  event.preventDefault();
+  const organization = activeOrganization();
+  if (!organization) return;
+  ui.teamError.hidden = true;
+  ui.teamRooftopSubmit.disabled = true;
+  try {
+    if (!state.teamNewDealer) {
+      ui.teamRooftopSubmit.textContent = 'Detecting…';
+      const url = ui.teamRooftopUrl.value.trim();
+      const canProbe = await requestDealerProbe(url);
+      const res = await chrome.runtime.sendMessage({ type: 'EZLIST_DETECT_DEALER', url, canProbe });
+      if (!res || !res.ok) throw new Error((res && res.error) || 'Could not detect a supported dealership.');
+      if (res.claimed) throw new Error('This dealership already belongs to a CarXprt team.');
+      state.teamNewDealer = res.dealership;
+      ui.teamRooftopResult.textContent = `${res.dealership.name || 'Dealership'} detected. Confirm your authority to send it for verification.`;
+      ui.teamRooftopResult.hidden = false;
+      ui.teamRooftopAttestRow.hidden = false;
+      ui.teamRooftopSubmit.textContent = 'Submit for verification';
+      return;
+    }
+    if (!ui.teamRooftopAttested.checked) {
+      throw new Error('Confirm that you are authorized to add this dealership.');
+    }
+    ui.teamRooftopSubmit.textContent = 'Submitting…';
+    const res = await chrome.runtime.sendMessage({
+      type: 'EZLIST_CREATE_CLAIM',
+      payload: {
+        dealershipIds: [state.teamNewDealer.id],
+        organizationId: organization.id,
+        attested: true
+      }
+    });
+    if (!res || !res.ok) throw new Error((res && res.error) || 'Could not submit the rooftop claim.');
+    resetTeamRooftopForm();
+    ui.teamRooftopForm.hidden = true;
+    await loadClaims();
+    await loadTeamData();
+    ui.teamError.textContent = 'Rooftop submitted. We target verification within a few hours and do not charge before approval.';
+    ui.teamError.hidden = false;
+  } catch (error) {
+    ui.teamError.textContent = error.message || 'Could not add the rooftop.';
+    ui.teamError.hidden = false;
+  } finally {
+    ui.teamRooftopSubmit.disabled = false;
+    if (!state.teamNewDealer && ui.teamRooftopSubmit.textContent !== 'Detect dealership') {
+      ui.teamRooftopSubmit.textContent = 'Detect dealership';
+    }
+  }
+}
+
+async function activateApprovedRooftops() {
+  const organization = activeOrganization();
+  if (!organization || ui.teamActivateRooftops.disabled) return;
+  ui.teamActivateRooftops.disabled = true;
+  ui.teamError.hidden = true;
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: 'EZLIST_CHECKOUT',
+      billing: { target: 'organization', organizationId: organization.id }
+    });
+    if (!res || !res.ok) throw new Error((res && res.error) || 'Could not activate the approved rooftop.');
+    if (res.completed) {
+      await loadClaims();
+      await refreshAuth({ refresh: true });
+      await loadTeamData();
+    } else {
+      ui.teamError.textContent = 'Finish the prorated payment in Stripe. Access activates automatically after Stripe confirms it.';
+      ui.teamError.hidden = false;
+    }
+  } catch (error) {
+    ui.teamError.textContent = error.message || 'Could not activate the approved rooftop.';
+    ui.teamError.hidden = false;
+  } finally {
+    ui.teamActivateRooftops.disabled = false;
+  }
+}
+
+async function initiateTeamOwnershipTransfer(button) {
+  const organization = activeOrganization();
+  if (!organization || button.disabled) return;
+  const member = (state.teamMembers || []).find((item) => item.id === button.dataset.transferOwner);
+  if (!member) return;
+  if (!window.confirm(`Transfer ownership of ${organization.name || 'this organization'} to ${member.name || member.email}? They must accept within 24 hours. You will remain an all-rooftop manager.`)) return;
+  button.disabled = true;
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: 'EZLIST_ORG_TRANSFER_OWNERSHIP',
+      organizationId: organization.id,
+      targetMemberId: member.id
+    });
+    if (!res || !res.ok) {
+      const error = new Error((res && res.error) || 'Could not start ownership transfer.');
+      error.reason = res && res.reason;
+      throw error;
+    }
+    const delivery = res.transfer && res.transfer.delivery;
+    ui.teamError.textContent = delivery && delivery.ok
+      ? `Ownership acceptance code emailed to ${res.transfer.targetEmail}.`
+      : `Email delivery is unavailable. Share this one-time code securely: ${res.transfer.token}`;
+    ui.teamError.hidden = false;
+  } catch (error) {
+    ui.teamError.textContent = error.reason === 'recent_reauthentication_required'
+      ? 'For security, sign out and sign in with Google again, then retry the ownership transfer within 15 minutes.'
+      : (error.message || 'Could not start ownership transfer.');
+    ui.teamError.hidden = false;
+    button.disabled = false;
+  }
+}
+
+async function acceptTeamOwnershipTransfer(event) {
+  event.preventDefault();
+  const submit = event.submitter || ui.teamTransferForm.querySelector('button[type="submit"]');
+  submit.disabled = true;
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: 'EZLIST_ACCEPT_OWNERSHIP',
+      token: ui.teamTransferCode.value.trim()
+    });
+    if (!res || !res.ok) throw new Error((res && res.error) || 'Could not accept ownership.');
+    ui.teamTransferCode.value = '';
+    ui.teamTransferForm.hidden = true;
+    await refreshAuth({ refresh: true });
+    await loadTeamData();
+  } catch (error) {
+    ui.teamTransferResult.textContent = error.message || 'Could not accept ownership.';
+    ui.teamTransferResult.hidden = false;
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function toggleTeamSeat(button) {
+  const organization = activeOrganization();
+  if (!organization || button.disabled) return;
+  const assign = button.dataset.seatAssigned !== '1';
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = assign ? 'Assigning…' : 'Releasing…';
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: 'EZLIST_ORG_SEAT',
+      organizationId: organization.id,
+      dealershipId: button.dataset.seatRooftop,
+      memberId: button.dataset.seatMember,
+      assign
+    });
+    if (!res || !res.ok) throw new Error((res && res.error) || 'Could not update listing seat.');
+    await loadTeamData();
+    await refreshAuth({ refresh: true });
+  } catch (error) {
+    ui.teamError.textContent = error.message || 'Could not update listing seat.';
+    ui.teamError.hidden = false;
+    button.disabled = false;
+    button.textContent = label;
+  }
+}
+
+async function changeTeamCapacity(button) {
+  const organization = activeOrganization();
+  if (!organization || button.disabled) return;
+  const current = (state.team && state.team.capacity || []).find((item) =>
+    item.dealershipId === button.dataset.capacityRooftop
+  );
+  if (!current) return;
+  const requested = Number(button.dataset.capacityExtra);
+  const increasing = requested > Number(current.extraSeats || 0);
+  const plan = state.plans && state.plans.extraSeat;
+  const price = plan && plan.amount
+    ? new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: plan.currency || 'usd'
+      }).format(Number(plan.amount) / 100)
+    : 'the configured seat price';
+  const prompt = increasing
+    ? `Add one listing seat to ${current.dealershipName}? Stripe will charge a prorated amount now, then ${price} per month.`
+    : `Remove one extra listing seat from ${current.dealershipName} at the next renewal?`;
+  if (!window.confirm(prompt)) return;
+  button.disabled = true;
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: 'EZLIST_ORG_CAPACITY',
+      organizationId: organization.id,
+      dealershipId: current.dealershipId,
+      extraSeats: requested
+    });
+    if (!res || !res.ok) throw new Error((res && res.error) || 'Could not update seat capacity.');
+    await loadTeamData();
+  } catch (error) {
+    ui.teamError.textContent = error.message || 'Could not update seat capacity.';
+    ui.teamError.hidden = false;
+    button.disabled = false;
+  }
+}
+
+async function changeTeamRooftopRemoval(button) {
+  const organization = activeOrganization();
+  if (!organization || button.disabled) return;
+  const rooftop = (state.team && state.team.capacity || []).find((item) =>
+    item.dealershipId === button.dataset.rooftopRemoval
+  );
+  if (!rooftop) return;
+  const cancel = button.dataset.removalCancel === '1';
+  const prompt = cancel
+    ? `Keep ${rooftop.dealershipName} in this organization and restore it to the next invoice?`
+    : `Remove ${rooftop.dealershipName} at the next renewal? Team access continues until then, and its history stays preserved.`;
+  if (!window.confirm(prompt)) return;
+  button.disabled = true;
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: 'EZLIST_ORG_ROOFTOP_REMOVAL',
+      organizationId: organization.id,
+      dealershipId: rooftop.dealershipId,
+      cancel
+    });
+    if (!res || !res.ok) throw new Error((res && res.error) || 'Could not update the rooftop renewal.');
+    await refreshAuth({ refresh: true });
+    await loadTeamData();
+  } catch (error) {
+    ui.teamError.textContent = error.message || 'Could not update the rooftop renewal.';
+    ui.teamError.hidden = false;
+    button.disabled = false;
+  }
+}
+
+async function decideTeamRequest(requestId, approve) {
+  const organization = activeOrganization();
+  if (!organization) return;
+  const res = await chrome.runtime.sendMessage({
+    type: 'EZLIST_ORG_DECIDE_ACCESS',
+    organizationId: organization.id,
+    requestId,
+    payload: { approve }
+  }).catch(() => null);
+  if (!res || !res.ok) {
+    ui.teamError.textContent = (res && res.error) || 'Could not update request.';
+    ui.teamError.hidden = false;
+    return;
+  }
+  await loadTeamData();
 }
 
 // Yellow "Sold by dealership" card: FB / Craigslist / Delisted counts. Hidden until there's at
@@ -749,7 +1323,7 @@ function markSold(key, platform) {
   chrome.storage.local.set({ ezlistListings: state.listings }); // triggers background auto-sync
   chrome.runtime.sendMessage({
     type: 'EZLIST_ENQUEUE_EVENT',
-    event: { type, clientKey: key, occurredAt: new Date().toISOString(), data: type === 'marked_sold' ? { soldPrice: l.soldPrice, soldPlatform: l.soldPlatform } : null }
+    event: { type, clientKey: key, context: state.auth && state.auth.context, occurredAt: new Date().toISOString(), data: type === 'marked_sold' ? { soldPrice: l.soldPrice, soldPlatform: l.soldPlatform } : null }
   }).catch(() => {});
   renderStats();
 }
@@ -798,7 +1372,7 @@ function setDealerOutcome(key, outcome) {
   chrome.storage.local.set({ ezlistListings: state.listings }); // triggers background auto-sync
   chrome.runtime.sendMessage({
     type: 'EZLIST_ENQUEUE_EVENT',
-    event: { type: 'dealer_outcome', clientKey: key, occurredAt: l.dealerOutcomeAt, data: { outcome } }
+    event: { type: 'dealer_outcome', clientKey: key, context: state.auth && state.auth.context, occurredAt: l.dealerOutcomeAt, data: { outcome } }
   }).catch(() => {});
   renderStats();
 }
@@ -947,6 +1521,52 @@ function wireEvents() {
   enhanceSelects(); // replace native <select>s with the styled custom dropdown
   ui.statsBtn.addEventListener('click', () => showView('stats'));
   ui.statsBack.addEventListener('click', () => showView('lister'));
+  ui.teamBtn.addEventListener('click', () => showView('team'));
+  ui.teamBack.addEventListener('click', () => showView('lister'));
+  ui.teamRefresh.addEventListener('click', () => loadTeamData());
+  ui.teamRooftop.addEventListener('change', () => loadTeamData());
+  ui.workspaceSelect.addEventListener('change', chooseWorkspaceContext);
+  ui.rooftopSelect.addEventListener('change', chooseRooftopContext);
+  ui.teamInviteToggle.addEventListener('click', () => { ui.teamInviteForm.hidden = false; ui.teamInviteEmail.focus(); });
+  ui.teamInviteCancel.addEventListener('click', () => { ui.teamInviteForm.hidden = true; ui.teamInviteResult.hidden = true; });
+  ui.teamInviteForm.addEventListener('submit', submitTeamInvite);
+  ui.teamAddRooftopToggle.addEventListener('click', () => {
+    resetTeamRooftopForm();
+    ui.teamRooftopForm.hidden = false;
+    ui.teamRooftopUrl.focus();
+  });
+  ui.teamRooftopCancel.addEventListener('click', () => {
+    resetTeamRooftopForm();
+    ui.teamRooftopForm.hidden = true;
+  });
+  ui.teamRooftopForm.addEventListener('submit', submitTeamRooftop);
+  ui.teamActivateRooftops.addEventListener('click', activateApprovedRooftops);
+  ui.teamTransferAcceptToggle.addEventListener('click', () => {
+    ui.teamTransferForm.hidden = false;
+    ui.teamTransferResult.hidden = true;
+    ui.teamTransferCode.focus();
+  });
+  ui.teamTransferCancel.addEventListener('click', () => {
+    ui.teamTransferForm.hidden = true;
+    ui.teamTransferResult.hidden = true;
+  });
+  ui.teamTransferForm.addEventListener('submit', acceptTeamOwnershipTransfer);
+  ui.teamRequests.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-request][data-decision]');
+    if (button) decideTeamRequest(button.dataset.request, button.dataset.decision === 'approve');
+  });
+  ui.teamMembers.addEventListener('click', (event) => {
+    const transfer = event.target.closest('[data-transfer-owner]');
+    if (transfer) { initiateTeamOwnershipTransfer(transfer); return; }
+    const button = event.target.closest('[data-seat-member][data-seat-rooftop]');
+    if (button) toggleTeamSeat(button);
+  });
+  ui.teamCapacity.addEventListener('click', (event) => {
+    const removal = event.target.closest('[data-rooftop-removal]');
+    if (removal) { changeTeamRooftopRemoval(removal); return; }
+    const button = event.target.closest('[data-capacity-rooftop][data-capacity-extra]');
+    if (button) changeTeamCapacity(button);
+  });
   ui.statsRange.addEventListener('change', () => { ui.statsRangeLabel.textContent = rangeLabel(ui.statsRange.value); renderStats(); });
   ui.stListings.addEventListener('click', (e) => {
     const needsBtn = e.target.closest('.needs-pill');
@@ -1020,10 +1640,33 @@ function wireEvents() {
     if (e.key === 'Enter') { e.preventDefault(); ui.dealerConnectDetect.click(); }
   });
   ui.dealerRequest.addEventListener('submit', submitDealerRequest);
+  ui.joinInviteForm.addEventListener('submit', acceptTeamInvitation);
+  ui.claimAddRooftop.addEventListener('click', addAnotherClaimRooftop);
+  ui.claimRooftops.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-remove-claim-dealer]');
+    if (!button) return;
+    state.claimDealers = state.claimDealers.filter((dealer) => dealer.id !== button.dataset.removeClaimDealer);
+    if (state.detectedDealer && state.detectedDealer.id === button.dataset.removeClaimDealer) {
+      state.detectedDealer = null;
+      state.detectedClaimed = false;
+    }
+    renderGate();
+  });
   ui.gateSignout.addEventListener('click', doSignOut);
   ui.accountBtn.addEventListener('click', (e) => { e.stopPropagation(); ui.accountMenu.hidden = !ui.accountMenu.hidden; });
   ui.acctSignout.addEventListener('click', doSignOut);
   ui.acctBilling.addEventListener('click', openBilling);
+  ui.gateIntents.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-intent]');
+    if (!button) return;
+    state.intent = button.dataset.intent;
+    state.claimDealers = [];
+    state.detectedDealer = null;
+    state.detectedClaimed = false;
+    chrome.storage.local.set({ ezlistOnboardingIntent: state.intent });
+    state.autoDealerConnectTried = false;
+    renderGate();
+  });
   document.addEventListener('click', (e) => {
     if (!ui.accountMenu.hidden && !ui.accountMenu.contains(e.target) && !ui.accountBtn.contains(e.target)) ui.accountMenu.hidden = true;
   });
@@ -1100,7 +1743,15 @@ async function onFill() {
     if (!state.prefs.mileage) delete fillDraft.mileage;            // "Add mileage" off → leave blank
     if (state.prefs.category) fillDraft.bodyType = state.prefs.category; // category override → mapped by the filler
     const key = keyForDraft(fillDraft);
-    await chrome.runtime.sendMessage({ type: 'EZLIST_SAVE_DRAFT', draft: fillDraft, autoFill: true, platform, key });
+    const saved = await chrome.runtime.sendMessage({
+      type: 'EZLIST_SAVE_DRAFT',
+      draft: fillDraft,
+      autoFill: true,
+      platform,
+      key,
+      context: gate.context
+    });
+    if (!saved || !saved.ok) throw new Error((saved && saved.error) || 'Could not save listing.');
     // Facebook deep-links straight to the create form so it fills immediately. Craigslist's
     // post flow is multi-page (sign in → area → category), so we open it and the vehicle form
     // auto-fills once the user reaches it (driven by the platform-tagged autoFill flag).
@@ -1115,7 +1766,7 @@ async function onFill() {
     setStatus(e.message || 'Something went wrong.', true);
   } finally {
     state.filling = false;
-    ui.fill.disabled = false;
+    ui.fill.disabled = !!(state.auth && !state.auth.canList);
     ui.fill.textContent = original;
   }
 }
@@ -1178,31 +1829,65 @@ const GATE_SVG = {
 };
 const GATE = {
   signed_out: { step: 1, benefits: true, title: 'Welcome to CarXprt', msg: 'Sign in with Google to start listing your dealership’s inventory — Facebook Marketplace, Craigslist, and more.', primary: 'Sign in with Google', action: 'signin' },
+  choose_intent: { svg: GATE_SVG.store, title: 'How will you use CarXprt?', msg: 'Choose the path that fits today. You can join a dealership team later without losing personal history.', intents: true },
   no_dealership: { svg: GATE_SVG.store, step: 2, title: 'Connect your dealership', msg: 'Open your dealership’s inventory page in a tab and detect it here — or enter your dealership’s website. You confirm before anything is connected.', primary: 'Detect dealership', action: 'detectDealer' },
   no_subscription: { svg: GATE_SVG.card, step: 3, title: 'Start your subscription', msg: 'Unlimited one-click listings, AI descriptions & translations, and automatic sold tracking.', primary: 'Subscribe', action: 'checkout', price: true },
+  claim_pending: { svg: GATE_SVG.store, title: 'Verification in progress', msg: 'Your dealership claim is with CarXprt. We target a decision within a few hours and do not charge you before approval.', primary: 'Check status', action: 'claimRefresh' },
+  claim_approved: { svg: GATE_SVG.card, title: 'Dealership verified', msg: 'Your approved rooftops are reserved. Start the dealership plan to activate team access and included seats.', primary: 'Start dealership plan', action: 'orgCheckout', price: true },
+  access_pending: { svg: GATE_SVG.user, title: 'Access requested', msg: 'Your dealership manager has your request. CarXprt unlocks automatically after approval and seat assignment.', primary: 'Check status', action: 'recheck' },
+  no_seat: { svg: GATE_SVG.user, title: 'Listing seat needed', msg: 'Your team membership is active, but this rooftop does not have a listing seat assigned to you yet.', primary: 'Check again', action: 'recheck' },
+  owner_listing: { svg: GATE_SVG.user, title: 'Will you list vehicles too?', msg: 'Owners can manage the team without using a seat. Choose listing access only if you will post inventory yourself.', primary: 'Yes, I’ll list', action: 'ownerWillList', secondary: 'Dashboard only', secondaryAction: 'ownerDashboard' },
   expired: { svg: GATE_SVG.card, title: 'Renew your subscription', msg: 'Your subscription has ended. Renew to keep listing your inventory to your marketplaces.', primary: 'Renew', action: 'checkout', price: true },
   unknown: { svg: GATE_SVG.alert, title: 'Couldn’t load your account', msg: 'We couldn’t reach the server. Check your connection and try again.', primary: 'Retry', action: 'recheck' }
 };
 // Screens that count as "the user is inside onboarding" — finishing from one of these earns
 // the one-time welcome beat before the app appears.
-const ONBOARDING_SCREENS = ['signed_out', 'no_dealership', 'no_subscription', 'expired', 'checkout_pending', 'linkflash'];
+const ONBOARDING_SCREENS = ['signed_out', 'choose_intent', 'no_dealership', 'no_subscription', 'claim_pending', 'claim_approved', 'access_pending', 'expired', 'checkout_pending', 'linkflash'];
+
+async function loadClaims() {
+  if (state.auth && state.auth.features && state.auth.features.organizations === false) {
+    state.claims = [];
+    state.claimsLoaded = true;
+    return state.claims;
+  }
+  const res = await chrome.runtime.sendMessage({ type: 'EZLIST_GET_CLAIMS' }).catch(() => null);
+  state.claims = res && res.ok && Array.isArray(res.claims) ? res.claims : [];
+  state.claimsLoaded = true;
+  renderGate();
+  return state.claims;
+}
+
+function currentClaim() {
+  const claims = state.claims || [];
+  // Partial multi-rooftop approval must not make an approved package wait behind a sibling
+  // still under review. Checkout counts only approved reservations server-side.
+  return claims.find((claim) => ['approved', 'checkout_pending'].includes(claim.status))
+    || claims.find((claim) => ['pending', 'evidence_requested'].includes(claim.status))
+    || null;
+}
 
 async function loadBillingPlan() {
   const res = await chrome.runtime.sendMessage({ type: 'EZLIST_BILLING_PLAN' }).catch(() => null);
   if (res && res.ok && res.plan) {
     state.plan = res.plan;
+    state.plans = res.plans || null;
     renderPlan();
   }
 }
 
 function renderPlan() {
-  if (!state.plan || !ui.gatePriceAmt || !ui.gatePricePer) return;
-  const amount = Number(state.plan.amount || 0) / 100;
-  const currency = String(state.plan.currency || 'usd').toUpperCase();
+  const organization = state.intent === 'organization'
+    || (state.auth && state.auth.activeWorkspace && state.auth.activeWorkspace.type === 'organization');
+  const plan = organization && state.plans && state.plans.dealership
+    ? state.plans.dealership
+    : state.plan;
+  if (!plan || !ui.gatePriceAmt || !ui.gatePricePer) return;
+  const amount = Number(plan.amount || 0) / 100;
+  const currency = String(plan.currency || 'usd').toUpperCase();
   ui.gatePriceAmt.textContent = amount
     ? new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount)
     : 'Custom';
-  ui.gatePricePer.textContent = amount ? ` / ${state.plan.interval || 'month'} · cancel anytime` : '';
+  ui.gatePricePer.textContent = amount ? ` / ${plan.interval || 'month'}${organization ? ' per rooftop' : ''} · cancel anytime` : '';
 }
 
 async function refreshAuth(opts) {
@@ -1212,18 +1897,78 @@ async function refreshAuth(opts) {
   } catch {
     state.auth = { signedIn: false, entitled: false, reason: 'unknown' };
   }
+  if (state.auth && Array.isArray(state.auth.accessRequests)) {
+    const open = state.auth.accessRequests.find((request) =>
+      ['pending', 'approved_awaiting_capacity'].includes(request.status)
+    );
+    if (open) {
+      state.accessRequested = {
+        requestId: open.id,
+        dealershipId: open.dealershipId || open.dealership_id,
+        status: open.status
+      };
+      chrome.storage.local.set({ ezlistAccessRequestPending: state.accessRequested });
+    } else if (state.accessRequested) {
+      state.accessRequested = null;
+      chrome.storage.local.remove('ezlistAccessRequestPending');
+    }
+  }
+  if (state.auth && state.auth.features && state.auth.features.organizations === false
+      && state.intent && state.intent !== 'personal') {
+    state.intent = 'personal';
+    state.claimDealers = [];
+    chrome.storage.local.set({ ezlistOnboardingIntent: state.intent });
+  }
+  // A manager approval can add an organization while this device still has the personal
+  // workspace selected. Move the pending applicant into the newly granted rooftop once, then
+  // remove the local pending hint; the backend response is the authority for the transition.
+  if (state.accessRequested && state.auth && state.auth.signedIn) {
+    const match = (state.auth.workspaces || [])
+      .filter((workspace) => workspace.type === 'organization')
+      .map((workspace) => ({
+        workspace,
+        rooftop: (workspace.rooftops || []).find((item) =>
+          item.dealership && item.dealership.id === state.accessRequested.dealershipId
+        )
+      }))
+      .find((item) => item.rooftop);
+    if (match) {
+      const selected = await chrome.runtime.sendMessage({
+        type: 'EZLIST_SELECT_CONTEXT',
+        workspaceId: match.workspace.id,
+        dealershipId: match.rooftop.dealership.id
+      }).catch(() => null);
+      if (selected && selected.ok) {
+        state.auth = selected.auth;
+        state.accessRequested = null;
+        chrome.storage.local.remove('ezlistAccessRequestPending');
+      }
+    }
+  }
   state.authResolved = true; // the boot "checking" screen can resolve now
+  renderWorkspaceContext();
   renderGate();
   return state.auth;
 }
 
 function gateStateKey(auth) {
   if (!auth || !auth.signedIn) return 'signed_out';
-  if (auth.entitled) return null; // entitled → no gate
+  const workspace = auth.activeWorkspace;
+  const member = workspace && workspace.type === 'organization' ? workspace.member : null;
+  if (auth.paid && member && member.role === 'owner' && !member.listingPreference) return 'owner_listing';
+  if (auth.canList) return null;
+  if (auth.paid && hasCapability('stats:team')) return null; // manager/owner dashboard, seat optional
+  if (auth.paid && auth.activeWorkspace && auth.activeWorkspace.type === 'organization') return 'no_seat';
+  if (state.accessRequested) return 'access_pending';
+  const claim = currentClaim();
+  if (claim && ['pending', 'evidence_requested'].includes(claim.status)) return 'claim_pending';
+  if (claim && ['approved', 'checkout_pending'].includes(claim.status)) return 'claim_approved';
+  if (!auth.dealership && !state.intent) return 'choose_intent';
   if (!auth.dealership) return 'no_dealership';
   if (auth.reason === 'no_dealership') return 'no_dealership';
   if (auth.reason === 'expired') return 'expired';
   if (auth.reason === 'no_subscription') return 'no_subscription';
+  if (auth.reason === 'claim_approval_required') return 'claim_pending';
   return 'unknown';
 }
 
@@ -1237,7 +1982,7 @@ function gateScreen(auth) {
   // Pre-payment "change dealership": re-enter the connect step even though a dealership is
   // linked. Only possible before a live subscription (the backend enforces the same lock).
   if (state.changingDealer && (key === 'no_subscription' || key === 'expired')) return 'no_dealership';
-  if (state.checkoutPending && (key === 'no_subscription' || key === 'expired')) return 'checkout_pending';
+  if (state.checkoutPending && (key === 'no_subscription' || key === 'expired' || key === 'claim_approved')) return 'checkout_pending';
   return key;
 }
 
@@ -1274,7 +2019,15 @@ function renderGate() {
   }
   const changed = screen !== state.lastGateScreen;
   state.lastGateScreen = screen;
-  if (!screen) { state.changingDealer = false; ui.gate.hidden = true; return; } // entitled → mode over
+  if (!screen) {
+    state.changingDealer = false;
+    ui.gate.hidden = true;
+    if (auth.paid && !auth.canList && hasCapability('stats:team') && !state.teamAutoOpened) {
+      state.teamAutoOpened = true;
+      showView('team');
+    }
+    return;
+  } // entitled or dashboard-authorized → no gate
   ui.gate.hidden = false;
   if (changed) restartGateEnter();
 
@@ -1282,6 +2035,7 @@ function renderGate() {
   ui.gateIcon.innerHTML = '';
   ui.gateIcon.hidden = false;
   ui.gateBenefits.hidden = true;
+  ui.gateIntents.hidden = true;
   ui.gateDealer.hidden = true;
   ui.gateChangeDealer.hidden = true;
   ui.dealerKeep.hidden = true;
@@ -1289,6 +2043,8 @@ function renderGate() {
   ui.gatePrimary.hidden = true;
   ui.gateSecondary.hidden = true;
   ui.dealerConnect.hidden = true;
+  ui.joinInviteForm.hidden = true;
+  ui.claimForm.hidden = true;
   ui.gateErr.hidden = true;
   ui.gateSignout.hidden = true;
   renderSteps(null);
@@ -1311,12 +2067,41 @@ function renderGate() {
   ui.gateTitle.textContent = g.title;
   ui.gateMsg.textContent = g.msg;
   ui.gateBenefits.hidden = !g.benefits;
+  ui.gateIntents.hidden = !g.intents;
+  if (g.intents) {
+    const organizationsAvailable = !(auth.features && auth.features.organizations === false);
+    ui.gateIntents.querySelectorAll('[data-intent="organization"],[data-intent="join"]')
+      .forEach((button) => { button.hidden = !organizationsAvailable; });
+  }
+  if (screen === 'no_dealership' && state.intent === 'organization') {
+    ui.gateTitle.textContent = 'Choose your dealership locations';
+    ui.gateMsg.textContent = 'Open or enter each dealership website, then submit one short authority claim. Payment starts only after approval.';
+  } else if (screen === 'no_dealership' && state.intent === 'join') {
+    ui.gateTitle.textContent = 'Find your dealership team';
+    ui.gateMsg.textContent = 'Open or enter your dealership website. If its CarXprt team is active, we’ll send your manager an access request.';
+  } else if (screen === 'no_seat' && state.accessRequested && state.accessRequested.status === 'approved_awaiting_capacity') {
+    ui.gateTitle.textContent = 'Approved · waiting for capacity';
+    ui.gateMsg.textContent = 'Your manager approved access. CarXprt will assign your listing seat automatically when capacity becomes available.';
+  } else if (screen === 'claim_approved') {
+    const approved = (state.claims || []).filter((claim) => ['approved', 'checkout_pending'].includes(claim.status)).length;
+    const pending = (state.claims || []).filter((claim) => ['pending', 'evidence_requested'].includes(claim.status)).length;
+    ui.gateMsg.textContent = pending
+      ? `${approved} location${approved === 1 ? '' : 's'} verified and reserved; ${pending} still under review. Checkout includes only verified locations.`
+      : `${approved || 1} verified location${approved === 1 ? '' : 's'} reserved. Start the dealership plan to activate team access and included seats.`;
+  }
   renderVerifiedDealer(screen, auth);
   ui.gatePrice.hidden = !g.price;
   if (g.price) renderPlan();
-  ui.gatePrimary.hidden = false;
-  ui.gatePrimary.textContent = g.primary;
-  ui.gatePrimary.dataset.action = g.action;
+  ui.gatePrimary.hidden = !g.primary;
+  if (g.primary) {
+    ui.gatePrimary.textContent = g.primary;
+    ui.gatePrimary.dataset.action = g.action;
+  }
+  ui.gateSecondary.hidden = !g.secondary;
+  if (g.secondary) {
+    ui.gateSecondary.textContent = g.secondary;
+    ui.gateSecondary.dataset.action = g.secondaryAction;
+  }
   renderDealerConnect(screen, auth);
   ui.gateSignout.hidden = !auth.signedIn;
 }
@@ -1347,9 +2132,7 @@ function renderCheckoutPending() {
   ui.gateIcon.innerHTML = '<span class="gate-spinner" aria-hidden="true"></span>';
   ui.gateTitle.textContent = 'Finish in the checkout tab';
   ui.gateMsg.textContent = 'Complete your subscription in the Stripe tab that just opened — CarXprt unlocks here automatically.';
-  ui.gatePrimary.hidden = false;
-  ui.gatePrimary.textContent = 'I’ve subscribed — check again';
-  ui.gatePrimary.dataset.action = 'recheck';
+  ui.gatePrimary.hidden = true;
   ui.gateSecondary.hidden = false;
   ui.gateSecondary.textContent = 'Back';
   ui.gateSecondary.dataset.action = 'checkoutBack';
@@ -1404,13 +2187,33 @@ function renderVerifiedDealer(key, auth) {
   ui.gateChangeDealer.hidden = false;
 }
 
+function selectedClaimDealers() {
+  const selected = [...state.claimDealers];
+  if (state.detectedDealer && !selected.some((dealer) => dealer.id === state.detectedDealer.id)) {
+    selected.push(state.detectedDealer);
+  }
+  return selected;
+}
+
+function renderClaimSelection() {
+  const dealers = selectedClaimDealers();
+  ui.claimRooftops.innerHTML = dealers.map((dealer) => {
+    const domain = Array.isArray(dealer.domains) && dealer.domains[0] ? dealer.domains[0] : '';
+    return `<div class="claim-rooftop"><span><b>${esc(dealer.name || 'Dealership')}</b>${domain ? `<small>${esc(domain)}</small>` : ''}</span>`
+      + `<button type="button" title="Remove rooftop" aria-label="Remove ${esc(dealer.name || 'rooftop')}" data-remove-claim-dealer="${esc(dealer.id)}">×</button></div>`;
+  }).join('');
+  ui.claimAddRooftop.hidden = dealers.length >= 25;
+}
+
 function renderDealerConnect(key, auth) {
   const active = key === 'no_dealership';
   ui.dealerConnect.hidden = !active;
+  ui.joinInviteForm.hidden = !(active && state.intent === 'join');
   if (!active) {
     state.dealerRequestOpen = false;
     state.autoDealerConnectTried = false;
     state.detectedDealer = null;
+    state.detectedClaimed = false;
     state.dealerUrlOpen = false;
     return;
   }
@@ -1431,8 +2234,35 @@ function renderDealerConnect(key, auth) {
     const domain = (Array.isArray(d.domains) && d.domains[0]) || '';
     ui.gateDealer.hidden = false;
     ui.gateDealer.innerHTML = `${esc(d.name || 'Dealership')}<small>${domain ? `${esc(domain)} · ` : ''}detected — confirm it’s yours</small>`;
-    ui.gatePrimary.textContent = `Connect ${d.name || 'dealership'}`;
-    ui.gatePrimary.dataset.action = 'linkDetected';
+    if (state.intent === 'organization' && state.detectedClaimed) {
+      ui.gateTitle.textContent = 'This dealership already has a CarXprt team';
+      ui.gateMsg.textContent = 'Request access from its current manager. Ownership disputes are handled by CarXprt support and never replace the existing team automatically.';
+      ui.gatePrimary.textContent = 'Request team access';
+      ui.gatePrimary.dataset.action = 'requestAccess';
+    } else if (state.intent === 'organization') {
+      ui.claimForm.hidden = false;
+      ui.gatePrimary.textContent = selectedClaimDealers().length > 1
+        ? `Submit ${selectedClaimDealers().length} rooftop claims`
+        : 'Submit dealership claim';
+      ui.gatePrimary.dataset.action = 'claimDetected';
+    } else if (state.detectedClaimed) {
+      ui.gatePrimary.textContent = 'Request team access';
+      ui.gatePrimary.dataset.action = 'requestAccess';
+    } else if (state.intent === 'join') {
+      ui.gatePrimary.textContent = 'No CarXprt team yet';
+      ui.gatePrimary.dataset.action = 'joinUnavailable';
+    } else {
+      ui.gatePrimary.textContent = `Connect ${d.name || 'dealership'}`;
+      ui.gatePrimary.dataset.action = 'linkDetected';
+    }
+  }
+
+  if (state.intent === 'organization' && !state.detectedClaimed && selectedClaimDealers().length) {
+    ui.claimForm.hidden = false;
+    renderClaimSelection();
+    const count = selectedClaimDealers().length;
+    ui.gatePrimary.textContent = count > 1 ? `Submit ${count} rooftop claims` : 'Submit dealership claim';
+    ui.gatePrimary.dataset.action = 'claimDetected';
   }
 
   ui.dealerUrlRow.hidden = !state.dealerUrlOpen;
@@ -1475,7 +2305,7 @@ function applyAccount(auth) {
   if (!signedIn) { ui.accountMenu.hidden = true; return; }
   ui.accountEmail.textContent = (auth.user && auth.user.email) || 'Signed in';
   const periodEnd = auth.subscription && auth.subscription.periodEnd;
-  ui.accountPlan.textContent = auth.entitled
+  ui.accountPlan.textContent = auth.paid
     ? (periodEnd ? `Active · renews ${new Date(periodEnd).toLocaleDateString()}` : 'Active')
     : 'No active plan';
 }
@@ -1487,6 +2317,12 @@ async function gateAction(action, btnEl) {
   if (action === 'checkoutBack') { state.checkoutPending = false; renderGate(); return; }
   if (action === 'detectDealer') { detectDealership(); return; }   // manages its own button state
   if (action === 'linkDetected') { linkDetectedDealership(); return; }
+  if (action === 'claimDetected') { submitDealershipClaim(); return; }
+  if (action === 'requestAccess') { requestTeamAccess(); return; }
+  if (action === 'joinUnavailable') {
+    showGateError('This dealership does not have an active CarXprt team yet. Choose personal access or ask a manager to set up the dealership.');
+    return;
+  }
   if (action === 'openInventory') {
     const url = dealerInventoryUrl(state.auth);
     if (url) chrome.tabs.create({ url }).catch(() => window.open(url, '_blank'));
@@ -1498,14 +2334,39 @@ async function gateAction(action, btnEl) {
   const label = btn.textContent;
   btn.disabled = true;
   try {
-    if (action === 'signin') {
+    if (action === 'ownerWillList' || action === 'ownerDashboard') {
+      btn.textContent = 'Saving choice…';
+      const organization = activeOrganization();
+      if (!organization) throw new Error('Organization workspace not found.');
+      const res = await chrome.runtime.sendMessage({
+        type: 'EZLIST_ORG_OWNER_LISTING_PREFERENCE',
+        organizationId: organization.id,
+        willList: action === 'ownerWillList'
+      });
+      if (!res || !res.ok) throw new Error((res && res.error) || 'Could not save listing access.');
+      if (action === 'ownerWillList' && Array.isArray(res.dealershipIds) && res.dealershipIds[0]) {
+        const selected = await chrome.runtime.sendMessage({
+          type: 'EZLIST_SELECT_CONTEXT',
+          workspaceId: state.auth.activeWorkspace.id,
+          dealershipId: res.dealershipIds[0]
+        });
+        if (selected && selected.ok) state.auth = selected.auth;
+      } else {
+        await refreshAuth({ refresh: true });
+      }
+      renderWorkspaceContext();
+      renderGate();
+    } else if (action === 'signin') {
       btn.textContent = 'Opening Google…';
       const res = await chrome.runtime.sendMessage({ type: 'EZLIST_SIGN_IN' });
       if (!res || !res.ok) throw new Error((res && res.error) || 'Sign-in failed.');
-      state.auth = res.auth; renderGate();
+      state.auth = res.auth;
+      await loadClaims();
+      renderWorkspaceContext();
+      renderGate();
     } else if (action === 'checkout') {
       btn.textContent = 'Opening checkout…';
-      const res = await chrome.runtime.sendMessage({ type: 'EZLIST_CHECKOUT' });
+      const res = await chrome.runtime.sendMessage({ type: 'EZLIST_CHECKOUT', billing: { target: 'personal' } });
       if (!res || !res.ok) {
         const err = new Error((res && res.error) || 'Could not start checkout.');
         err.reason = res && res.reason;
@@ -1515,9 +2376,38 @@ async function gateAction(action, btnEl) {
       // via visibilitychange / the background checkout-watch / the manual recheck button.
       state.checkoutPending = true;
       renderGate();
+    } else if (action === 'orgCheckout') {
+      btn.textContent = 'Opening checkout…';
+      const claim = currentClaim();
+      const organizationId = claim && claim.organizationId;
+      if (!organizationId) throw new Error('Approved organization not found. Check status and try again.');
+      const contextRes = await chrome.runtime.sendMessage({
+        type: 'EZLIST_SELECT_CONTEXT',
+        workspaceId: `organization:${organizationId}`,
+        dealershipId: claim.dealershipId || null
+      });
+      if (contextRes && contextRes.ok) state.auth = contextRes.auth;
+      const res = await chrome.runtime.sendMessage({
+        type: 'EZLIST_CHECKOUT',
+        billing: { target: 'organization', organizationId }
+      });
+      if (!res || !res.ok) throw new Error((res && res.error) || 'Could not start dealership checkout.');
+      if (res.completed) {
+        state.checkoutPending = false;
+        await loadClaims();
+        await refreshAuth({ refresh: true });
+        return;
+      }
+      state.checkoutPending = true;
+      renderGate();
+    } else if (action === 'claimRefresh') {
+      btn.textContent = 'Checking…';
+      await loadClaims();
+      await refreshAuth({ refresh: true });
     } else { // refresh | recheck | retry
       btn.textContent = 'Checking…';
       await refreshAuth({ refresh: true });
+      if (state.auth && state.auth.signedIn) await loadClaims();
     }
   } catch (e) {
     if (action === 'checkout' && e.reason === 'no_dealership') {
@@ -1530,7 +2420,7 @@ async function gateAction(action, btnEl) {
     btn.disabled = false;
     // Restore the label only if it still shows our transient text — a successful action may
     // have re-rendered the gate onto a new screen whose button text must not be clobbered.
-    const transient = ['Opening Google…', 'Opening checkout…', 'Checking…'];
+    const transient = ['Opening Google…', 'Opening checkout…', 'Checking…', 'Saving choice…'];
     if (transient.includes(btn.textContent)) btn.textContent = label;
   }
 }
@@ -1544,11 +2434,7 @@ async function detectDealership(opts = {}) {
   // just falls back to server-side detection (fine for DealerOn).
   let canProbe = false;
   if (opts.url && !opts.silent) {
-    try {
-      let host = new URL(/^https?:\/\//i.test(opts.url) ? opts.url : `https://${opts.url}`).hostname.toLowerCase();
-      const bare = host.replace(/^www\./, '');
-      canProbe = await chrome.permissions.request({ origins: [`https://${bare}/*`, `https://www.${bare}/*`] });
-    } catch { canProbe = false; }
+    canProbe = await requestDealerProbe(opts.url);
   }
   if (!opts.silent) {
     ui.gateErr.hidden = true;
@@ -1568,7 +2454,20 @@ async function detectDealership(opts = {}) {
       if (opts.silent && res && res.reason === 'no_recent_dealer') return;
       throw new Error((res && res.error) || 'Could not detect a supported dealership.');
     }
+    if (state.intent === 'organization'
+        && state.claimDealers.some((dealer) => dealer.id === res.dealership.id)) {
+      state.detectedDealer = null;
+      state.detectedClaimed = false;
+      state.dealerUrlOpen = true;
+      renderGate();
+      showGateError(`${res.dealership.name || 'That rooftop'} is already selected.`);
+      return;
+    }
     state.detectedDealer = res.dealership;
+    state.detectedClaimed = !!res.claimed;
+    if (state.intent === 'organization' && !ui.claimOrgName.value) {
+      ui.claimOrgName.value = res.dealership.name || '';
+    }
     state.dealerUrlOpen = false;
     state.dealerRequestOpen = false;
     renderGate(); // shows the "confirm it's yours" card; primary becomes "Connect <name>"
@@ -1579,6 +2478,114 @@ async function detectDealership(opts = {}) {
     if (!state.detectedDealer && gateStateKey(state.auth) === 'no_dealership') {
       ui.gatePrimary.textContent = GATE.no_dealership.primary;
     }
+  }
+}
+
+function addAnotherClaimRooftop() {
+  if (state.detectedClaimed) {
+    showGateError('That dealership already belongs to a CarXprt team and cannot be added to a new claim.');
+    return;
+  }
+  if (state.detectedDealer
+      && !state.claimDealers.some((dealer) => dealer.id === state.detectedDealer.id)) {
+    state.claimDealers.push(state.detectedDealer);
+  }
+  state.detectedDealer = null;
+  state.detectedClaimed = false;
+  state.dealerUrlOpen = true;
+  state.autoDealerConnectTried = true;
+  renderGate();
+  ui.dealerConnectUrl.value = '';
+  ui.dealerConnectUrl.focus();
+}
+
+async function submitDealershipClaim() {
+  const dealerships = selectedClaimDealers();
+  const organizationName = ui.claimOrgName.value.trim();
+  if (!dealerships.length) return;
+  if (!organizationName || !ui.claimAttested.checked) {
+    showGateError('Enter the organization name and confirm that you are authorized to set it up.');
+    return;
+  }
+  ui.gatePrimary.disabled = true;
+  ui.gatePrimary.textContent = 'Submitting…';
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: 'EZLIST_CREATE_CLAIM',
+      payload: { dealershipIds: dealerships.map((dealership) => dealership.id), organizationName, attested: true }
+    });
+    if (!res || !res.ok) throw new Error((res && res.error) || 'Could not submit dealership claim.');
+    state.claims = res.claims || [];
+    state.claimsLoaded = true;
+    state.detectedDealer = null;
+    state.detectedClaimed = false;
+    state.claimDealers = [];
+    renderGate();
+  } catch (error) {
+    showGateError(error.message || 'Could not submit dealership claim.');
+  } finally {
+    ui.gatePrimary.disabled = false;
+  }
+}
+
+async function requestTeamAccess() {
+  const dealership = state.detectedDealer;
+  if (!dealership || !dealership.id) return;
+  ui.gatePrimary.disabled = true;
+  ui.gatePrimary.textContent = 'Requesting…';
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: 'EZLIST_REQUEST_ACCESS',
+      payload: { dealershipId: dealership.id, requestedRole: 'salesperson' }
+    });
+    if (!res || !res.ok) throw new Error((res && res.error) || 'Could not request team access.');
+    state.accessRequested = { dealershipId: dealership.id, requestId: res.request && res.request.id };
+    await chrome.storage.local.set({ ezlistAccessRequestPending: state.accessRequested });
+    state.detectedDealer = null;
+    state.detectedClaimed = false;
+    renderGate();
+  } catch (error) {
+    showGateError(error.message || 'Could not request team access.');
+  } finally {
+    ui.gatePrimary.disabled = false;
+  }
+}
+
+async function acceptTeamInvitation(event) {
+  event.preventDefault();
+  const token = ui.joinInviteCode.value.trim();
+  if (!token) return;
+  ui.gateErr.hidden = true;
+  ui.joinInviteSubmit.disabled = true;
+  const label = ui.joinInviteSubmit.textContent;
+  ui.joinInviteSubmit.textContent = 'Accepting…';
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'EZLIST_ACCEPT_INVITATION', token });
+    if (!res || !res.ok) throw new Error((res && res.error) || 'Could not accept invitation.');
+    const auth = await refreshAuth({ refresh: true });
+    const workspace = auth && (auth.workspaces || []).find((item) =>
+      item.type === 'organization' && item.organization && item.organization.id === res.organizationId
+    );
+    const rooftop = workspace && workspace.rooftops && workspace.rooftops[0];
+    if (!workspace || !rooftop) throw new Error('Invitation accepted, but no active rooftop is available yet.');
+    const selected = await chrome.runtime.sendMessage({
+      type: 'EZLIST_SELECT_CONTEXT',
+      workspaceId: workspace.id,
+      dealershipId: rooftop.dealership.id
+    });
+    if (!selected || !selected.ok) throw new Error((selected && selected.error) || 'Could not open the team workspace.');
+    state.auth = selected.auth;
+    state.intent = null;
+    state.accessRequested = null;
+    ui.joinInviteCode.value = '';
+    await chrome.storage.local.remove(['ezlistOnboardingIntent', 'ezlistAccessRequestPending']);
+    renderWorkspaceContext();
+    renderGate();
+  } catch (error) {
+    showGateError(error.message || 'Could not accept invitation.');
+  } finally {
+    ui.joinInviteSubmit.disabled = false;
+    ui.joinInviteSubmit.textContent = label;
   }
 }
 
@@ -1654,6 +2661,11 @@ async function submitDealerRequest(e) {
 async function doSignOut() {
   await chrome.runtime.sendMessage({ type: 'EZLIST_SIGN_OUT' }).catch(() => {});
   ui.accountMenu.hidden = true;
+  state.claims = [];
+  state.claimsLoaded = false;
+  state.claimDealers = [];
+  state.team = null;
+  state.accessRequested = null;
   await refreshAuth();
 }
 

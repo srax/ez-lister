@@ -11,6 +11,7 @@ function fakeDb(initial = []) {
     first_missed_at: null, last_seen_in_inventory_at: null, gone_confirmed_at: null,
     dealer_outcome: null, dealer_outcome_at: null, ...r
   }));
+  const eventIds = new Set();
   const presenceRow = (ownerId, key) => rows.find((r) =>
     r.ownerId === ownerId && r.clientKey === key && r.status === 'listed' && r.dealer_outcome == null);
   return {
@@ -43,10 +44,17 @@ function fakeDb(initial = []) {
         if (r) r.first_missed_at = r.first_missed_at || at;
         return { rows: [] };
       }
-      if (/update listings set dealer_outcome = \$3/i.test(q)) {
-        const [ownerId, key, outcome, at] = params;
+      if (/update listings set dealer_outcome = \$4/i.test(q)) {
+        const [workspaceId, actorUserId, key, outcome, at] = params;
+        const ownerId = actorUserId || String(workspaceId).replace(/^personal:/, '');
         for (const r of rows) if (r.ownerId === ownerId && r.clientKey === key) { r.dealer_outcome = outcome; r.dealer_outcome_at = at; }
         return { rows: [] };
+      }
+      if (/^insert into usage_events/i.test(q)) {
+        const id = params[0];
+        if (eventIds.has(id)) return { rows: [] };
+        eventIds.add(id);
+        return { rows: [{ id }] };
       }
       return { rows: [] }; // usage_events insert etc.
     }
@@ -161,4 +169,16 @@ test('dealer_outcome event: an invalid outcome value is ignored', async () => {
     { id: 'ev-2', type: 'dealer_outcome', clientKey: 'VIN11', occurredAt: T0, data: { outcome: 'ebay' } }
   ] }, db);
   assert.equal(db.rows[0].dealer_outcome, null);
+});
+
+test('usage event replay cannot change side effects after its id was accepted', async () => {
+  const db = fakeDb([{ ownerId: OWNER, clientKey: 'VIN12', status: 'listed' }]);
+  await syncListings(OWNER, { events: [
+    { id: 'ev-replay', type: 'dealer_outcome', clientKey: 'VIN12', occurredAt: T0, data: { outcome: 'craigslist' } }
+  ] }, db);
+  await syncListings(OWNER, { events: [
+    { id: 'ev-replay', type: 'dealer_outcome', clientKey: 'VIN12', occurredAt: plusH(1), data: { outcome: 'fb' } }
+  ] }, db);
+  assert.equal(db.rows[0].dealer_outcome, 'craigslist');
+  assert.equal(db.rows[0].dealer_outcome_at, new Date(T0).toISOString());
 });

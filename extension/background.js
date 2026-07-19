@@ -1,8 +1,9 @@
 'use strict';
 
-importScripts('lib/lease.js', 'lib/platforms.js', 'lib/inventoryCheck.js'); // lease verifier + platform registry + inventory presence check
+importScripts('lib/lease.js', 'lib/platforms.js', 'lib/inventoryCheck.js', 'lib/workspaceContext.js'); // lease verifier + platform registry + inventory presence check
 
 const { getPlatform } = globalThis.CarxpertPlatforms;
+const WorkspaceContext = globalThis.CarxpertWorkspaceContext;
 
 const BACKEND_URL = 'http://127.0.0.1:3737';
 // Shared secret for the gated production backend (sent as the x-carxpert-token header).
@@ -13,6 +14,12 @@ const DEALER_SEEN_TTL_MS = 30 * 60 * 1000;
 const CHECKOUT_WATCH_MS = 2 * 60 * 1000;
 const CHECKOUT_POLL_MS = 3000;
 const CHECKOUT_SYNC_EVERY_MS = 30 * 1000;
+const WORKSPACE_STORES_KEY = 'ezlistWorkspaceStores';
+const ACTIVE_CONTEXT_KEY = 'ezlistActiveContext';
+const WORKSPACE_SELECTION_KEY = 'ezlistWorkspaceSelection';
+let contextSwitching = false;
+let contextPersistTimer = null;
+let contextOperation = Promise.resolve();
 
 // A single pre-warmed "create listing" tab so the heavy page load happens before the user
 // clicks List. Tagged with the platform it was opened for, so it's only reused for that
@@ -64,7 +71,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   switch (message.type) {
     case 'EZLIST_GET_DRAFT':
-      chrome.storage.local.get(['ezlistDraft', 'ezlistLastExtractedAt', 'ezlistAutoFill'], sendResponse);
+      getDraftResponse(message.context).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
       return true;
 
     case 'EZLIST_SAVE_DRAFT':
@@ -72,11 +79,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // Each platform's content script only fires on a flag that names it, so an open FB tab
       // never auto-fills a draft meant for Craigslist and vice versa. Dealer/legacy callers
       // send no platform → defaults to 'fb'.
-      chrome.storage.local.set({
-        ezlistDraft: message.draft,
-        ezlistAutoFill: message.autoFill ? { platform: message.platform || 'fb', key: message.key || '' } : false,
-        ezlistLastExtractedAt: new Date().toISOString()
-      }, () => sendResponse({ ok: true }));
+      saveDraft(message).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
       return true;
 
     case 'EZLIST_PREWARM':
@@ -164,6 +167,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       getAuthState({ refresh: message.refresh }).then((auth) => sendResponse({ ok: true, auth })).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
+    case 'EZLIST_SELECT_CONTEXT':
+      selectWorkspaceContext(message.workspaceId, message.dealershipId)
+        .then((auth) => sendResponse({ ok: true, auth }))
+        .catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
     case 'EZLIST_BILLING_PLAN':
       billingPlan().then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
       return true;
@@ -188,11 +197,89 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'EZLIST_CHECKOUT':
-      billingUrl('/api/billing/checkout').then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      billingUrl('/api/billing/checkout', message.billing || null).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
       return true;
 
     case 'EZLIST_PORTAL':
-      billingUrl('/api/billing/portal').then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      billingUrl('/api/billing/portal', message.billing || null).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    // ---- organizations, claims, and team dashboard ----
+    case 'EZLIST_GET_CLAIMS':
+      backendRequest('GET', '/api/claims/mine').then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    case 'EZLIST_CREATE_CLAIM':
+      postBackend('/api/claims', message.payload || {}).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    case 'EZLIST_REQUEST_ACCESS':
+      postBackend('/api/access-requests', message.payload || {}).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    case 'EZLIST_ACCEPT_INVITATION':
+      postBackend('/api/invitations/accept', { token: message.token || '' }).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    case 'EZLIST_ORG_DASHBOARD':
+      organizationDashboard(message).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    case 'EZLIST_ORG_MEMBERS':
+      backendRequest('GET', `/api/organizations/${encodeURIComponent(message.organizationId || '')}/members`)
+        .then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    case 'EZLIST_ORG_ACCESS_REQUESTS':
+      backendRequest('GET', `/api/organizations/${encodeURIComponent(message.organizationId || '')}/access-requests`)
+        .then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    case 'EZLIST_ORG_DECIDE_ACCESS':
+      postBackend(`/api/organizations/${encodeURIComponent(message.organizationId || '')}/access-requests/${encodeURIComponent(message.requestId || '')}/decision`, message.payload || {})
+        .then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    case 'EZLIST_ORG_INVITE':
+      postBackend(`/api/organizations/${encodeURIComponent(message.organizationId || '')}/invitations`, message.payload || {})
+        .then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    case 'EZLIST_ORG_SEAT':
+      organizationSeat(message).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    case 'EZLIST_ORG_OWNER_LISTING_PREFERENCE':
+      postBackend(`/api/organizations/${encodeURIComponent(message.organizationId || '')}/owner-listing-preference`, {
+        willList: message.willList
+      }).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    case 'EZLIST_ORG_CAPACITY':
+      postBackend('/api/billing/capacity', {
+        organizationId: message.organizationId || '',
+        dealershipId: message.dealershipId || '',
+        extraSeats: message.extraSeats
+      }).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    case 'EZLIST_ORG_ROOFTOP_REMOVAL':
+      postBackend('/api/billing/rooftop-removal', {
+        organizationId: message.organizationId || '',
+        dealershipId: message.dealershipId || '',
+        cancel: Boolean(message.cancel)
+      }).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    case 'EZLIST_ORG_TRANSFER_OWNERSHIP':
+      postBackend(`/api/organizations/${encodeURIComponent(message.organizationId || '')}/ownership-transfer`, {
+        targetMemberId: message.targetMemberId || ''
+      }).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    case 'EZLIST_ACCEPT_OWNERSHIP':
+      postBackend('/api/ownership-transfers/accept', { token: message.token || '' })
+        .then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
       return true;
 
     case 'EZLIST_OPEN_PANEL':
@@ -210,6 +297,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'EZLIST_ENQUEUE_EVENT':
       enqueueEvent(message.event).then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+
+    case 'EZLIST_MARK_LISTED':
+      markListedForContext(message.payload || {})
+        .then(sendResponse)
+        .catch((error) => sendResponse(errorResponse(error)));
       return true;
 
     default:
@@ -261,7 +354,8 @@ async function openOrReusePlatformTab(platformId) {
 async function fillPlatform(platformId, key) {
   const res = await openOrReusePlatformTab(platformId);
   if (!res || !res.tabId) return { ok: false, error: 'no target tab' };
-  try { await chrome.tabs.sendMessage(res.tabId, { type: 'EZLIST_FILL', key }); }
+  const contextKey = WorkspaceContext.contextKey(await currentWorkspaceContext());
+  try { await chrome.tabs.sendMessage(res.tabId, { type: 'EZLIST_FILL', key, contextKey }); }
   catch { /* tab still loading — it will auto-fill once the content script boots */ }
   return { ok: true, tabId: res.tabId, reused: res.reused };
 }
@@ -365,19 +459,153 @@ async function blobToDataUrl(blob) {
 // Build request headers with the bearer session token (and, during the token→bearer
 // transition, the legacy x-carxpert-token). Both are sent so nothing breaks before the A5
 // cutover flips the backend to bearer-only.
-async function authHeaders(extra) {
+async function currentWorkspaceContext() {
+  const stored = await chrome.storage.local.get(ACTIVE_CONTEXT_KEY);
+  return WorkspaceContext.normalizeContext(stored[ACTIVE_CONTEXT_KEY]);
+}
+
+function queueContextOperation(operation) {
+  const run = contextOperation.then(operation, operation);
+  contextOperation = run.catch(() => {});
+  return run;
+}
+
+function activateWorkspaceContext(nextValue) {
+  return queueContextOperation(() => activateWorkspaceContextUnlocked(nextValue));
+}
+
+async function activateWorkspaceContextUnlocked(nextValue) {
+  const next = WorkspaceContext.normalizeContext(nextValue);
+  if (!next) return null;
+  const keys = [...WorkspaceContext.SHADOW_KEYS, WORKSPACE_STORES_KEY, ACTIVE_CONTEXT_KEY];
+  const stored = await chrome.storage.local.get(keys);
+  const previous = WorkspaceContext.normalizeContext(stored[ACTIVE_CONTEXT_KEY]);
+  const previousKey = WorkspaceContext.contextKey(previous);
+  const nextKey = WorkspaceContext.contextKey(next);
+  if (previousKey === nextKey) {
+    await chrome.storage.local.set({ [ACTIVE_CONTEXT_KEY]: next, [WORKSPACE_SELECTION_KEY]: next });
+    return next;
+  }
+
+  const stores = { ...(stored[WORKSPACE_STORES_KEY] || {}) };
+  const shadow = WorkspaceContext.shadowBucket(stored);
+  // Workspace switching is an explicit cancellation boundary for one-shot UI work. Drafts and
+  // history persist, but a stale auto-fill/photo flag must never fire when the user returns later.
+  shadow.ezlistAutoFill = false;
+  shadow.ezlistClPendingPhotos = false;
+  shadow.ezlistInFlight = null;
+  if (previousKey) stores[previousKey] = shadow;
+  else if (!stores[nextKey] && WorkspaceContext.hasShadowData(shadow)) stores[nextKey] = shadow;
+  const target = {
+    ...(stores[nextKey] || {}),
+    ezlistAutoFill: false,
+    ezlistClPendingPhotos: false,
+    ezlistInFlight: null
+  };
+  stores[nextKey] = target;
+
+  contextSwitching = true;
+  try {
+    await chrome.storage.local.remove(WorkspaceContext.SHADOW_KEYS);
+    const patch = {
+      [WORKSPACE_STORES_KEY]: stores,
+      [ACTIVE_CONTEXT_KEY]: next,
+      [WORKSPACE_SELECTION_KEY]: next
+    };
+    for (const key of WorkspaceContext.SHADOW_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(target, key)) patch[key] = target[key];
+    }
+    await chrome.storage.local.set(patch);
+  } finally {
+    contextSwitching = false;
+  }
+  return next;
+}
+
+function persistActiveWorkspaceShadow() {
+  return queueContextOperation(persistActiveWorkspaceShadowUnlocked);
+}
+
+async function persistActiveWorkspaceShadowUnlocked() {
+  if (contextSwitching) return;
+  const keys = [...WorkspaceContext.SHADOW_KEYS, WORKSPACE_STORES_KEY, ACTIVE_CONTEXT_KEY];
+  const stored = await chrome.storage.local.get(keys);
+  const context = WorkspaceContext.normalizeContext(stored[ACTIVE_CONTEXT_KEY]);
+  const key = WorkspaceContext.contextKey(context);
+  if (!key) return;
+  const stores = { ...(stored[WORKSPACE_STORES_KEY] || {}) };
+  stores[key] = WorkspaceContext.shadowBucket(stored);
+  await chrome.storage.local.set({ [WORKSPACE_STORES_KEY]: stores });
+}
+
+function scheduleContextPersist() {
+  clearTimeout(contextPersistTimer);
+  contextPersistTimer = setTimeout(() => { persistActiveWorkspaceShadow().catch(() => {}); }, 100);
+}
+
+async function getDraftResponse(contextValue) {
+  const requested = WorkspaceContext.normalizeContext(contextValue);
+  const active = await currentWorkspaceContext();
+  if (!requested || WorkspaceContext.sameContext(requested, active)) {
+    return chrome.storage.local.get(['ezlistDraft', 'ezlistLastExtractedAt', 'ezlistAutoFill', ACTIVE_CONTEXT_KEY]);
+  }
+  const stores = (await chrome.storage.local.get(WORKSPACE_STORES_KEY))[WORKSPACE_STORES_KEY] || {};
+  const bucket = stores[WorkspaceContext.contextKey(requested)] || {};
+  return {
+    ezlistDraft: bucket.ezlistDraft || null,
+    ezlistLastExtractedAt: bucket.ezlistLastExtractedAt || null,
+    ezlistAutoFill: bucket.ezlistAutoFill || false,
+    [ACTIVE_CONTEXT_KEY]: requested
+  };
+}
+
+async function saveDraft(message) {
+  const context = await currentWorkspaceContext();
+  const requested = WorkspaceContext.normalizeContext(message.context);
+  if (requested && !WorkspaceContext.sameContext(requested, context)) {
+    const error = new Error('Workspace changed while the vehicle was loading. List it again in the selected workspace.');
+    error.reason = 'context_changed';
+    throw error;
+  }
+  const draft = WorkspaceContext.stampDraft(message.draft, context);
+  await chrome.storage.local.set({
+    ezlistDraft: draft,
+    ezlistAutoFill: message.autoFill ? {
+      platform: message.platform || 'fb',
+      key: message.key || '',
+      contextKey: WorkspaceContext.contextKey(context)
+    } : false,
+    ezlistLastExtractedAt: new Date().toISOString()
+  });
+  await persistActiveWorkspaceShadow();
+  if (!WorkspaceContext.sameContext(context, await currentWorkspaceContext())) {
+    const error = new Error('Workspace changed while the vehicle was loading. List it again in the selected workspace.');
+    error.reason = 'context_changed';
+    throw error;
+  }
+  return { ok: true, context };
+}
+
+async function authHeaders(extra, contextValue) {
   const store = await chrome.storage.local.get(['ezlistAuthToken', 'ezlistBackendToken']);
   const headers = { 'Content-Type': 'application/json', ...(extra || {}) };
   if (store.ezlistAuthToken) headers.Authorization = `Bearer ${store.ezlistAuthToken}`;
   if (store.ezlistBackendToken) headers['x-carxpert-token'] = store.ezlistBackendToken;
+  const context = WorkspaceContext.normalizeContext(contextValue || await currentWorkspaceContext());
+  if (context && context.workspaceId) headers['X-Carxpert-Workspace-Id'] = context.workspaceId;
+  if (context && context.dealershipId) headers['X-Carxpert-Dealership-Id'] = context.dealershipId;
   return headers;
 }
 
-async function postBackend(pathname, payload) {
+async function backendRequest(method, pathname, payload, options) {
   const backendUrl = await getBackendUrl();
   let resp;
   try {
-    resp = await fetch(`${backendUrl}${pathname}`, { method: 'POST', headers: await authHeaders(), body: JSON.stringify(payload) });
+    resp = await fetch(`${backendUrl}${pathname}`, {
+      method,
+      headers: await authHeaders(null, options && options.context),
+      ...(payload === undefined ? {} : { body: JSON.stringify(payload) })
+    });
   } catch (e) {
     throw new Error('Backend not reachable — is it running? (npm run dev:backend)');
   }
@@ -396,6 +624,10 @@ async function postBackend(pathname, payload) {
     throw err;
   }
   return data;
+}
+
+async function postBackend(pathname, payload, options) {
+  return backendRequest('POST', pathname, payload, options);
 }
 
 async function aiDescribe(vehicle, options) {
@@ -417,7 +649,11 @@ async function extractViaBackend(payload) {
   });
   const result = await response.json();
   if (!response.ok || !result.ok) throw new Error(result.error || `Backend returned ${response.status}`);
-  await chrome.storage.local.set({ ezlistDraft: result.listing, ezlistLastExtractedAt: new Date().toISOString() });
+  const context = await currentWorkspaceContext();
+  await chrome.storage.local.set({
+    ezlistDraft: WorkspaceContext.stampDraft(result.listing, context),
+    ezlistLastExtractedAt: new Date().toISOString()
+  });
   return result;
 }
 
@@ -432,7 +668,7 @@ async function billingPlan() {
   const resp = await fetch(`${backendUrl}/api/billing/plan`);
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok || !data.ok) throw new Error(data.error || `Backend returned ${resp.status}`);
-  return { ok: true, plan: data.plan || null };
+  return { ok: true, plan: data.plan || null, plans: data.plans || null };
 }
 
 async function getBackendUrl() {
@@ -626,7 +862,12 @@ async function detectDealer(urlOverride, { canProbe = false } = {}) {
       detectedPlatform: resolved.detectedPlatform || null
     };
   }
-  return { ok: true, supported: true, dealership: resolved.dealership };
+  return {
+    ok: true,
+    supported: true,
+    claimed: !!resolved.claimed,
+    dealership: resolved.dealership
+  };
 }
 
 async function linkDealer(dealershipId) {
@@ -692,23 +933,57 @@ async function getToken() {
 
 // Pull /api/me and cache profile + entitlement + (if entitled) a fresh lease. Offline-safe:
 // a network failure keeps the existing cache rather than logging the user out.
-async function refreshMe() {
+async function fetchMeData(token, options = {}) {
+  const backend = await getBackendUrl();
+  const selection = options.ignoreSelection
+    ? null
+    : WorkspaceContext.normalizeContext(
+        options.selection || (await chrome.storage.local.get(WORKSPACE_SELECTION_KEY))[WORKSPACE_SELECTION_KEY]
+      );
+  const params = new URLSearchParams();
+  if (selection && selection.workspaceId) params.set('workspaceId', selection.workspaceId);
+  if (selection && selection.dealershipId) params.set('dealershipId', selection.dealershipId);
+  if (options.host) params.set('host', String(options.host).toLowerCase());
+  const suffix = params.toString() ? `?${params}` : '';
+  const resp = await fetch(`${backend}/api/me${suffix}`, { headers: { Authorization: `Bearer ${token}` } });
+  const data = await resp.json().catch(() => ({}));
+  return { resp, data, usedSelection: selection };
+}
+
+async function refreshMe(options = {}) {
   const token = await getToken();
   if (!token) { await chrome.storage.local.remove(['ezlistMe', 'ezlistLease']); return null; }
-  const backend = await getBackendUrl();
-  let resp;
+  let result;
   try {
-    resp = await fetch(`${backend}/api/me`, { headers: { Authorization: `Bearer ${token}` } });
+    result = await fetchMeData(token, options);
   } catch {
     return (await chrome.storage.local.get('ezlistMe')).ezlistMe || null; // offline: keep cache
   }
+  let { resp, data } = result;
   if (resp.status === 401) { await clearAuth(); return null; }
-  const data = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(data.error || `me ${resp.status}`);
+  // A saved workspace can disappear after removal or an admin transfer. Retry once without the
+  // stale selection so the user lands in a valid personal/remaining workspace instead of a
+  // permanent no_workspace state.
+  if (!data.activeWorkspace && result.usedSelection && !options.ignoreSelection) {
+    result = await fetchMeData(token, { host: options.host, ignoreSelection: true });
+    ({ resp, data } = result);
+    if (resp.status === 401) { await clearAuth(); return null; }
+    if (!resp.ok) throw new Error(data.error || `me ${resp.status}`);
+  }
   const me = {
     user: data.user || null,
+    features: data.features || {},
     dealership: data.dealership || null,
     requestPending: data.requestPending || null,
+    accessRequests: Array.isArray(data.accessRequests) ? data.accessRequests : [],
+    workspaces: Array.isArray(data.workspaces) ? data.workspaces : [],
+    activeWorkspace: data.activeWorkspace || null,
+    activeRooftop: data.activeRooftop || null,
+    activeDealership: data.activeRooftop && data.activeRooftop.dealership
+      ? data.activeRooftop.dealership
+      : data.dealership || null,
+    workspaceAccess: data.workspaceAccess || null,
     entitled: !!data.entitled,
     reason: data.reason || null,
     subscription: data.subscription || null,
@@ -728,13 +1003,17 @@ async function refreshMe() {
       await chrome.storage.local.remove([
         'ezlistListings', 'ezlistListedVins', 'ezlistEventQueue',
         'ezlistDraft', 'ezlistAutoFill', 'ezlistLastExtractedAt',
-        'ezlistInFlight', 'ezlistClPendingPhotos', 'ezlistDealerSeen'
+        'ezlistInFlight', 'ezlistClPendingPhotos', 'ezlistDealerSeen',
+        WORKSPACE_STORES_KEY, ACTIVE_CONTEXT_KEY, WORKSPACE_SELECTION_KEY,
+        'ezlistOnboardingIntent', 'ezlistAccessRequestPending', 'ezlistMarketplaceFlows'
       ]);
     }
     if (prevOwner !== me.user.id) await chrome.storage.local.set({ ezlistOwnerId: me.user.id });
   }
+  const selectedContext = WorkspaceContext.contextFromMe(me);
+  if (selectedContext) await activateWorkspaceContext(selectedContext);
   // Best-effort: repopulate green-button state from the server (no-op unless local is empty).
-  if (me.entitled) restoreListedFromServer().catch(() => {});
+  if (me.entitled || (me.workspaceAccess && me.workspaceAccess.paid)) restoreListedFromServer().catch(() => {});
   const patch = { ezlistMe: me };
   if (data.lease) {
     try { patch.ezlistLease = { jws: data.lease, claims: CarxpertLease.decodeJwt(data.lease).payload }; }
@@ -747,6 +1026,24 @@ async function refreshMe() {
   return me;
 }
 
+async function selectWorkspaceContext(workspaceId, dealershipId) {
+  if (!workspaceId) throw new Error('Choose a workspace.');
+  const me = await refreshMe({
+    selection: { workspaceId, dealershipId: dealershipId || null }
+  });
+  if (!me || !me.activeWorkspace || me.activeWorkspace.id !== workspaceId) {
+    const err = new Error('That workspace is no longer available.');
+    err.reason = 'workspace_unavailable';
+    throw err;
+  }
+  if (dealershipId && (!me.activeRooftop || me.activeRooftop.dealership.id !== dealershipId)) {
+    const err = new Error('That rooftop is outside your access.');
+    err.reason = 'wrong_rooftop';
+    throw err;
+  }
+  return getAuthState();
+}
+
 // ==================== dynamic dealer content scripts ====================
 // The dealer scripts (⚡ List buttons + extraction) inject on whatever dealership the user
 // connected — any DealerOn site, not just the manifest's static host. The panel requests the
@@ -755,14 +1052,21 @@ async function refreshMe() {
 // but we re-sync on every /me refresh + startup so a dealership switch swaps the scripts.
 const DEALER_SCRIPT_ID = 'cx-dealer-dynamic';
 
-function dealerOriginPatterns(dealership) {
-  const domains = (dealership && dealership.domains) || [];
+function dealerOriginPatterns(me) {
+  const dealerships = [];
+  if (me && me.dealership) dealerships.push(me.dealership);
+  for (const workspace of (me && me.workspaces) || []) {
+    for (const rooftop of workspace.rooftops || []) {
+      if (rooftop && rooftop.dealership) dealerships.push(rooftop.dealership);
+    }
+  }
+  const domains = dealerships.flatMap((dealership) => dealership.domains || []);
   return [...new Set(domains.map((d) => `https://${String(d).toLowerCase()}/*`))];
 }
 
 async function ensureDealerScripts(me) {
   if (!chrome.scripting || !chrome.scripting.registerContentScripts) return;
-  const patterns = dealerOriginPatterns(me && me.dealership);
+  const patterns = dealerOriginPatterns(me);
   const granted = [];
   for (const p of patterns) {
     try { if (await chrome.permissions.contains({ origins: [p] })) granted.push(p); }
@@ -826,7 +1130,7 @@ async function getAuthState(opts) {
   if (token && (opt.refresh || await meIsStale())) {
     try { await refreshMe(); } catch { /* keep cache */ }
   }
-  const store = await chrome.storage.local.get(['ezlistAuthToken', 'ezlistMe', 'ezlistLease']);
+  const store = await chrome.storage.local.get(['ezlistAuthToken', 'ezlistMe', 'ezlistLease', ACTIVE_CONTEXT_KEY]);
   const signedIn = !!store.ezlistAuthToken;
   const me = store.ezlistMe || null;
   let leaseValid = false;
@@ -837,14 +1141,27 @@ async function getAuthState(opts) {
     if (res.claims) leaseClaims = res.claims;
     if (res.valid) maybeRefreshLease(res.claims);
   }
+  const access = me && me.workspaceAccess;
+  const paid = access ? !!access.paid : !!(me && me.entitled);
+  const canListInContext = access ? !!access.canList : !!(me && me.entitled);
   return {
     signedIn,
-    entitled: me ? me.entitled : false,
+    entitled: canListInContext,
+    paid,
+    canList: canListInContext,
     reason: me ? me.reason : (signedIn ? 'unknown' : 'signed_out'),
     user: me ? me.user : null,
-    dealership: me ? me.dealership : null,
+    features: me ? me.features || {} : {},
+    dealership: me ? me.activeDealership : null,
     requestPending: me ? me.requestPending : null,
+    accessRequests: me ? me.accessRequests : [],
     subscription: me ? me.subscription : null,
+    workspaces: me ? me.workspaces : [],
+    activeWorkspace: me ? me.activeWorkspace : null,
+    activeRooftop: me ? me.activeRooftop : null,
+    workspaceAccess: access || null,
+    context: WorkspaceContext.normalizeContext(store[ACTIVE_CONTEXT_KEY]),
+    capabilities: access && Array.isArray(access.capabilities) ? access.capabilities : [],
     leaseValid,
     leaseClaims
   };
@@ -856,11 +1173,12 @@ async function meIsStale() {
   return (Date.now() - me.fetchedAt) > 5 * 60 * 1000;
 }
 
-// Refresh the lease (via /me) when <10 min remain. Fire-and-forget; guarded against stampede.
+// Refresh the 90-minute lease on the 30-minute cadence. Refreshing once <=60 minutes remain
+// preserves a fast offline click path while bounding revocation lag to the documented window.
 let leaseRefreshing = false;
 async function maybeRefreshLease(claims) {
   if (leaseRefreshing) return;
-  if (CarxpertLease.secondsToExpiry(claims) > 10 * 60) return;
+  if (CarxpertLease.secondsToExpiry(claims) > 60 * 60) return;
   leaseRefreshing = true;
   try { await refreshMe(); } catch { /* ignore */ } finally { leaseRefreshing = false; }
 }
@@ -882,34 +1200,78 @@ async function canList(host) {
       try { checkHost = new URL(draft.sourceUrl).hostname.toLowerCase(); } catch { checkHost = null; }
     }
   }
+  const context = await currentWorkspaceContext();
   const res = await verifyCachedLease();
   if (res.valid) {
     maybeRefreshLease(res.claims);
-    if (!checkHost || CarxpertLease.leaseCoversHost(res.claims, checkHost)) return { ok: true, reason: 'ok', via: 'lease' };
+    const v2 = Number(res.claims && res.claims.ver) === 2;
+    const capabilities = Array.isArray(res.claims && res.claims.cap) ? res.claims.cap : [];
+    const contextMatches = !v2 || (
+      context
+      && res.claims.wsp === context.workspaceId
+      && res.claims.dlr === context.dealershipId
+      && res.claims.seat === true
+      && capabilities.includes('list')
+      && capabilities.includes('fill')
+    );
+    if (contextMatches && (!checkHost || CarxpertLease.leaseCoversHost(res.claims, checkHost))) {
+      return { ok: true, reason: 'ok', via: 'lease', context };
+    }
     // Host not covered by the lease: do NOT deny yet — a just-switched dealership leaves a
     // stale (≤90 min) lease behind; let the fresh /me below decide with current domains.
   }
   let me;
-  try { me = await refreshMe(); } catch { me = (await chrome.storage.local.get('ezlistMe')).ezlistMe || null; }
+  try { me = await refreshMe({ host: checkHost }); } catch { me = (await chrome.storage.local.get('ezlistMe')).ezlistMe || null; }
   if (!me) return { ok: false, reason: (await getToken()) ? 'unknown' : 'signed_out' };
-  if (!me.entitled) return { ok: false, reason: me.reason || 'not_entitled' };
+  const access = me.workspaceAccess;
+  const allowed = access ? access.canList : me.entitled;
+  if (!allowed) return { ok: false, reason: me.reason || 'not_entitled' };
   // Same coverage rule as the lease path, against the CURRENT dealership's domains. A
   // dealership row with no domains configured skips the check (fail-open on missing config,
   // matching the backend's source_url rule) rather than locking every site out.
-  const domains = (me.dealership && me.dealership.domains) || [];
+  const activeDealer = me.activeDealership || me.dealership;
+  const domains = (activeDealer && activeDealer.domains) || [];
   if (checkHost && domains.length && !CarxpertLease.leaseCoversHost({ dom: domains }, checkHost)) {
     return { ok: false, reason: 'wrong_dealership', via: 'me' };
   }
-  return { ok: true, reason: 'ok', via: 'me' };
+  return { ok: true, reason: 'ok', via: 'me', context: await currentWorkspaceContext() };
 }
 
 // Stripe checkout / billing-portal: ask the backend for a hosted URL and open it in a tab.
-async function billingUrl(pathname) {
-  const data = await postBackend(pathname, {});
-  if (!data.url) throw new Error('No URL returned.');
-  await chrome.tabs.create({ url: data.url, active: true });
+async function billingUrl(pathname, requestedBilling) {
+  const me = (await chrome.storage.local.get('ezlistMe')).ezlistMe;
+  const workspace = me && me.activeWorkspace;
+  const organizationId = workspace && workspace.type === 'organization'
+    && workspace.organization && workspace.organization.id;
+  const payload = requestedBilling || (organizationId
+    ? { target: 'organization', organizationId }
+    : { target: 'personal' });
+  const data = await postBackend(pathname, payload);
+  if (!data.url && !data.completed) throw new Error('No billing action returned.');
+  if (data.url) await chrome.tabs.create({ url: data.url, active: true });
   if (pathname === '/api/billing/checkout') startCheckoutWatch().catch(() => {});
-  return { ok: true, url: data.url };
+  return { ok: true, ...data };
+}
+
+async function organizationDashboard(message) {
+  const organizationId = encodeURIComponent(message.organizationId || '');
+  if (!organizationId) throw new Error('Choose an organization.');
+  const filters = message.filters || {};
+  const params = new URLSearchParams();
+  for (const key of ['dealershipId', 'memberId', 'from', 'to']) {
+    if (filters[key]) params.set(key, filters[key]);
+  }
+  const suffix = params.toString() ? `?${params}` : '';
+  return backendRequest('GET', `/api/organizations/${organizationId}/dashboard${suffix}`);
+}
+
+async function organizationSeat(message) {
+  const organizationId = encodeURIComponent(message.organizationId || '');
+  const dealershipId = encodeURIComponent(message.dealershipId || '');
+  const memberId = encodeURIComponent(message.memberId || '');
+  if (!organizationId || !dealershipId || !memberId) throw new Error('Organization, rooftop, and member are required.');
+  const path = `/api/organizations/${organizationId}/rooftops/${dealershipId}/seats/${memberId}`;
+  return backendRequest(message.assign === false ? 'DELETE' : 'POST', path, {});
 }
 
 let checkoutWatchTimer = null;
@@ -938,7 +1300,7 @@ async function pollCheckoutWatch() {
   }
 
   const me = await refreshMe();
-  if (me && me.entitled) {
+  if (me && (me.entitled || (me.workspaceAccess && me.workspaceAccess.paid))) {
     await chrome.storage.local.remove('ezlistCheckoutWatch');
     chrome.alarms.clear('ezlist-checkout-watch').catch(() => {});
     syncNow().catch(() => {});
@@ -958,7 +1320,11 @@ async function pollCheckoutWatch() {
 }
 
 async function billingSync() {
-  return postBackend('/api/billing/sync', {});
+  const me = (await chrome.storage.local.get('ezlistMe')).ezlistMe;
+  const workspace = me && me.activeWorkspace;
+  const organizationId = workspace && workspace.type === 'organization'
+    && workspace.organization && workspace.organization.id;
+  return postBackend('/api/billing/sync', organizationId ? { organizationId } : {});
 }
 
 // Open the side panel from a content-script request (best effort — needs a window id + gesture).
@@ -1006,6 +1372,102 @@ function toSyncListing(l, listedEntry) {
   };
 }
 
+function mutateWorkspaceBucket(contextValue, mutate) {
+  return queueContextOperation(() => mutateWorkspaceBucketUnlocked(contextValue, mutate));
+}
+
+async function mutateWorkspaceBucketUnlocked(contextValue, mutate) {
+  const context = WorkspaceContext.normalizeContext(contextValue || await currentWorkspaceContext());
+  const key = WorkspaceContext.contextKey(context);
+  if (!key) throw new Error('No active workspace context.');
+  const keys = [...WorkspaceContext.SHADOW_KEYS, WORKSPACE_STORES_KEY, ACTIVE_CONTEXT_KEY];
+  const stored = await chrome.storage.local.get(keys);
+  const active = WorkspaceContext.normalizeContext(stored[ACTIVE_CONTEXT_KEY]);
+  const activeMatch = WorkspaceContext.sameContext(active, context);
+  const stores = { ...(stored[WORKSPACE_STORES_KEY] || {}) };
+  const bucket = activeMatch
+    ? WorkspaceContext.shadowBucket(stored)
+    : { ...(stores[key] || {}) };
+  await mutate(bucket, context);
+  stores[key] = bucket;
+  const patch = { [WORKSPACE_STORES_KEY]: stores };
+  if (activeMatch) {
+    for (const shadowKey of WorkspaceContext.SHADOW_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(bucket, shadowKey)) patch[shadowKey] = bucket[shadowKey];
+    }
+  }
+  await chrome.storage.local.set(patch);
+  return { context, bucket };
+}
+
+function newEvent(event) {
+  return {
+    id: event.id || (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`),
+    type: event.type,
+    clientKey: event.clientKey || null,
+    occurredAt: event.occurredAt || new Date().toISOString(),
+    data: event.data || null
+  };
+}
+
+async function markListedForContext(payload) {
+  const key = String(payload.key || '');
+  const platform = String(payload.platform || 'fb');
+  if (!key) throw new Error('Published listing is missing its vehicle key.');
+  const context = WorkspaceContext.normalizeContext(payload.context);
+  if (!context) throw new Error('Published listing is missing its workspace context.');
+  const now = payload.listedAt || new Date().toISOString();
+  const result = await mutateWorkspaceBucket(context, (bucket) => {
+    const listed = { ...(bucket.ezlistListedVins || {}) };
+    const listings = { ...(bucket.ezlistListings || {}) };
+    const current = platformsFromEntry(listed[key]);
+    const platformSlots = {};
+    for (const item of current || []) {
+      platformSlots[item.platform] = { listedAt: item.listedAt, url: item.url || undefined };
+    }
+    const alreadyPublished = Boolean(platformSlots[platform]);
+    platformSlots[platform] = {
+      listedAt: platformSlots[platform] && platformSlots[platform].listedAt || now,
+      url: payload.url || (platformSlots[platform] && platformSlots[platform].url) || undefined
+    };
+    listed[key] = platformSlots;
+
+    const draft = bucket.ezlistDraft && WorkspaceContext.draftMatchesContext(bucket.ezlistDraft, context)
+      ? bucket.ezlistDraft
+      : null;
+    const meta = payload.meta || {};
+    const previous = listings[key] || {};
+    listings[key] = {
+      key,
+      vin: meta.vin || (draft && draft.vin) || previous.vin || (key.length === 17 ? key : undefined),
+      stock: meta.stock || (draft && draft.stock) || previous.stock,
+      title: meta.title || (draft && [draft.year, draft.make, draft.model].filter(Boolean).join(' ')) || previous.title,
+      year: meta.year || (draft && draft.year) || previous.year,
+      make: meta.make || (draft && draft.make) || previous.make,
+      model: meta.model || (draft && draft.model) || previous.model,
+      price: meta.price != null ? Number(meta.price) : ((draft && Number(draft.price)) || previous.price),
+      sourceUrl: meta.sourceUrl || (draft && draft.sourceUrl) || previous.sourceUrl,
+      platform: previous.platform || platform,
+      status: 'active',
+      listedAt: previous.listedAt || now
+    };
+    bucket.ezlistListedVins = listed;
+    bucket.ezlistListings = listings;
+    if (!alreadyPublished) {
+      const queue = Array.isArray(bucket.ezlistEventQueue) ? bucket.ezlistEventQueue.slice() : [];
+      queue.push(newEvent({
+        type: 'publish_detected',
+        clientKey: key,
+        occurredAt: now,
+        data: { platform, url: payload.url || null }
+      }));
+      bucket.ezlistEventQueue = queue.slice(-500);
+    }
+  });
+  syncNow().catch(() => {});
+  return { ok: true, context: result.context };
+}
+
 // Push tracked listings + queued events to the backend. No-op when signed out. The event
 // queue is cleared only for events actually flushed (server dedupes by client uuid), so
 // anything enqueued during the request survives.
@@ -1015,18 +1477,38 @@ async function syncNow() {
   if (syncing) return { ok: true, skipped: 'in_progress' };
   syncing = true;
   try {
-    const store = await chrome.storage.local.get(['ezlistListings', 'ezlistEventQueue', 'ezlistListedVins']);
-    const listedMap = store.ezlistListedVins || {};
-    const listings = Object.values(store.ezlistListings || {}).map((l) => toSyncListing(l, listedMap[l.key]));
-    const events = store.ezlistEventQueue || [];
-    if (!listings.length && !events.length) return { ok: true, empty: true };
-    const data = await postBackend('/api/listings/sync', { listings, events });
-    if (events.length) {
-      const flushed = new Set(events.map((e) => e.id));
-      const now = (await chrome.storage.local.get('ezlistEventQueue')).ezlistEventQueue || [];
-      await chrome.storage.local.set({ ezlistEventQueue: now.filter((e) => !flushed.has(e.id)) });
+    await persistActiveWorkspaceShadow();
+    const stored = await chrome.storage.local.get([WORKSPACE_STORES_KEY, ACTIVE_CONTEXT_KEY]);
+    const stores = { ...(stored[WORKSPACE_STORES_KEY] || {}) };
+    const totals = { listings: 0, events: 0, contexts: 0, errors: [] };
+    for (const [key, bucket] of Object.entries(stores)) {
+      const context = WorkspaceContext.contextFromKey(key);
+      if (!context || !context.dealershipId) continue;
+      const listedMap = bucket.ezlistListedVins || {};
+      const listings = Object.values(bucket.ezlistListings || {}).map((l) => toSyncListing(l, listedMap[l.key]));
+      const events = Array.isArray(bucket.ezlistEventQueue) ? bucket.ezlistEventQueue : [];
+      if (!listings.length && !events.length) continue;
+      try {
+        await postBackend('/api/listings/sync', {
+          workspaceId: context.workspaceId,
+          dealershipId: context.dealershipId,
+          listings,
+          events
+        }, { context });
+        totals.contexts += 1;
+        totals.listings += listings.length;
+        totals.events += events.length;
+        if (events.length) {
+          const flushed = new Set(events.map((event) => event.id));
+          await mutateWorkspaceBucket(context, (latest) => {
+            latest.ezlistEventQueue = (latest.ezlistEventQueue || []).filter((event) => !flushed.has(event.id));
+          });
+        }
+      } catch (error) {
+        totals.errors.push({ context: key, reason: error.reason || error.message });
+      }
     }
-    return { ok: true, listings: listings.length, events: events.length, server: data };
+    return { ok: totals.errors.length === 0, empty: totals.contexts === 0, ...totals };
   } finally {
     syncing = false;
   }
@@ -1234,17 +1716,15 @@ async function restoreListedFromServer() {
 // bounded so a permanently-offline client can't grow storage without limit.
 async function enqueueEvent(event) {
   if (!event || !event.type) return;
-  const ev = {
-    id: event.id || (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`),
-    type: event.type,
-    clientKey: event.clientKey || null,
-    occurredAt: event.occurredAt || new Date().toISOString(),
-    data: event.data || null
-  };
-  const q = (await chrome.storage.local.get('ezlistEventQueue')).ezlistEventQueue || [];
-  if (q.some((e) => e.id === ev.id)) return;
-  q.push(ev);
-  await chrome.storage.local.set({ ezlistEventQueue: q.slice(-500) });
+  const context = WorkspaceContext.normalizeContext(event.context || await currentWorkspaceContext());
+  if (!context) return;
+  const ev = newEvent(event);
+  await mutateWorkspaceBucket(context, (bucket) => {
+    const queue = Array.isArray(bucket.ezlistEventQueue) ? bucket.ezlistEventQueue.slice() : [];
+    if (queue.some((candidate) => candidate.id === ev.id)) return;
+    queue.push(ev);
+    bucket.ezlistEventQueue = queue.slice(-500);
+  });
 }
 
 // Auto-sync when tracked listings or the event queue change (publish detection, mark sold,
@@ -1252,6 +1732,9 @@ async function enqueueEvent(event) {
 let syncTimer = null;
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
+  if (!contextSwitching && WorkspaceContext.SHADOW_KEYS.some((key) => changes[key])) {
+    scheduleContextPersist();
+  }
   if (changes.ezlistListings || changes.ezlistEventQueue) {
     clearTimeout(syncTimer);
     syncTimer = setTimeout(() => { syncNow().catch(() => {}); }, 4000);
@@ -1261,8 +1744,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
 // Periodic flush: the debounce timer above dies with the MV3 worker, so a queued event could
 // otherwise strand until the next storage change. Alarms survive worker restarts.
 chrome.alarms.create('ezlist-sync', { periodInMinutes: 30 });
+chrome.alarms.create('ezlist-lease-refresh', { periodInMinutes: 30, delayInMinutes: 30 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'ezlist-sync') syncNow().catch(() => {});
+  if (alarm.name === 'ezlist-lease-refresh') refreshMe().catch(() => {});
   if (alarm.name === 'ezlist-checkout-watch') {
     pollCheckoutWatch()
       .then((keepWatching) => {

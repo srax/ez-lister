@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeStatus, normalizeStatus } from './listings.js';
+import {
+  MAX_PRESENCE_REPORTS,
+  mergeStatus,
+  normalizeStatus,
+  recordPresence,
+  sanitizeSourceUrl,
+  sanitizeUsageEvent
+} from './listings.js';
 
 test("normalizeStatus: extension 'active' maps to 'listed'; junk is clamped; null passes through", () => {
   assert.equal(normalizeStatus('active'), 'listed');
@@ -10,6 +17,35 @@ test("normalizeStatus: extension 'active' maps to 'listed'; junk is clamped; nul
   assert.equal(normalizeStatus('garbage'), 'listed');
   assert.equal(normalizeStatus(null), null);
   assert.equal(normalizeStatus(undefined), null);
+});
+
+test('sanitizeUsageEvent accepts the known contract and canonicalizes its timestamp', () => {
+  const now = Date.parse('2026-07-19T12:00:00Z');
+  const event = sanitizeUsageEvent({
+    id: 'event-1',
+    type: 'fill_completed',
+    clientKey: 'VIN-1',
+    occurredAt: '2026-07-19T11:59:00Z',
+    data: { fields: [{ name: 'Price', ok: true }] }
+  }, { now });
+  assert.equal(event.id, 'event-1');
+  assert.equal(event.occurredAt, '2026-07-19T11:59:00.000Z');
+  assert.equal(JSON.parse(event.data).fields[0].name, 'Price');
+});
+
+test('sanitizeUsageEvent rejects unknown types, bad clocks, oversized keys, and large data', () => {
+  const now = Date.parse('2026-07-19T12:00:00Z');
+  assert.equal(sanitizeUsageEvent({ id: '1', type: 'made_up' }, { now }), null);
+  assert.equal(sanitizeUsageEvent({ id: '1', type: 'fill_completed', occurredAt: 'not-a-date' }, { now }), null);
+  assert.equal(sanitizeUsageEvent({
+    id: '1', type: 'fill_completed', occurredAt: '2026-07-20T12:00:00Z'
+  }, { now }), null);
+  assert.equal(sanitizeUsageEvent({
+    id: '1', type: 'fill_completed', clientKey: 'x'.repeat(241)
+  }, { now }), null);
+  assert.equal(sanitizeUsageEvent({
+    id: '1', type: 'fill_completed', data: { value: 'x'.repeat(33 * 1024) }
+  }, { now }), null);
 });
 
 test("mergeStatus: incoming extension 'active' is stored as 'listed'", () => {
@@ -80,7 +116,6 @@ test('incoming sold without soldPlatform preserves the existing attribution', ()
 });
 
 // ---- sanitizeSourceUrl: the SSRF/attribution gate on client-supplied URLs ----
-import { sanitizeSourceUrl, recordPresence, MAX_PRESENCE_REPORTS } from './listings.js';
 
 test('sanitizeSourceUrl: valid dealer URL passes; alias pinning enforced when domains given', () => {
   const domains = ['www.alexandriatoyota.com', 'alexandriatoyota.com'];

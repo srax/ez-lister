@@ -17,6 +17,9 @@ access, subscriptions, seats, listings, and statistics. The existing CarXprt dea
 portal may consume a versioned read API later; it does not share this database or auth
 system in V1.
 
+Implementation branch: `feature/organizations-v1`. The first extension build carrying the
+organization contract is `0.3.0`; backend rollout remains independently feature-gated.
+
 ## 2. Non-Negotiable Product Rules
 
 - No free product access. A valid individual subscription or organization seat is required
@@ -34,6 +37,8 @@ system in V1.
 - Facebook credentials, cookies, and private identity are never sent to the backend.
 - Never auto-click Facebook Publish. Statistics must not claim that a salesperson caused a
   dealership sale.
+- V1 supports only dealerships curated as `supported` in the backend. Platform detection is
+  triage metadata, not authorization to list; generic schema.org sites never auto-onboard.
 
 ## 3. Domain Model
 
@@ -83,6 +88,9 @@ system in V1.
 - Stripe is billing truth. Better Auth's Stripe plugin owns Checkout, subscription lifecycle,
   webhook persistence, and Portal authorization. Custom `/api/billing/*` routes are thin
   extension adapters plus delayed-webhook reconciliation.
+- Generic Better Auth organization and Stripe mutation HTTP routes are not public product
+  APIs. Carxprt adapters derive claims, roles, prices, and quantities server-side; OAuth,
+  signed webhooks, and Checkout success callbacks remain mounted.
 - Existing Stripe subscriptions are reconciled in place. They are never canceled or
   recreated during migration.
 
@@ -205,6 +213,9 @@ Terminal/exception states: `rejected`, `expired`, `conflict`, `disputed`, `suspe
 - Cancellation/unpaid expiration: preserve claim and data for 90 days.
 - After 90 days: archive the organization and mark rooftops `reclaimable`. A new claimant
   still requires verification; history is never transferred automatically.
+- Scheduled-removal rooftops remain operational only through their already-paid period. A
+  terminal subscription or expired grace suspends them with the rest of the organization;
+  archival releases every non-archived rooftop and every claim state that reserves ownership.
 
 ### Member
 
@@ -271,6 +282,14 @@ constraint in a later compatibility migration.
 - Extend comp grants to a workspace scope while preserving legacy user grants.
 - Record subscription reconciliation outcomes without storing card data.
 
+### Migrations 016-018: lifecycle hardening
+
+- Persist two-party ownership transfers and expirations.
+- Persist the owner's optional listing-seat preference and reversible claim-hold provenance.
+- Enforce one row per Stripe subscription and index the bounded reconciliation ledger.
+- Refuse deployment of migration 018 when duplicate Stripe subscription IDs exist; inspect
+  and reconcile those rows before retrying rather than deleting billing history automatically.
+
 Every migration is forward-only, repeat-safe where practical, and validated with pre/post
 row counts. No destructive column removal occurs during the rollout.
 
@@ -278,6 +297,8 @@ row counts. No destructive column removal occurs during the rollout.
 
 - Add Better Auth's `organization()` plugin with organization creation disabled for ordinary
   client calls. CarXprt creates organizations only after claim approval.
+- Keep Better Auth self-service account deletion explicitly disabled until an audited deletion
+  adapter preserves attribution and rejects the primary owner before ownership transfer.
 - Configure seven-day invitations, verified-email invitation acceptance, and the existing
   email adapter.
 - Use Better Auth for coarse owner/member identity. Enforce manager/salesperson rooftop
@@ -439,6 +460,9 @@ available`, never zero.
   multi-claim conflict handling, pre-approved invitations, disputes, and CLI/admin actions.
 - Acceptance: no charge before approval; first pending claim does not lock rooftop; only one
   active organization can own a rooftop; every admin mutation is audited.
+- Keep `DEALERSHIP_AUTO_ONBOARD_ENABLED=0` for V1. Unknown domains create a deduplicated
+  support request even when platform detection is confident; support curates adapter and photo
+  behavior before marking the rooftop supported.
 
 ### M5: Organization billing
 
@@ -465,6 +489,9 @@ available`, never zero.
 - Add visible workspace/rooftop context and immutable draft stamping.
 - Acceptance: personal, owner, manager, salesperson, grandfathered-personal, multi-org, and
   multi-device test matrices pass without stale data crossing workspaces.
+- Persist the owner's post-activation `list vehicles` versus `dashboard only` choice per owner
+  member. Choosing listing access assigns one included seat at each active paid rooftop;
+  dashboard-only consumes none and does not prompt again on another device.
 
 ### M8: Team management and dashboard
 
@@ -481,6 +508,10 @@ available`, never zero.
   conflicts, lease failures, sync rejects, and sold-scan failures.
 - Acceptance: runbooks exercise owner recovery, disputed claim, expired reservation, failed
   email, and Stripe outage.
+- Claim disputes preserve and freeze the exact claim/rooftop state, then restore it only through
+  a reasoned admin action. Break-glass owner recovery requires a pre-existing Google-verified
+  CarXprt user, suspends the former owner, releases their seats, resets the new owner's listing
+  choice, and records an immutable audit event; it never deletes historical attribution.
 
 ### M10: Staging E2E
 

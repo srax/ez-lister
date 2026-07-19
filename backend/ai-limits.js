@@ -7,23 +7,23 @@ export const DAILY_LIMIT = Number(process.env.AI_DAILY_LIMIT || 100);
 
 const COLUMN = { describe: 'describe_count', translate: 'translate_count' };
 
-async function userDayAndTz(userId, db) {
+async function userDayAndTz(userId, db, dealershipId = null) {
   const { rows } = await db.query(
     `select coalesce(d.timezone, 'America/New_York') as tz
      from (select $1::text as uid) x
-     left join user_dealerships ud on ud.user_id = x.uid
-     left join dealerships d on d.id = ud.dealership_id`,
-    [userId]
+     left join user_dealerships ud on ud.user_id = x.uid and $2::text is null
+     left join dealerships d on d.id = coalesce($2::text,ud.dealership_id)`,
+    [userId, dealershipId]
   );
   return rows[0] ? rows[0].tz : 'America/New_York';
 }
 
 // Increment the counter for (user, local-day, kind) and return { count, limited }.
 // Over-limit still increments (harmless) but reports limited=true so the caller 429s.
-export async function bumpAiUsage(userId, kind, db = pool) {
+export async function bumpAiUsage(userId, kind, db = pool, dealershipId = null) {
   const col = COLUMN[kind];
   if (!col) throw new Error(`unknown ai usage kind: ${kind}`);
-  const tz = await userDayAndTz(userId, db);
+  const tz = await userDayAndTz(userId, db, dealershipId);
   const { rows } = await db.query(
     `insert into ai_usage (user_id, day, ${col})
      values ($1, (now() at time zone $2)::date, 1)
