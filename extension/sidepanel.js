@@ -427,6 +427,9 @@ const activeOrganization = () => {
   const workspace = state.auth && state.auth.activeWorkspace;
   return workspace && workspace.type === 'organization' ? workspace.organization : null;
 };
+const organizationWorkspaceForDealer = (auth, dealershipId) => (auth && auth.workspaces || [])
+  .find((workspace) => workspace.type === 'organization'
+    && (workspace.rooftops || []).some((item) => item.dealership && item.dealership.id === dealershipId));
 
 function renderWorkspaceContext() {
   const auth = state.auth || {};
@@ -498,6 +501,10 @@ async function applyWorkspaceContext(workspaceId, dealershipId) {
   state.auth = res.auth;
   state.teamAutoOpened = false;
   state.serverListings = {};
+  // Changing an existing workspace is navigation, not completed onboarding. Without resetting
+  // this transition state, Personal -> Team incorrectly shows the one-time "You're all set" gate.
+  state.welcome = false;
+  state.lastGateScreen = null;
   renderWorkspaceContext();
   renderGate();
   setStatus(state.auth.canList ? 'Workspace ready.' : 'Workspace selected.');
@@ -2237,9 +2244,19 @@ function renderDealerConnect(key, auth) {
   if (state.detectedDealer) {
     const d = state.detectedDealer;
     const domain = (Array.isArray(d.domains) && d.domains[0]) || '';
+    const existingWorkspace = state.detectedClaimed
+      ? organizationWorkspaceForDealer(auth, d.id)
+      : null;
     ui.gateDealer.hidden = false;
     ui.gateDealer.innerHTML = `${esc(d.name || 'Dealership')}<small>${domain ? `${esc(domain)} · ` : ''}detected — confirm it’s yours</small>`;
-    if (state.intent === 'organization' && state.detectedClaimed) {
+    if (existingWorkspace) {
+      const name = existingWorkspace.organization && existingWorkspace.organization.name
+        || d.name || 'your team';
+      ui.gateTitle.textContent = 'You already have team access';
+      ui.gateMsg.textContent = `Open your existing ${name} workspace. No new request or subscription is needed.`;
+      ui.gatePrimary.textContent = `Open ${name}`;
+      ui.gatePrimary.dataset.action = 'switchDetectedTeam';
+    } else if (state.intent === 'organization' && state.detectedClaimed) {
       ui.gateTitle.textContent = 'This dealership already has a CarXprt team';
       ui.gateMsg.textContent = 'Request access from its current manager. Ownership disputes are handled by CarXprt support and never replace the existing team automatically.';
       ui.gatePrimary.textContent = 'Request team access';
@@ -2324,6 +2341,20 @@ async function gateAction(action, btnEl) {
   if (action === 'linkDetected') { linkDetectedDealership(); return; }
   if (action === 'claimDetected') { submitDealershipClaim(); return; }
   if (action === 'requestAccess') { requestTeamAccess(); return; }
+  if (action === 'switchDetectedTeam') {
+    const dealer = state.detectedDealer;
+    const workspace = dealer && organizationWorkspaceForDealer(state.auth, dealer.id);
+    if (!workspace) {
+      showGateError('Your team workspace is no longer available. Refresh and try again.');
+      return;
+    }
+    state.intent = null;
+    state.detectedDealer = null;
+    state.detectedClaimed = false;
+    await chrome.storage.local.remove('ezlistOnboardingIntent');
+    await applyWorkspaceContext(workspace.id, dealer.id);
+    return;
+  }
   if (action === 'joinUnavailable') {
     showGateError('This dealership does not have an active CarXprt team yet. Choose personal access or ask a manager to set up the dealership.');
     return;

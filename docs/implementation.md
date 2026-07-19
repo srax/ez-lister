@@ -20,6 +20,28 @@ system in V1.
 Implementation branch: `feature/organizations-v1`. The first extension build carrying the
 organization contract is `0.3.0`; backend rollout remains independently feature-gated.
 
+### Rollout status (2026-07-19)
+
+- Migrations `010-018`, organization services, lease V2, workspace-scoped sync, claim and
+  access flows, Better Auth organization membership, $499 rooftop Checkout, seat management,
+  and the extension team dashboard are implemented on `feature/organizations-v1`.
+- The automated baseline is 290 passing Node tests plus 113 syntax-checked JavaScript files.
+- Railway staging has organizations enabled, auto-onboarding disabled, Stripe sandbox billing,
+  and all migrations applied. A fresh-user E2E has passed Google sign-in, supported-rooftop
+  detection, pending claim, admin approval, $499 sandbox Checkout, webhook activation, owner
+  listing-seat selection, dashboard authorization, invitation delivery, seat reservation,
+  lease V2, and an organization-stamped dealer draft.
+- Remaining staging gates are the final Facebook Fill -> user Publish -> backend sync assertion
+  in the dedicated staging Chrome profile, plus a second-user invitation acceptance smoke test.
+- Production remains unchanged and organization-disabled. It has live Stripe personal billing
+  only; no dealership price is configured. A private PostgreSQL 18 dump was restored locally and
+  migrations `007`, `008`, and `010-018` applied twice: the first run backfilled all eight users,
+  preserved all four subscriptions, and found no duplicate Stripe IDs; the second applied no
+  migrations.
+- Do not enable production organizations until the remaining staging gates pass, a fresh private
+  database dump is validated, a separate live dealership product/price is created, and the live
+  webhook/plan configuration is verified.
+
 ## 2. Non-Negotiable Product Rules
 
 - No free product access. A valid individual subscription or organization seat is required
