@@ -44,14 +44,19 @@ The source `extension/` tree is never modified.
 
 ## Loading for dev/test
 
-- **Raw source against staging** (fastest): load `extension/` unpacked
-  (`chrome://extensions` → Load unpacked). Source manifest keeps the localhost + staging
-  hosts, so set the backend in storage once:
-  `chrome.storage.local.set({ ezlistBackendUrl: 'https://carxpert-tools-backend-staging.up.railway.app' })`.
-  The pinned key gives the stable ID above regardless of load path.
+- **Local source build**: load `extension/` unpacked (`chrome://extensions` → Load unpacked).
+  It always targets `127.0.0.1:3737`; use this only with the local backend.
 - **Clean staging artifact**: `npm run build:ext:staging` then load `dist/staging/`.
-- After reloading, **refresh open dealer/Facebook tabs** — content scripts only inject on
-  fresh loads.
+  The packaged backend URL is authoritative; do not override `ezlistBackendUrl` in storage.
+- **Environment switch**: loading local, staging, or production under the pinned ID clears cached
+  auth, lease, draft, and workspace state when the packaged backend changes. Sign in again after
+  switching environments. The pinned key keeps the extension ID stable regardless of load path.
+- Use a dedicated profile per target: `./scripts/open-test-chrome.sh local`, `staging`, or
+  `prod`. Reusing one Chrome profile across targets can retain a service worker from the previous
+  unpacked path because all builds share the pinned ID.
+- On `chrome://extensions`, confirm **Source** points to the expected `extension/` or
+  `dist/<environment>/` directory and click **Reload** after every rebuild. Then refresh open
+  dealer/Facebook tabs; content scripts only reinject on fresh page loads.
 
 ## Launch cutover (C6 ⇄ A5 ⇄ B4)
 

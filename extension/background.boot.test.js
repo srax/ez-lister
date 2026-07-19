@@ -52,4 +52,5 @@ test('background.js service worker boots without a synchronous throw', () => {
   // Sanity: the imported libs actually populated their globals in this context.
   assert.ok(sandbox.CarxpertPlatforms, 'importScripts did not load lib/platforms.js');
   assert.ok(sandbox.CarxpertInventoryCheck, 'importScripts did not load lib/inventoryCheck.js');
+  assert.ok(sandbox.CarxpertRuntimeConfig, 'importScripts did not load lib/runtimeConfig.js');
 });

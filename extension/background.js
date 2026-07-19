@@ -1,6 +1,6 @@
 'use strict';
 
-importScripts('lib/lease.js', 'lib/platforms.js', 'lib/inventoryCheck.js', 'lib/workspaceContext.js'); // lease verifier + platform registry + inventory presence check
+importScripts('lib/runtimeConfig.js', 'lib/lease.js', 'lib/platforms.js', 'lib/inventoryCheck.js', 'lib/workspaceContext.js'); // runtime boundary + lease verifier + platform registry + inventory presence check
 
 const { getPlatform } = globalThis.CarxpertPlatforms;
 const WorkspaceContext = globalThis.CarxpertWorkspaceContext;
@@ -21,6 +21,14 @@ let contextSwitching = false;
 let contextPersistTimer = null;
 let contextOperation = Promise.resolve();
 
+// The same pinned extension ID is used in local, staging, and production builds. Reconcile the
+// persisted state immediately so a profile switched between builds cannot send a production
+// session/lease to staging (or vice versa). Every token/backend read waits on this promise.
+const runtimeConfigReady = globalThis.CarxpertRuntimeConfig.reconcile(chrome.storage.local, {
+  backendUrl: BACKEND_URL,
+  backendToken: BACKEND_TOKEN
+});
+
 // A single pre-warmed "create listing" tab so the heavy page load happens before the user
 // clicks List. Tagged with the platform it was opened for, so it's only reused for that
 // platform's fill (Facebook today; Craigslist/OfferUp reuse the same slot as they ship).
@@ -37,9 +45,7 @@ function enableSidePanelOnActionClick() {
   }
 }
 chrome.runtime.onInstalled.addListener(() => {
-  const init = { ezlistBackendUrl: BACKEND_URL };
-  if (BACKEND_TOKEN) init.ezlistBackendToken = BACKEND_TOKEN;
-  chrome.storage.local.set(init);
+  runtimeConfigReady.catch(() => {});
   enableSidePanelOnActionClick();
 });
 chrome.runtime.onStartup.addListener(enableSidePanelOnActionClick);
@@ -66,7 +72,7 @@ function errorResponse(error) {
   };
 }
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+function dispatchMessage(message, sender, sendResponse) {
   if (!message || !message.type) return false;
 
   switch (message.type) {
@@ -124,7 +130,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'EZLIST_PREFETCH_IMAGES':
       startFetch(message).catch(() => {}); // warm the cache; result awaited later by FETCH_IMAGES
       sendResponse({ ok: true });
-      return false;
+      return true;
 
     case 'EZLIST_FETCH_IMAGES':
       startFetch(message)
@@ -308,6 +314,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     default:
       return false;
   }
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || !message.type) return false;
+  runtimeConfigReady
+    .then(() => {
+      const handled = dispatchMessage(message, sender, sendResponse);
+      if (!handled) sendResponse({ ok: false, error: 'Unsupported extension message.' });
+    })
+    .catch((error) => sendResponse(errorResponse(error)));
+  // Keep the channel open while environment reconciliation and the selected handler run.
+  return true;
 });
 
 // ---- pre-warm / reuse a platform's create tab ----
@@ -672,8 +690,8 @@ async function billingPlan() {
 }
 
 async function getBackendUrl() {
-  const stored = await chrome.storage.local.get(['ezlistBackendUrl']);
-  return stored.ezlistBackendUrl || BACKEND_URL;
+  await runtimeConfigReady;
+  return BACKEND_URL;
 }
 
 // ==================== dealership onboarding ====================
@@ -928,6 +946,7 @@ async function clearAuth() {
 }
 
 async function getToken() {
+  await runtimeConfigReady;
   return (await chrome.storage.local.get('ezlistAuthToken')).ezlistAuthToken || '';
 }
 
