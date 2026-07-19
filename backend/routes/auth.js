@@ -23,6 +23,9 @@ router.get('/api/auth/extension/start', async (req, res, next) => {
       return;
     }
     const r = await auth.api.signInSocial({
+      // Better Auth's rate limiter resolves the client IP from these forwarded headers.
+      // Omitting them collapses every OAuth start into one shared fallback bucket on Railway.
+      headers: fromNodeHeaders(req.headers),
       body: { provider: 'google', callbackURL: `${baseUrl(req)}/api/auth/extension/finish` },
       asResponse: true
     });

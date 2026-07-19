@@ -855,15 +855,20 @@ async function submitTeamInvite(event) {
       reserveSeat: role === 'salesperson'
     }
   }).catch(() => null);
+  let resultMessage;
   if (!res || !res.ok) {
-    ui.teamInviteResult.textContent = (res && res.error) || 'Could not create invitation.';
+    resultMessage = (res && res.error) || 'Could not create invitation.';
   } else {
     const delivery = res.invitation.delivery;
-    ui.teamInviteResult.textContent = delivery && delivery.ok
+    resultMessage = delivery && delivery.ok
       ? `Invitation emailed to ${res.invitation.email}.`
       : `Invitation created. Email delivery is unavailable; share this one-time code securely: ${res.invitation.token}`;
     ui.teamInviteEmail.value = '';
+    // A pending salesperson invitation reserves capacity immediately. Refresh before showing
+    // success so owners never see a stale seat count and accidentally over-invite.
+    await loadTeamData();
   }
+  ui.teamInviteResult.textContent = resultMessage;
   ui.teamInviteResult.hidden = false;
 }
 
