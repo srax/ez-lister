@@ -120,10 +120,10 @@ repository or chat.
 Suggested additional instructions:
 
 > 1. Sign in to CarXprt with the reviewer Google account supplied above.
-> 2. The account is already entitled and connected to V&L Auto Sales.
-> 3. Open the supplied public V&L vehicle-detail URL, then click the CarXprt toolbar icon.
-> 4. Select a vehicle and choose Facebook or Craigslist. CarXprt prepares a draft; no listing is
->    published automatically.
+> 2. The account is already entitled and connected to Alexandria Toyota.
+> 3. Open `https://www.alexandriatoyota.com/searchused.aspx`, then click the CarXprt toolbar icon.
+> 4. Select a vehicle with its List button and choose Facebook or Craigslist. CarXprt prepares a
+>    draft; no listing is published automatically.
 > 5. If testing Facebook or Craigslist form fill, sign in to that third-party site with your own
 >    reviewer account. Click Fill listing and confirm that fields are populated. Stop before the
 >    site's final Publish/Post action.
