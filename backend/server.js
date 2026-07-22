@@ -6,6 +6,8 @@ import { auth } from './auth.js';
 import { jwksHandler } from './entitlement/index.js';
 import { warnIfLeaseUnconfigured } from './entitlement/keys.js';
 import { startWorker } from './worker/soldScan.js';
+import { organizationsEnabled } from './features.js';
+import { blockManagedAuthRoutes } from './auth-surface.js';
 import authRoutes from './routes/auth.js';
 import metaRoutes from './routes/meta.js';
 import aiRoutes from './routes/ai.js';
@@ -14,6 +16,8 @@ import dealershipRoutes from './routes/dealerships.js';
 import listingRoutes from './routes/listings.js';
 import adminRoutes from './routes/admin.js';
 import billingRoutes from './routes/billing.js';
+import claimRoutes from './routes/claims.js';
+import organizationRoutes from './routes/organizations.js';
 
 const app = express();
 // Railway terminates TLS and forwards; trust the first proxy so req.ip is the real client.
@@ -35,8 +39,11 @@ app.use((req, res, next) => {
   if (origin && allowedOrigins.has(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization, X-Carxpert-Workspace-Id, X-Carxpert-Dealership-Id'
+    );
   }
   if (req.method === 'OPTIONS') { res.sendStatus(204); return; }
   next();
@@ -45,6 +52,11 @@ app.use((req, res, next) => {
 // Extension auth handshake (start/finish/exchange) — must precede the Better Auth catch-all
 // and the global JSON parser (the exchange route brings its own express.json()).
 app.use(authRoutes);
+
+// Carxprt owns organization and subscription mutations through the verified domain routes
+// below. Keep Better Auth's implementation available to server-side auth.api calls while
+// preventing direct HTTP calls that could supply their own role, plan, or quantity.
+app.use(blockManagedAuthRoutes);
 
 // Better Auth handler reads the RAW request body, so mount it before express.json(). This
 // also serves the @better-auth/stripe routes, incl. the Stripe webhook at
@@ -65,6 +77,8 @@ app.use(dealershipRoutes);
 app.use(listingRoutes);
 app.use(adminRoutes);
 app.use(billingRoutes);
+app.use(claimRoutes);
+app.use(organizationRoutes);
 
 // Dormant Firecrawl extraction + HTML fixtures: dev-only, NEVER mounted on a deployed
 // backend (isProduction treats "on Railway" as production even if NODE_ENV is forgotten).
@@ -80,6 +94,7 @@ app.use((req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
 app.use((err, req, res, next) => {
   const status = err.status || 500;
   const body = { ok: false, error: err.message || 'internal error' };
+  if (err.reason) body.reason = err.reason;
   if (!isProduction() && err.stack) body.stack = err.stack;
   res.status(status).json(body);
 });
@@ -91,19 +106,20 @@ const HOST = process.env.HOST || (onRailway ? '0.0.0.0' : '127.0.0.1');
 
 async function start() {
   warnIfLeaseUnconfigured();
-  try {
-    const applied = await runMigrations();
-    console.log(applied.length ? `migrations applied: ${applied.join(', ')}` : 'migrations: up to date');
-  } catch (err) {
-    // Don't crash-loop: /health is DB-free, so stay up and surface the error in logs.
-    console.error(`migration error: ${err.message}`);
-  }
+  // A backend with a failed schema migration is not healthy even if the DB-free liveness route
+  // can answer. Fail startup so Railway cannot promote a release with a partially-applied API.
+  const applied = await runMigrations();
+  console.log(applied.length ? `migrations applied: ${applied.join(', ')}` : 'migrations: up to date');
   app.listen(PORT, HOST, () => {
     console.log(`Carxpert backend on http://${HOST}:${PORT} (env=${process.env.NODE_ENV || 'dev'})`);
-    // In-process hourly sold-scan. Opt-in (SOLD_SCAN_ENABLED) so it only runs where we
-    // intend to poll dealer sites; a cycle is a no-op when no tracked listings exist.
-    if (/^(1|true|yes)$/i.test(process.env.SOLD_SCAN_ENABLED || '')) startWorker();
+    // Organization expiry/billing repair must keep running even where dealer inventory
+    // polling is disabled. The shared scheduler can skip its inventory half independently.
+    const inventoryEnabled = /^(1|true|yes)$/i.test(process.env.SOLD_SCAN_ENABLED || '');
+    if (inventoryEnabled || organizationsEnabled()) startWorker({ inventoryEnabled });
   });
 }
 
-start();
+start().catch((err) => {
+  console.error(`startup error: ${err.message}`);
+  process.exitCode = 1;
+});

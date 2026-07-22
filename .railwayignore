@@ -6,6 +6,7 @@ node_modules/
 backend/.env
 extension/
 dist/
+site/
 scripts/
 .playwright-mcp/
 .firecrawl/
@@ -15,3 +16,7 @@ scripts/
 alexandria-*
 facebook-marketplace-*
 chrome-webstore-*
+.env
+.env.*
+.docs
+.claude

@@ -2,6 +2,20 @@ import crypto from 'node:crypto';
 import { pool } from './db.js';
 import { normalizeHost, candidateHosts } from './dealer-url.js';
 import { scorePlatform, buildEvidence } from './fingerprint.js';
+import { fetchSiteEvidence } from './detect.js';
+import { createDealership } from './admin-ops.js';
+import { activeSubscription } from './entitlement/index.js';
+import { dealershipAutoOnboardEnabled, organizationsEnabled } from './features.js';
+
+// Auto-onboarding is an explicit rollout tool, not the V1 default. Generic schema.org pages
+// never qualify: a parseable VDP does not prove the full SRP/photo/fill workflow is accurate.
+// The opt-in path also requires server-observed evidence; client fingerprints are useful for
+// triage but are untrusted and must not promote an arbitrary domain to `supported`.
+const AUTO_SUPPORT_PLATFORMS = new Set(['dealeron', 'dealercom', 'dealerinspire']);
+
+export function slugFromHost(host) {
+  return String(host || '').toLowerCase().replace(/^www\./, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
 
 // The config subset safe to hand the extension (what makes it config-driven per dealer).
 function publicDealership(row) {
@@ -37,13 +51,32 @@ export async function findDealershipByHosts(hosts, db = pool) {
   return rows[0] || null;
 }
 
+export async function dealershipClaimState(dealershipId, db = pool) {
+  const { rows } = await db.query(
+    `select organization_id, status from organization_rooftops
+      where dealership_id=$1
+        and status in ('reserved','active','past_due','suspended','pending_removal')
+      limit 1`,
+    [dealershipId]
+  );
+  return rows.length
+    ? { claimed: true, organizationId: rows[0].organization_id, rooftopStatus: rows[0].status }
+    : { claimed: false, organizationId: null, rooftopStatus: null };
+}
+
 // resolve: alias hit → supported dealership; miss → detected platform (triage only).
-export async function resolveDealer({ url, fingerprints }, { db = pool, allowNetwork = true } = {}) {
+export async function resolveDealer({ url, fingerprints }, {
+  db = pool,
+  allowNetwork = true,
+  fetchImpl = fetch,
+  enforceClaims = organizationsEnabled(),
+  allowAutoOnboard = dealershipAutoOnboardEnabled()
+} = {}) {
   let inputHost = null;
   let hosts = [];
   if (url) {
     try {
-      const c = await candidateHosts(url, { allowNetwork });
+      const c = await candidateHosts(url, { allowNetwork, fetchImpl });
       inputHost = c.inputHost;
       hosts = c.hosts;
     } catch {
@@ -53,15 +86,102 @@ export async function resolveDealer({ url, fingerprints }, { db = pool, allowNet
 
   const dealership = await findDealershipByHosts(hosts, db);
   if (dealership && dealership.status === 'supported') {
-    return { supported: true, dealership: publicDealership(dealership), normalizedDomain: inputHost };
+    const claim = enforceClaims ? await dealershipClaimState(dealership.id, db) : { claimed: false };
+    return {
+      supported: true,
+      dealership: publicDealership(dealership),
+      normalizedDomain: inputHost,
+      claimed: Boolean(claim.claimed)
+    };
+  }
+  if (dealership) {
+    // The domain maps to a KNOWN dealership that curation disabled — never auto-revive it.
+    const { platform, confidence } = scorePlatform(buildEvidence(fingerprints));
+    return { supported: false, detectedPlatform: platform || dealership.platform, confidence, normalizedDomain: inputHost };
   }
 
-  const { platform, confidence } = scorePlatform(buildEvidence(fingerprints));
+  // Unknown domain → detect the platform for real: merge client fingerprints (live-DOM
+  // evidence, when our script already ran there) with a one-shot server fetch of the site.
+  let siteInfo = null;
+  if (inputHost && allowNetwork) siteInfo = await fetchSiteEvidence(inputHost, { fetchImpl });
+  const evidence = buildEvidence({ ...(fingerprints || {}), ...(siteInfo ? siteInfo.evidence : {}) });
+  const scored = scorePlatform(evidence);
+  const { confidence } = scored;
+  let platform = scored.platform;
+
+  // Promotion decisions use only evidence fetched by this backend. A signed-in client can
+  // claim any fingerprint values, so merged client evidence is advisory only.
+  const serverPlatform = siteInfo
+    ? scorePlatform(buildEvidence(siteInfo.evidence)).platform
+    : null;
+
+  // Universal fallback: an UNRECOGNIZED platform (e.g. Dealer Inspire/Cars.com) that still exposes
+  // schema.org dealer/vehicle data can self-serve as 'generic' — the generic extractor lists from
+  // its detail pages. Only when no specific platform matched, so it never overrides a real one.
+  const fp = fingerprints || {};
+  if (!platform && (fp.hasSchemaAutoDealer || fp.hasSchemaVehicle)) platform = 'generic';
+
+  // Future controlled rollout: server-verified supported-platform sites may self-onboard only
+  // when the deployment explicitly enables it. Production V1 leaves this disabled.
+  if (allowAutoOnboard && serverPlatform && AUTO_SUPPORT_PLATFORMS.has(serverPlatform) && inputHost) {
+    const clientSiteName = (fingerprints || {}).siteName;
+    const created = await autoOnboardDealer({ inputHost, hosts, siteInfo, platform: serverPlatform, clientSiteName }, db);
+    if (created) {
+      return {
+        supported: true,
+        dealership: created,
+        normalizedDomain: inputHost,
+        autoOnboarded: true,
+        claimed: false
+      };
+    }
+  }
+
   return { supported: false, detectedPlatform: platform, confidence, normalizedDomain: inputHost };
 }
 
-// link: only supported dealerships; one per user (switching is admin-only in v1).
-export async function linkDealer(userId, dealershipId, db = pool) {
+// Create the dealership row + exact-match aliases for a freshly-detected supported-platform
+// site. Config starts minimal: sitemapUrl only when the homepage actually references
+// sitemap.aspx (enables the sold-scan roster); location stays null until known (the extension
+// treats a missing location as "leave the field for the user").
+async function autoOnboardDealer({ inputHost, hosts, siteInfo, platform, clientSiteName }, db) {
+  try {
+    const apex = inputHost.replace(/^www\./, '');
+    const domains = [...new Set([inputHost, apex, `www.${apex}`, ...(hosts || []), ...(siteInfo && siteInfo.finalHost ? [siteInfo.finalHost] : [])])];
+    let id = slugFromHost(inputHost);
+    if (!id) return null;
+    // Slug collision guard: if the id already belongs to a DIFFERENT site (its aliases don't
+    // include this host — we only get here when the alias lookup missed), suffix a stable hash
+    // of the apex domain instead of silently merging two dealerships into one row.
+    const clash = await db.query('select id from dealerships where id = $1', [id]);
+    if (clash.rows.length) {
+      id = `${id}-${crypto.createHash('sha256').update(apex).digest('hex').slice(0, 6)}`;
+    }
+    // Prefer the server's og:site_name; else the extension probe's client-supplied name (sanitized:
+    // collapse whitespace, cap length); else the apex domain.
+    const cleanClientName = String(clientSiteName || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    const name = (siteInfo && siteInfo.siteName) || cleanClientName || apex;
+    const config = {};
+    if (siteInfo && siteInfo.evidence && siteInfo.evidence.hasSitemapAspx) {
+      config.sitemapUrl = `https://${inputHost}/sitemap.aspx`;
+    }
+    await createDealership({ id, name, platform, timezone: 'America/New_York', config, domains }, db);
+    const fresh = await findDealershipByHosts([inputHost], db);
+    return fresh ? publicDealership(fresh) : null;
+  } catch {
+    return null; // creation raced/failed → fall back to the normal unsupported/request path
+  }
+}
+
+// Personal link: only supported dealerships; one per user (user_dealerships PK enforces it).
+// Organization ownership is a separate workspace boundary, not an exclusive lock on independent
+// salespeople. A claimed rooftop may therefore have both an organization and self-paid personal
+// users without sharing billing, seats, permissions, or statistics.
+// Switching to a DIFFERENT dealership is allowed only while the account has NO live paid
+// subscription (active/trialing) — once the user has paid, the dealership the subscription
+// was sold for is locked; changing it is a support/admin action (/api/admin/link|unlink).
+// Expired/canceled subscriptions may switch (they pay again on renewal).
+export async function linkDealer(userId, dealershipId, db = pool, _options = {}) {
   const { rows } = await db.query('select id, status from dealerships where id = $1', [dealershipId]);
   if (!rows.length) { const e = new Error('unknown dealership'); e.status = 404; throw e; }
   if (rows[0].status !== 'supported') { const e = new Error('dealership not supported'); e.status = 400; throw e; }
@@ -69,9 +189,18 @@ export async function linkDealer(userId, dealershipId, db = pool) {
   const existing = await db.query('select dealership_id from user_dealerships where user_id = $1', [userId]);
   if (existing.rows.length) {
     if (existing.rows[0].dealership_id === dealershipId) return { linked: true, dealershipId };
-    const e = new Error('already linked to a different dealership (switching is admin-only)');
-    e.status = 409;
-    throw e;
+    const sub = await activeSubscription(userId, db);
+    if (sub.active) {
+      const e = new Error('Your subscription is tied to your connected dealership. Contact support to change it.');
+      e.status = 409;
+      e.reason = 'dealership_locked';
+      throw e;
+    }
+    await db.query(
+      'update user_dealerships set dealership_id = $2, linked_at = now() where user_id = $1',
+      [userId, dealershipId]
+    );
+    return { linked: true, dealershipId, switched: true };
   }
 
   await db.query('insert into user_dealerships (user_id, dealership_id) values ($1, $2)', [userId, dealershipId]);

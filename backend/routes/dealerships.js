@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireUser } from '../mw.js';
 import { resolveDealer, linkDealer, recordRequest, normalizeHost } from '../dealerships.js';
+import { notifyDealerRequest } from '../email.js';
 import { scorePlatform, buildEvidence } from '../fingerprint.js';
 
 const router = Router();
@@ -40,7 +41,8 @@ router.post('/api/dealerships/resolve', requireUser, async (req, res, next) => {
   }
 });
 
-// Link the user to a supported dealership (one per user; switching is admin-only).
+// Link the user to a supported dealership (one per user). Switching is allowed while the
+// account has no live paid subscription; after payment the link is locked (409, admin-only).
 router.post('/api/dealerships/link', requireUser, async (req, res, next) => {
   try {
     const dealershipId = req.body && req.body.dealershipId;
@@ -73,7 +75,20 @@ router.post('/api/dealerships/request', requireUser, async (req, res, next) => {
       contactPhone,
       notes
     });
-    res.json({ ok: true, ...result });
+    // Email the request to the admin address (best-effort; never blocks/fails the submit).
+    await notifyDealerRequest({
+      url,
+      normalizedDomain,
+      platform,
+      contactName,
+      contactEmail,
+      contactPhone,
+      notes,
+      fingerprints,
+      accountEmail: req.user.email,
+      at: new Date().toISOString()
+    });
+    res.json({ ...result, ok: true });
   } catch (err) {
     next(err);
   }

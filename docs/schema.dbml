@@ -1,0 +1,764 @@
+// CarXprt schema generated from all backend/migrations through 018.
+// Paste this file into https://dbdiagram.io to visualize the current database.
+
+Table "account" {
+  "id" text [pk, not null]
+  "accountId" text [not null]
+  "providerId" text [not null]
+  "userId" text [not null]
+  "accessToken" text
+  "refreshToken" text
+  "idToken" text
+  "accessTokenExpiresAt" timestamp
+  "refreshTokenExpiresAt" timestamp
+  "scope" text
+  "password" text
+  "createdAt" timestamp [not null, default: `CURRENT_TIMESTAMP`]
+  "updatedAt" timestamp [not null]
+
+  Indexes {
+    userId [type: btree, name: "account_userId_idx"]
+  }
+}
+
+Table "ai_usage" {
+  "user_id" text [not null]
+  "day" date [not null]
+  "describe_count" integer [not null, default: 0]
+  "translate_count" integer [not null, default: 0]
+
+  Indexes {
+    (user_id, day) [pk, name: "ai_usage_pkey"]
+  }
+}
+
+Table "claim_evidence" {
+  "id" text [pk, not null]
+  "claim_id" text [not null]
+  "type" text [not null]
+  "summary" text
+  "recorded_by" text
+  "created_at" timestamp [not null, default: `now()`]
+}
+
+Table "comp_grants" {
+  "user_id" text [pk, not null]
+  "expires_at" timestamp
+  "note" text
+  "created_at" timestamp [not null, default: `now()`]
+  "workspace_id" text
+}
+
+Table "dealer_inventory_scans" {
+  "id" text [pk, not null]
+  "dealership_id" text [not null]
+  "started_at" timestamp [not null]
+  "finished_at" timestamp
+  "ok" boolean
+  "vin_count" integer
+  "source" text
+  "error" text
+  "meta" jsonb
+
+  Indexes {
+    (dealership_id, started_at) [type: btree, name: "dealer_inventory_scans_dealer_time_idx"]
+  }
+}
+
+Table "dealer_requests" {
+  "id" text [pk, not null]
+  "user_id" text [not null]
+  "raw_input" text [not null]
+  "normalized_domain" text
+  "detected_platform" text
+  "fingerprints" jsonb
+  "created_at" timestamp [not null, default: `now()`]
+  "contact_name" text
+  "contact_email" text
+  "contact_phone" text
+  "notes" text
+}
+
+Table "dealership_aliases" {
+  "domain" text [pk, not null]
+  "dealership_id" text [not null]
+}
+
+Table "dealership_claims" {
+  "id" text [pk, not null]
+  "claim_group_id" text [not null]
+  "user_id" text [not null]
+  "dealership_id" text [not null]
+  "organization_id" text
+  "organization_name" text
+  "status" text [not null, default: `'pending'::text`]
+  "attested_at" timestamp [not null]
+  "reservation_expires_at" timestamp
+  "reviewed_by" text
+  "reviewed_at" timestamp
+  "review_reason" text
+  "created_at" timestamp [not null, default: `now()`]
+  "updated_at" timestamp [not null, default: `now()`]
+  "hold_from_status" text
+  "hold_rooftop_status" text
+
+  Checks {
+    `(status = ANY (ARRAY['pending'::text, 'evidence_requested'::text, 'approved'::text, 'checkout_pending'::text, 'active'::text, 'rejected'::text, 'expired'::text, 'conflict'::text, 'disputed'::text, 'suspended'::text, 'transferred'::text]))` [name: 'dealership_claims_status_check']
+  }
+
+  Indexes {
+    dealership_id [type: btree, unique, name: "dealership_claims_active_reservation_idx"]
+    (status, created_at) [type: btree, name: "dealership_claims_review_idx"]
+    (user_id, created_at) [type: btree, name: "dealership_claims_user_idx"]
+    (user_id, dealership_id) [type: btree, unique, name: "dealership_claims_user_open_idx"]
+  }
+}
+
+Table "dealerships" {
+  "id" text [pk, not null]
+  "name" text [not null]
+  "platform" text [not null]
+  "status" text [not null, default: `'supported'::text`]
+  "timezone" text [not null, default: `'America/New_York'::text`]
+  "config" jsonb [not null, default: `'{}'::jsonb`]
+}
+
+Table "extension_auth_codes" {
+  "code" text [pk, not null]
+  "user_id" text [not null]
+  "expires_at" timestamp [not null]
+  "used" boolean [not null, default: false]
+}
+
+Table "invitation" {
+  "id" text [pk, not null]
+  "organizationId" text [not null]
+  "email" text [not null]
+  "role" text
+  "status" text [not null, default: `'pending'::text`]
+  "expiresAt" timestamp [not null]
+  "createdAt" timestamp [not null, default: `CURRENT_TIMESTAMP`]
+  "inviterId" text [not null]
+
+  Indexes {
+    email [type: btree, name: "invitation_email_idx"]
+    organizationId [type: btree, name: "invitation_organizationId_idx"]
+  }
+}
+
+Table "listing_platforms" {
+  "listing_id" text [not null]
+  "platform" text [not null]
+  "status" text [not null, default: `'listed'::text`]
+  "listed_at" timestamp
+  "listing_url" text
+  "created_at" timestamp [not null, default: `now()`]
+  "updated_at" timestamp [not null, default: `now()`]
+
+  Indexes {
+    (listing_id, platform) [pk, name: "listing_platforms_pkey"]
+    platform [type: btree, name: "listing_platforms_platform_idx"]
+  }
+}
+
+Table "listing_view_snapshots" {
+  "listing_id" text [not null]
+  "views_count" integer [not null]
+  "observed_at" timestamp [not null]
+
+  Indexes {
+    (listing_id, observed_at) [pk, name: "listing_view_snapshots_pkey"]
+  }
+}
+
+Table "listings" {
+  "id" text [pk, not null]
+  "owner_id" text [not null]
+  "dealership_id" text
+  "client_key" text [not null]
+  "vin" text
+  "stock" text
+  "title" text
+  "year" integer
+  "make" text
+  "model" text
+  "price" numeric(12,2)
+  "platform" text [not null, default: `'fb'::text`]
+  "status" text [not null, default: `'listed'::text`]
+  "sold_source" text
+  "listed_at" timestamp
+  "sold_at" timestamp
+  "sold_price" numeric(12,2)
+  "source_url" text
+  "facebook_listing_id" text
+  "facebook_listing_url" text
+  "facebook_published_at" timestamp
+  "views_count" integer
+  "views_observed_at" timestamp
+  "last_seen_in_inventory_at" timestamp
+  "first_missed_at" timestamp
+  "created_at" timestamp [not null, default: `now()`]
+  "updated_at" timestamp [not null, default: `now()`]
+  "gone_confirmed_at" timestamp
+  "sold_platform" text
+  "dealer_outcome" text
+  "dealer_outcome_at" timestamp
+  "workspace_id" text
+  "organization_id" text
+  "actor_user_id" text
+
+  Indexes {
+    (dealership_id, status) [type: btree, name: "listings_dealership_status_idx"]
+    (organization_id, dealership_id) [type: btree, name: "listings_organization_dealer_idx"]
+    (owner_id, client_key) [type: btree, name: "listings_owner_client_key_idx"]
+    (owner_id, listed_at) [type: btree, name: "listings_owner_listed_idx"]
+    (owner_id, status) [type: btree, name: "listings_owner_status_idx"]
+    (workspace_id, actor_user_id, client_key) [type: btree, unique, name: "listings_workspace_actor_client_key_idx"]
+    (workspace_id, status) [type: btree, name: "listings_workspace_status_idx"]
+  }
+}
+
+Table "member" {
+  "id" text [pk, not null]
+  "organizationId" text [not null]
+  "userId" text [not null]
+  "role" text [not null, default: `'member'::text`]
+  "createdAt" timestamp [not null, default: `CURRENT_TIMESTAMP`]
+
+  Indexes {
+    (organizationId, userId) [unique, name: "member_organizationId_userId_key"]
+    organizationId [type: btree, name: "member_organizationId_idx"]
+    userId [type: btree, name: "member_userId_idx"]
+  }
+}
+
+Table "member_rooftop_access" {
+  "member_id" text [not null]
+  "organization_id" text [not null]
+  "dealership_id" text [not null]
+  "role" text [not null]
+  "created_at" timestamp [not null, default: `now()`]
+  "revoked_at" timestamp
+
+  Checks {
+    `(role = ANY (ARRAY['manager'::text, 'salesperson'::text]))` [name: 'member_rooftop_access_role_check']
+  }
+
+  Indexes {
+    (member_id, dealership_id) [pk, name: "member_rooftop_access_pkey"]
+    (organization_id, dealership_id) [type: btree, name: "member_rooftop_access_org_dealer_idx"]
+  }
+}
+
+Table "organization" {
+  "id" text [pk, not null]
+  "name" text [not null]
+  "slug" text [unique, not null]
+  "logo" text
+  "createdAt" timestamp [not null, default: `CURRENT_TIMESTAMP`]
+  "metadata" text
+  "stripeCustomerId" text
+
+  Indexes {
+    slug [type: btree, name: "organization_slug_idx"]
+  }
+}
+
+Table "organization_access_requests" {
+  "id" text [pk, not null]
+  "organization_id" text [not null]
+  "dealership_id" text [not null]
+  "user_id" text [not null]
+  "email" text [not null]
+  "requested_role" text [not null, default: `'salesperson'::text`]
+  "status" text [not null, default: `'pending'::text`]
+  "reviewed_by" text
+  "reviewed_at" timestamp
+  "created_at" timestamp [not null, default: `now()`]
+  "updated_at" timestamp [not null, default: `now()`]
+
+  Checks {
+    `(requested_role = ANY (ARRAY['manager'::text, 'salesperson'::text]))` [name: 'organization_access_requests_requested_role_check']
+    `(status = ANY (ARRAY['pending'::text, 'approved_awaiting_capacity'::text, 'approved'::text, 'rejected'::text, 'canceled'::text]))` [name: 'organization_access_requests_status_check']
+  }
+
+  Indexes {
+    (organization_id, dealership_id, user_id) [type: btree, unique, name: "organization_access_requests_open_idx"]
+  }
+}
+
+Table "organization_audit_events" {
+  "id" text [pk, not null]
+  "organization_id" text
+  "dealership_id" text
+  "actor_user_id" text
+  "action" text [not null]
+  "target_type" text
+  "target_id" text
+  "reason" text
+  "data" jsonb
+  "occurred_at" timestamp [not null, default: `now()`]
+
+  Indexes {
+    (organization_id, occurred_at) [type: btree, name: "organization_audit_events_org_time_idx"]
+  }
+}
+
+Table "organization_billing_items" {
+  "organization_id" text [pk, not null]
+  "stripe_subscription_id" text
+  "rooftop_item_id" text
+  "rooftop_quantity" integer [not null, default: 0]
+  "extra_seat_item_id" text
+  "extra_seat_quantity" integer [not null, default: 0]
+  "synced_at" timestamp
+  "updated_at" timestamp [not null, default: `now()`]
+
+  Checks {
+    `(extra_seat_quantity >= 0)` [name: 'organization_billing_items_extra_seat_quantity_check']
+    `(rooftop_quantity >= 0)` [name: 'organization_billing_items_rooftop_quantity_check']
+  }
+}
+
+Table "organization_invitation_rooftops" {
+  "invitation_id" text [not null]
+  "dealership_id" text [not null]
+  "role" text [not null]
+  "reserve_seat" boolean [not null, default: false]
+
+  Checks {
+    `(role = ANY (ARRAY['manager'::text, 'salesperson'::text]))` [name: 'organization_invitation_rooftops_role_check']
+  }
+
+  Indexes {
+    (invitation_id, dealership_id) [pk, name: "organization_invitation_rooftops_pkey"]
+  }
+}
+
+Table "organization_invitation_scopes" {
+  "invitation_id" text [pk, not null]
+  "token_hash" text [unique, not null]
+  "organization_id" text [not null]
+  "requested_role" text [not null]
+  "all_rooftops" boolean [not null, default: false]
+  "created_at" timestamp [not null, default: `now()`]
+
+  Checks {
+    `(requested_role = ANY (ARRAY['manager'::text, 'salesperson'::text]))` [name: 'organization_invitation_scopes_requested_role_check']
+  }
+}
+
+Table "organization_member_profiles" {
+  "member_id" text [pk, not null]
+  "organization_id" text [not null]
+  "user_id" text [not null]
+  "role" text [not null]
+  "all_rooftops" boolean [not null, default: false]
+  "status" text [not null, default: `'active'::text`]
+  "removed_at" timestamp
+  "created_at" timestamp [not null, default: `now()`]
+  "updated_at" timestamp [not null, default: `now()`]
+  "listing_preference" text
+  "listing_preference_at" timestamp
+
+  Checks {
+    `((listing_preference IS NULL) OR (listing_preference = ANY (ARRAY['listing'::text, 'dashboard'::text])))` [name: 'organization_member_listing_preference_check']
+    `((role = 'manager'::text) OR (all_rooftops = false))` [name: 'organization_member_profiles_check']
+    `(role = ANY (ARRAY['owner'::text, 'manager'::text, 'salesperson'::text]))` [name: 'organization_member_profiles_role_check']
+    `(status = ANY (ARRAY['active'::text, 'suspended'::text, 'removed'::text]))` [name: 'organization_member_profiles_status_check']
+  }
+
+  Indexes {
+    (organization_id, user_id) [unique, name: "organization_member_profiles_organization_id_user_id_key"]
+  }
+}
+
+Table "organization_notifications" {
+  "id" text [pk, not null]
+  "user_id" text [not null]
+  "organization_id" text
+  "type" text [not null]
+  "data" jsonb
+  "created_at" timestamp [not null, default: `now()`]
+  "read_at" timestamp
+
+  Indexes {
+    (user_id, created_at) [type: btree, name: "organization_notifications_user_unread_idx"]
+  }
+}
+
+Table "organization_ownership_transfers" {
+  "id" text [pk, not null]
+  "organization_id" text [not null]
+  "from_member_id" text [not null]
+  "to_member_id" text [not null]
+  "token_hash" text [unique, not null]
+  "status" text [not null, default: `'pending'::text`]
+  "expires_at" timestamp [not null]
+  "created_at" timestamp [not null, default: `now()`]
+  "accepted_at" timestamp
+  "canceled_at" timestamp
+
+  Checks {
+    `(from_member_id <> to_member_id)` [name: 'organization_ownership_transfers_check']
+    `(status = ANY (ARRAY['pending'::text, 'accepted'::text, 'canceled'::text, 'expired'::text]))` [name: 'organization_ownership_transfers_status_check']
+  }
+
+  Indexes {
+    organization_id [type: btree, unique, name: "organization_ownership_transfers_pending_idx"]
+    (to_member_id, status, expires_at) [type: btree, name: "organization_ownership_transfers_target_idx"]
+  }
+}
+
+Table "organization_profiles" {
+  "organization_id" text [pk, not null]
+  "primary_owner_member_id" text
+  "status" text [not null, default: `'provisional'::text`]
+  "grace_ends_at" timestamp
+  "archived_at" timestamp
+  "created_at" timestamp [not null, default: `now()`]
+  "updated_at" timestamp [not null, default: `now()`]
+  "suspended_at" timestamp
+
+  Checks {
+    `(status = ANY (ARRAY['provisional'::text, 'active'::text, 'past_due'::text, 'suspended'::text, 'archived'::text]))` [name: 'organization_profiles_status_check']
+  }
+}
+
+Table "organization_rooftops" {
+  "organization_id" text [not null]
+  "dealership_id" text [not null]
+  "status" text [not null, default: `'reserved'::text`]
+  "included_seats" integer [not null, default: 10]
+  "extra_seats" integer [not null, default: 0]
+  "reservation_expires_at" timestamp
+  "activated_at" timestamp
+  "removal_effective_at" timestamp
+  "archived_at" timestamp
+  "created_at" timestamp [not null, default: `now()`]
+  "updated_at" timestamp [not null, default: `now()`]
+  "requested_extra_seats" integer
+  "capacity_change_effective_at" timestamp
+
+  Checks {
+    `(extra_seats >= 0)` [name: 'organization_rooftops_extra_seats_check']
+    `(included_seats >= 0)` [name: 'organization_rooftops_included_seats_check']
+    `((requested_extra_seats IS NULL) OR (requested_extra_seats >= 0))` [name: 'organization_rooftops_requested_extra_seats_check']
+    `(status = ANY (ARRAY['reserved'::text, 'active'::text, 'past_due'::text, 'suspended'::text, 'pending_removal'::text, 'archived'::text]))` [name: 'organization_rooftops_status_check']
+  }
+
+  Indexes {
+    (organization_id, dealership_id) [pk, name: "organization_rooftops_pkey"]
+    dealership_id [type: btree, unique, name: "organization_rooftops_one_owner_idx"]
+    (organization_id, status) [type: btree, name: "organization_rooftops_org_status_idx"]
+  }
+}
+
+Table "personal_rooftop_changes" {
+  "id" text [pk, not null]
+  "user_id" text [not null]
+  "from_dealership_id" text
+  "to_dealership_id" text [not null]
+  "changed_at" timestamp [not null, default: `now()`]
+  "approved_by" text
+  "reason" text
+
+  Indexes {
+    (user_id, changed_at) [type: btree, name: "personal_rooftop_changes_user_time_idx"]
+  }
+}
+
+Table "schema_migrations" {
+  "name" text [pk, not null]
+  "applied_at" timestamp [not null, default: `now()`]
+}
+
+Table "seat_assignments" {
+  "id" text [pk, not null]
+  "organization_id" text [not null]
+  "dealership_id" text [not null]
+  "member_id" text [not null]
+  "assigned_by" text
+  "assigned_at" timestamp [not null, default: `now()`]
+  "released_by" text
+  "released_at" timestamp
+
+  Indexes {
+    (organization_id, dealership_id, member_id) [type: btree, unique, name: "seat_assignments_active_member_idx"]
+    (organization_id, dealership_id) [type: btree, name: "seat_assignments_capacity_idx"]
+  }
+}
+
+Table "seat_reservations" {
+  "id" text [pk, not null]
+  "organization_id" text [not null]
+  "dealership_id" text [not null]
+  "target_type" text [not null]
+  "target_id" text [not null]
+  "expires_at" timestamp [not null]
+  "released_at" timestamp
+  "created_at" timestamp [not null, default: `now()`]
+
+  Checks {
+    `(target_type = ANY (ARRAY['invitation'::text, 'access_request'::text]))` [name: 'seat_reservations_target_type_check']
+  }
+
+  Indexes {
+    (target_type, target_id, dealership_id) [type: btree, unique, name: "seat_reservations_active_target_idx"]
+    (organization_id, dealership_id, expires_at) [type: btree, name: "seat_reservations_capacity_idx"]
+  }
+}
+
+Table "session" {
+  "id" text [pk, not null]
+  "expiresAt" timestamp [not null]
+  "token" text [unique, not null]
+  "createdAt" timestamp [not null, default: `CURRENT_TIMESTAMP`]
+  "updatedAt" timestamp [not null]
+  "ipAddress" text
+  "userAgent" text
+  "userId" text [not null]
+  "activeOrganizationId" text
+
+  Indexes {
+    userId [type: btree, name: "session_userId_idx"]
+  }
+}
+
+Table "subscription" {
+  "id" text [pk, not null]
+  "plan" text [not null]
+  "referenceId" text [not null]
+  "stripeCustomerId" text
+  "stripeSubscriptionId" text
+  "status" text [default: `'incomplete'::text`]
+  "periodStart" timestamp
+  "periodEnd" timestamp
+  "trialStart" timestamp
+  "trialEnd" timestamp
+  "cancelAtPeriodEnd" boolean [default: false]
+  "cancelAt" timestamp
+  "canceledAt" timestamp
+  "endedAt" timestamp
+  "seats" integer
+  "billingInterval" text
+  "stripeScheduleId" text
+
+  Indexes {
+    referenceId [type: btree, name: "subscription_referenceId_idx"]
+    stripeCustomerId [type: btree, name: "subscription_stripeCustomerId_idx"]
+    stripeSubscriptionId [type: btree, name: "subscription_stripeSubscriptionId_idx"]
+    stripeSubscriptionId [type: btree, unique, name: "subscription_stripeSubscriptionId_unique_idx"]
+  }
+}
+
+Table "subscription_reconciliation_runs" {
+  "id" text [pk, not null]
+  "reference_id" text
+  "stripe_customer_id" text
+  "result" text [not null]
+  "details" jsonb
+  "created_at" timestamp [not null, default: `now()`]
+
+  Indexes {
+    created_at [type: btree, name: "subscription_reconciliation_runs_created_idx"]
+  }
+}
+
+Table "usage_events" {
+  "id" text [pk, not null]
+  "user_id" text [not null]
+  "type" text [not null]
+  "client_key" text
+  "data" jsonb
+  "occurred_at" timestamp [not null]
+  "received_at" timestamp [not null, default: `now()`]
+  "workspace_id" text
+  "organization_id" text
+  "actor_user_id" text
+
+  Indexes {
+    (type, occurred_at) [type: btree, name: "usage_events_type_time_idx"]
+    (user_id, occurred_at) [type: btree, name: "usage_events_user_time_idx"]
+    (workspace_id, occurred_at) [type: btree, name: "usage_events_workspace_time_idx"]
+  }
+}
+
+Table "user" {
+  "id" text [pk, not null]
+  "name" text [not null]
+  "email" text [unique, not null]
+  "emailVerified" boolean [not null]
+  "image" text
+  "createdAt" timestamp [not null, default: `CURRENT_TIMESTAMP`]
+  "updatedAt" timestamp [not null, default: `CURRENT_TIMESTAMP`]
+  "stripeCustomerId" text
+}
+
+Table "user_dealerships" {
+  "user_id" text [pk, not null]
+  "dealership_id" text [not null]
+  "linked_at" timestamp [not null, default: `now()`]
+}
+
+Table "verification" {
+  "id" text [pk, not null]
+  "identifier" text [not null]
+  "value" text [not null]
+  "expiresAt" timestamp [not null]
+  "createdAt" timestamp [not null, default: `CURRENT_TIMESTAMP`]
+  "updatedAt" timestamp [not null, default: `CURRENT_TIMESTAMP`]
+
+  Indexes {
+    identifier [type: btree, name: "verification_identifier_idx"]
+  }
+}
+
+Table "workspace_comp_grants" {
+  "id" text [pk, not null]
+  "workspace_id" text [not null]
+  "expires_at" timestamp
+  "reason" text [not null]
+  "created_by" text
+  "created_at" timestamp [not null, default: `now()`]
+  "revoked_at" timestamp
+
+  Indexes {
+    (workspace_id, expires_at) [type: btree, name: "workspace_comp_grants_live_idx"]
+  }
+}
+
+Table "workspaces" {
+  "id" text [pk, not null]
+  "type" text [not null]
+  "user_id" text
+  "organization_id" text
+  "status" text [not null, default: `'active'::text`]
+  "created_at" timestamp [not null, default: `now()`]
+  "updated_at" timestamp [not null, default: `now()`]
+
+  Checks {
+    `(((type = 'personal'::text) AND (user_id IS NOT NULL) AND (organization_id IS NULL)) OR ((type = 'organization'::text) AND (user_id IS NULL) AND (organization_id IS NOT NULL)))` [name: 'workspaces_check']
+    `(status = ANY (ARRAY['provisional'::text, 'active'::text, 'past_due'::text, 'suspended'::text, 'archived'::text]))` [name: 'workspaces_status_check']
+    `(type = ANY (ARRAY['personal'::text, 'organization'::text]))` [name: 'workspaces_type_check']
+  }
+
+  Indexes {
+    organization_id [type: btree, unique, name: "workspaces_organization_idx"]
+    user_id [type: btree, unique, name: "workspaces_personal_user_idx"]
+  }
+}
+
+Ref "account_userId_fkey":"user"."id" < "account"."userId" [delete: cascade]
+
+Ref "claim_evidence_claim_id_fkey":"dealership_claims"."id" < "claim_evidence"."claim_id" [delete: cascade]
+
+Ref "comp_grants_workspace_id_fkey":"workspaces"."id" < "comp_grants"."workspace_id"
+
+Ref "dealership_aliases_dealership_id_fkey":"dealerships"."id" < "dealership_aliases"."dealership_id"
+
+Ref "dealership_claims_dealership_id_fkey":"dealerships"."id" < "dealership_claims"."dealership_id"
+
+Ref "dealership_claims_organization_id_fkey":"organization"."id" < "dealership_claims"."organization_id" [delete: set null]
+
+Ref "dealership_claims_user_id_fkey":"user"."id" < "dealership_claims"."user_id" [delete: cascade]
+
+Ref "invitation_inviterId_fkey":"user"."id" < "invitation"."inviterId" [delete: cascade]
+
+Ref "invitation_organizationId_fkey":"organization"."id" < "invitation"."organizationId" [delete: cascade]
+
+Ref "listing_platforms_listing_id_fkey":"listings"."id" < "listing_platforms"."listing_id" [delete: cascade]
+
+Ref "listing_view_snapshots_listing_id_fkey":"listings"."id" < "listing_view_snapshots"."listing_id"
+
+Ref "listings_organization_id_fkey":"organization"."id" < "listings"."organization_id"
+
+Ref "listings_workspace_id_fkey":"workspaces"."id" < "listings"."workspace_id"
+
+Ref "member_organizationId_fkey":"organization"."id" < "member"."organizationId" [delete: cascade]
+
+Ref "member_rooftop_access_dealership_id_fkey":"dealerships"."id" < "member_rooftop_access"."dealership_id"
+
+Ref "member_rooftop_access_member_id_fkey":"member"."id" < "member_rooftop_access"."member_id" [delete: cascade]
+
+Ref "member_rooftop_access_organization_id_fkey":"organization"."id" < "member_rooftop_access"."organization_id" [delete: cascade]
+
+Ref "member_userId_fkey":"user"."id" < "member"."userId" [delete: cascade]
+
+Ref "organization_access_requests_dealership_id_fkey":"dealerships"."id" < "organization_access_requests"."dealership_id"
+
+Ref "organization_access_requests_organization_id_fkey":"organization"."id" < "organization_access_requests"."organization_id" [delete: cascade]
+
+Ref "organization_access_requests_reviewed_by_fkey":"user"."id" < "organization_access_requests"."reviewed_by"
+
+Ref "organization_access_requests_user_id_fkey":"user"."id" < "organization_access_requests"."user_id" [delete: cascade]
+
+Ref "organization_audit_events_dealership_id_fkey":"dealerships"."id" < "organization_audit_events"."dealership_id"
+
+Ref "organization_audit_events_organization_id_fkey":"organization"."id" < "organization_audit_events"."organization_id" [delete: set null]
+
+Ref "organization_billing_items_organization_id_fkey":"organization"."id" < "organization_billing_items"."organization_id" [delete: cascade]
+
+Ref "organization_invitation_rooftops_dealership_id_fkey":"dealerships"."id" < "organization_invitation_rooftops"."dealership_id"
+
+Ref "organization_invitation_rooftops_invitation_id_fkey":"invitation"."id" < "organization_invitation_rooftops"."invitation_id" [delete: cascade]
+
+Ref "organization_invitation_scopes_invitation_id_fkey":"invitation"."id" < "organization_invitation_scopes"."invitation_id" [delete: cascade]
+
+Ref "organization_invitation_scopes_organization_id_fkey":"organization"."id" < "organization_invitation_scopes"."organization_id" [delete: cascade]
+
+Ref "organization_member_profiles_member_id_fkey":"member"."id" < "organization_member_profiles"."member_id" [delete: cascade]
+
+Ref "organization_member_profiles_organization_id_fkey":"organization"."id" < "organization_member_profiles"."organization_id" [delete: cascade]
+
+Ref "organization_member_profiles_user_id_fkey":"user"."id" < "organization_member_profiles"."user_id" [delete: cascade]
+
+Ref "organization_notifications_organization_id_fkey":"organization"."id" < "organization_notifications"."organization_id" [delete: cascade]
+
+Ref "organization_notifications_user_id_fkey":"user"."id" < "organization_notifications"."user_id" [delete: cascade]
+
+Ref "organization_ownership_transfers_from_member_id_fkey":"member"."id" < "organization_ownership_transfers"."from_member_id" [delete: cascade]
+
+Ref "organization_ownership_transfers_organization_id_fkey":"organization"."id" < "organization_ownership_transfers"."organization_id" [delete: cascade]
+
+Ref "organization_ownership_transfers_to_member_id_fkey":"member"."id" < "organization_ownership_transfers"."to_member_id" [delete: cascade]
+
+Ref "organization_profiles_organization_id_fkey":"organization"."id" < "organization_profiles"."organization_id" [delete: cascade]
+
+Ref "organization_rooftops_dealership_id_fkey":"dealerships"."id" < "organization_rooftops"."dealership_id"
+
+Ref "organization_rooftops_organization_id_fkey":"organization"."id" < "organization_rooftops"."organization_id" [delete: cascade]
+
+Ref "personal_rooftop_changes_from_dealership_id_fkey":"dealerships"."id" < "personal_rooftop_changes"."from_dealership_id"
+
+Ref "personal_rooftop_changes_to_dealership_id_fkey":"dealerships"."id" < "personal_rooftop_changes"."to_dealership_id"
+
+Ref "personal_rooftop_changes_user_id_fkey":"user"."id" < "personal_rooftop_changes"."user_id" [delete: cascade]
+
+Ref "seat_assignments_assigned_by_fkey":"user"."id" < "seat_assignments"."assigned_by"
+
+Ref "seat_assignments_dealership_id_fkey":"dealerships"."id" < "seat_assignments"."dealership_id"
+
+Ref "seat_assignments_member_id_fkey":"member"."id" < "seat_assignments"."member_id" [delete: cascade]
+
+Ref "seat_assignments_organization_id_fkey":"organization"."id" < "seat_assignments"."organization_id" [delete: cascade]
+
+Ref "seat_assignments_released_by_fkey":"user"."id" < "seat_assignments"."released_by"
+
+Ref "seat_reservations_dealership_id_fkey":"dealerships"."id" < "seat_reservations"."dealership_id"
+
+Ref "seat_reservations_organization_id_fkey":"organization"."id" < "seat_reservations"."organization_id" [delete: cascade]
+
+Ref "session_userId_fkey":"user"."id" < "session"."userId" [delete: cascade]
+
+Ref "usage_events_organization_id_fkey":"organization"."id" < "usage_events"."organization_id"
+
+Ref "usage_events_workspace_id_fkey":"workspaces"."id" < "usage_events"."workspace_id"
+
+Ref "user_dealerships_dealership_id_fkey":"dealerships"."id" < "user_dealerships"."dealership_id"
+
+Ref "workspace_comp_grants_workspace_id_fkey":"workspaces"."id" < "workspace_comp_grants"."workspace_id" [delete: cascade]
+
+Ref "workspaces_organization_id_fkey":"organization"."id" < "workspaces"."organization_id" [delete: cascade]
+
+Ref "workspaces_user_id_fkey":"user"."id" < "workspaces"."user_id" [delete: cascade]

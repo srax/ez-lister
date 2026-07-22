@@ -12,6 +12,7 @@ node_modules/
 alexandria-*
 facebook-marketplace-*
 chrome-webstore-*
+*.har
 
 # Build output (npm run build:ext:staging|prod)
 dist/local/
@@ -21,3 +22,7 @@ dist/*.zip
 
 # stray subagent scratch notes (kept locally, not source)
 research.md/
+.docs/
+.railwayignore
+# foglamp scan (edit token in scan.lock.json is a secret)
+.foglamp/

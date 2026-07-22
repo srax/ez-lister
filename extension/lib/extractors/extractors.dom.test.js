@@ -1,0 +1,338 @@
+'use strict';
+
+// DOM-level regression + ISOLATION tests for the source extractors, run against the real captured
+// cards (see _fixtures/). This is the guard that keeps a NEW provider from ever hurting an
+// existing one: it proves each provider (a) claims ONLY its own pages — detect() is mutually
+// exclusive — and (b) still extracts every field correctly. Add a fixture + a block here whenever
+// you add a provider, and DealerOn/Dealer.com stay locked.
+//
+// jsdom is an OPTIONAL devDependency: if it isn't installed the whole file skips, so the pure
+// `npm test` suite still runs everywhere. `npm i` (with devDependencies) enables it in CI.
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
+
+let JSDOM = null;
+try { ({ JSDOM } = require('jsdom')); } catch { /* optional — file self-skips below */ }
+const maybe = (name, fn) => test(name, JSDOM ? fn : { skip: 'jsdom not installed (npm i to enable DOM tests)' }, JSDOM ? undefined : () => {});
+
+// Load the pure decoders + shared schema.org parser + ALL extractors onto globalThis, in the same
+// order the manifest does in the browser.
+require('../mappers.core.js');
+require('./schemaorg.js');
+require('./dealeron.js');
+require('./dealercom.js');
+require('./dealerinspire.js');
+require('./carsforsale.js');
+require('./autocorner.js');
+require('./generic.js');
+const EX = globalThis.CarxpertExtractors;
+
+const fixture = (f) => fs.readFileSync(path.join(__dirname, '_fixtures', f), 'utf8');
+
+// Point the content-script globals at a jsdom page, run fn, restore.
+async function onPage(html, url, fn) {
+  const dom = new JSDOM(`<!doctype html><html><body>${html}</body></html>`, { url });
+  const saved = { window: global.window, document: global.document, location: global.location, fetch: global.fetch, AbortController: global.AbortController };
+  global.window = dom.window;
+  global.document = dom.window.document;
+  global.location = dom.window.location;
+  global.AbortController = dom.window.AbortController || global.AbortController;
+  try { return await fn(dom); }
+  finally { Object.assign(global, saved); }
+}
+
+// The dispatcher's provider pick, mirrored (dealerContent.js): specific providers first, the
+// schema.org `generic` fallback next, DealerOn as the final default.
+const pick = () => [
+  EX.carsforsale,
+  EX.autocorner,
+  EX.dealercom,
+  EX.dealeron,
+  EX.dealerinspire,
+  EX.generic
+].find((p) => p && p.detect()) || EX.dealeron;
+
+// ---------------------------------------------------------------- DealerOn
+maybe('DealerOn: detect() claims the page, Dealer.com does NOT (isolation)', async () => {
+  await onPage(fixture('dealeron-srp-card.html'), 'https://downtown.chevyman.com/searchall.aspx', () => {
+    assert.equal(EX.dealeron.detect(), true);
+    assert.equal(EX.dealercom.detect(), false, 'Dealer.com must never claim a DealerOn page');
+    assert.equal(pick().id, 'dealeron');
+  });
+});
+
+maybe('DealerOn: extractVehicle reads every field off the data-* attributes', async () => {
+  await onPage(fixture('dealeron-srp-card.html'), 'https://downtown.chevyman.com/searchall.aspx', async () => {
+    const cards = EX.dealeron.findCards();
+    assert.equal(cards.length, 1);
+    const v = await EX.dealeron.extractVehicle(cards[0], EX.dealeron.vdpUrlFor(cards[0]), { location: 'Birmingham, AL' });
+    assert.equal(v.vin, '1GNDS13S442354300');
+    assert.equal(v.make, 'Chevrolet');
+    assert.equal(v.model, 'Trailblazer LS');
+    assert.equal(v.year, '2004');
+    assert.equal(v.price, 3000); // decodePriceLib → Selling Price
+    assert.equal(v.mileage, 161214);
+    assert.equal(v.bodyType, 'SUV');
+    assert.equal(v.fuelType, 'Gasoline Fuel');
+    assert.equal(v.transmission, 'Automatic');
+    assert.equal(v.exteriorColor, 'Silverstone Metallic');
+    assert.equal(v.stock, '42354300');
+    assert.equal(v.condition, 'Excellent');
+    assert.equal(v.location, 'Birmingham, AL');
+    assert.match(v.photoBaseUrl, /\/inventoryphotos\/23664\/1gnds13s442354300\/ip\/$/i);
+  });
+});
+
+// ---------------------------------------------------------------- Dealer.com
+maybe('Dealer.com: detect() claims the page, DealerOn does NOT (isolation)', async () => {
+  await onPage(fixture('dealercom-srp-card.html'), 'https://www.attleborochevrolet.com/used-inventory/index.htm', () => {
+    assert.equal(EX.dealercom.detect(), true);
+    assert.equal(EX.dealeron.detect(), false, 'DealerOn must never claim a Dealer.com page');
+    assert.equal(pick().id, 'dealercom');
+  });
+});
+
+maybe('Dealer.com: extractVehicle reads rendered text + fetches the gallery', async () => {
+  await onPage(fixture('dealercom-srp-card.html'), 'https://www.attleborochevrolet.com/used-inventory/index.htm', async () => {
+    // Stub the VDP fetch with a 3-image gallery (one dupes a card image → deduped to 3 total).
+    global.fetch = async () => ({ ok: true, async text() {
+      return `<img src="https://pictures.dealer.com/c/chevroletbuickgmcofattleboro/1158/b3788316d5c443d71fe80f1581c3b440x.jpg?w=1920">
+              <img src="https://pictures.dealer.com/c/chevroletbuickgmcofattleboro/0484/228473358575cfad360f171df0ea721ax.jpg?w=1920">
+              <img src="https://pictures.dealer.com/c/chevroletbuickgmcofattleboro/0099/ccc333dddx.jpg?w=1920">`;
+    } });
+    const cards = EX.dealercom.findCards();
+    assert.equal(cards.length, 1);
+    const v = await EX.dealercom.extractVehicle(cards[0], null, { location: 'Attleboro, MA' });
+    assert.equal(v.vin, 'KL4MMFSL6PB119924');
+    assert.equal(v.make, 'Buick');
+    assert.equal(v.model, 'Encore GX Essence');
+    assert.equal(v.year, '2023');
+    assert.equal(v.price, 25585); // clean "Price", not the fee-inclusive "Adjusted Price"
+    assert.equal(v.mileage, 25541);
+    assert.equal(v.bodyType, 'SUV');
+    assert.equal(v.exteriorColor, 'Black Metallic');
+    assert.equal(v.transmission, 'Automatic');
+    assert.equal(v.stock, '23019B');
+    assert.equal(v.photoUrls.length, 3);
+    assert.match(v.sourceUrl, /attleborochevrolet\.com\/used\/Buick\//);
+  });
+});
+
+maybe('Dealer.com: title heading that wraps a price block still yields a clean model (Rameycars theme)', async () => {
+  await onPage(fixture('dealercom-srp-card-nested-price.html'), 'https://www.rameycars.com/used-inventory/index.htm', async () => {
+    const card = EX.dealercom.findCards()[0];
+    global.fetch = async () => ({ ok: true, async text() { return '<html></html>'; } }); // no VDP data needed
+    const v = await EX.dealercom.extractVehicle(card, null, {});
+    assert.equal(v.make, 'Acura');
+    assert.equal(v.model, 'RDX w/A-Spec Advance Package', 'model must NOT include the nested price/payment text');
+    assert.equal(v.year, '2023');
+    assert.equal(v.price, 38999, 'clean askingPrice, not the portal-price blob');
+    assert.equal(v.stock, '261272A');
+  });
+});
+
+maybe('Dealer.com: div-tag card variant is found (element-agnostic findCards)', async () => {
+  // Some DDC themes render the card as <div> not <li> — findCards matches on class+data-uuid, not tag.
+  const html = '<div class="box vehicle-card vehicle-card-detailed" data-uuid="abc123">'
+    + '<h2 class="vehicle-card-title"><div class="vehicle-card-title-container"><a href="/used/Buick/2023-Buick-Encore-GX-abc123.htm"><span>2023 Buick Encore GX Essence</span></a></div></h2>'
+    + '<ul class="vehicle-card-description"><li class="stockNumber">Stock # Z9</li></ul></div>';
+  await onPage(html, 'https://www.somedealer.com/used-inventory/index.htm', () => {
+    const cards = EX.dealercom.findCards();
+    assert.equal(cards.length, 1, 'div card matched');
+    assert.equal(EX.dealercom.cardReady(cards[0]), true);
+  });
+});
+
+// ---- Dealer.com SPARSE card (new-car theme: no VIN on the SRP, discount pricing) → the extractor
+// must still show a button (cardReady) and enrich from the detail page's JSON-LD. ----
+maybe('Dealer.com: sparse new-car card is button-ready and enriched from the VDP', async () => {
+  await onPage(fixture('dealercom-srp-card-sparse.html'), 'https://www.cronicchevroletgriffin.com/all-inventory/index.htm', async () => {
+    const card = EX.dealercom.findCards()[0];
+    assert.ok(card, 'card found');
+    // Button appears even though the card has no VIN.
+    assert.equal(EX.dealercom.cardReady(card), true, 'sparse card must be button-ready');
+
+    global.fetch = async () => ({ ok: true, async text() { return fixture('dealercom-vdp.html'); } });
+    const v = await EX.dealercom.extractVehicle(card, null, { location: 'Griffin, GA' });
+
+    assert.equal(v.vin, '3GCUDGED9SG279350', 'VIN pulled from the VDP JSON-LD (absent on the card)');
+    assert.equal(v.make, 'Chevrolet');
+    assert.equal(v.model, 'Silverado 1500 Custom');
+    assert.equal(v.year, '2026');
+    assert.equal(v.price, 43055, 'promoted "Cronic Price", not MSRP $47,055 or the -$4,000 discount');
+    assert.equal(v.stock, 'CV29350');
+    assert.equal(v.exteriorColor, 'Sterling Gray Metallic');
+    assert.equal(v.transmission, 'Automatic');
+    assert.equal(v.bodyType, 'Truck');
+    assert.equal(v.photoUrls.length, 3, 'full gallery scraped from the VDP');
+    assert.match(v.sourceUrl, /cronicchevroletgriffin\.com\/new\/Chevrolet\//);
+  });
+});
+
+maybe('Dealer.com: all lazy-loaded slider images are collected from the card, not just the visible one', async () => {
+  // Burdick/Sunset case: the slick carousel keeps only the visible slide in src and stashes the
+  // rest in data-lazy — reading src alone gave 1 photo. Here the VDP fetch returns just the hero,
+  // so the win must come from reading every slide's data-lazy off the card.
+  const slides = [1, 2, 3, 4, 5].map((n) =>
+    `<div class="slick-slide"><a href="/used/Chevrolet/2020-x-u1.htm"><img class="w-100" data-lazy="https://pictures.dealer.com/c/burdickgm/000${n}/hash${n}x.jpg?impolicy=downsize_bkpt&w=520"></a></div>`).join('');
+  const html = `<div class="box vehicle-card vehicle-card-detailed" data-uuid="u1">`
+    + `<div class="vehicle-card-media-container"><div class="slick-slider"><div class="slick-list"><div class="slick-track">${slides}</div></div></div></div>`
+    + `<h2 class="vehicle-card-title"><div class="vehicle-card-title-container"><a href="/used/Chevrolet/2020-Chevrolet-Malibu-u1.htm"><span>2020 Chevrolet Malibu LT</span></a></div></h2>`
+    + `<ul class="vehicle-card-description"><li class="stockNumber">Stock # B1</li></ul></div>`;
+  await onPage(html, 'https://www.burdickgm.com/used-inventory/index.htm', async () => {
+    const card = EX.dealercom.findCards()[0];
+    global.fetch = async () => ({ ok: true, async text() {
+      return '<script type="application/ld+json">{"@type":"Vehicle","vehicleIdentificationNumber":"1G1ZD5ST0LF012345","offers":{"price":"18995"}}</script>'
+        + '<img src="https://pictures.dealer.com/c/burdickgm/0001/hash1x.jpg">'; // VDP raw HTML has only the hero
+    } });
+    const v = await EX.dealercom.extractVehicle(card, null, { location: 'Cicero, NY' });
+    assert.equal(v.photoUrls.length, 5, 'all 5 lazy slider images collected');
+    assert.equal(v.vin, '1G1ZD5ST0LF012345');
+  });
+});
+
+// ---- Dealer Inspire (Cars.com): data-vehicle JSON on the card + schema.org/di-uploads on the VDP.
+maybe('Dealer Inspire: detect() claims the page, others do NOT (isolation)', async () => {
+  await onPage(fixture('dealerinspire-srp-card.html'), 'https://www.classicchevrolet.com/used-vehicles/', () => {
+    assert.equal(EX.dealerinspire.detect(), true);
+    assert.equal(EX.dealercom.detect(), false);
+    assert.equal(EX.dealeron.detect(), false);
+    assert.equal(pick().id, 'dealerinspire');
+  });
+});
+
+maybe('Dealer Inspire: extractVehicle reads the data-vehicle JSON + fills mileage/photos from the VDP', async () => {
+  await onPage(fixture('dealerinspire-srp-card.html'), 'https://www.classicchevrolet.com/used-vehicles/', async () => {
+    const card = EX.dealerinspire.findCards()[0];
+    assert.ok(card, 'card found');
+    assert.equal(EX.dealerinspire.cardReady(card), true);
+    global.fetch = async () => ({ ok: true, async text() { return fixture('dealerinspire-vdp.html'); } });
+    const v = await EX.dealerinspire.extractVehicle(card, null, { location: 'Grapevine, TX' });
+    assert.equal(v.vin, '5XYPG4A36KG550522');
+    assert.equal(v.make, 'Kia');
+    assert.equal(v.model, 'Sorento LX');       // model + trim from the JSON
+    assert.equal(v.year, '2019');
+    assert.equal(v.price, 13367);              // rendered "Classic Price", not the fee-inclusive JSON 13592
+    assert.equal(v.stock, 'KG550522');
+    assert.equal(v.exteriorColor, 'White');
+    assert.equal(v.fuelType, 'Gasoline Fuel');
+    assert.equal(v.mileage, 78450);            // absent from the card JSON → filled from the VDP schema.org
+    assert.equal(v.bodyType, 'SUV');           // card bodystyle empty → filled from the VDP
+    assert.equal(v.interiorColor, 'Black');    // from the VDP
+    // Only THIS car's real photos (VIN-tagged carscommerce) — stock chrome render, a similar
+    // vehicle's photo (different VIN), and the dealer og- asset are all excluded.
+    assert.equal(v.photoUrls.length, 3);
+    assert.ok(v.photoUrls.every((u) => u.includes('5XYPG4A36KG550522')), 'all belong to this VIN');
+    assert.ok(v.photoUrls.every((u) => !/chrome|og-|stock-images/.test(u)), 'no stock/asset images');
+    // The card's hit-link is http:// — must be upgraded to https so the VDP fetch isn't mixed-content blocked.
+    assert.ok(v.sourceUrl.startsWith('https://'), 'http VDP link upgraded to https');
+  });
+});
+
+// ---- Carsforsale.com Chassis: per-card Car JSON-LD + VDP ImageGallery.
+maybe('Carsforsale: claims the Chassis SRP and exposes one real card', async () => {
+  await onPage(fixture('carsforsale-srp-card.html'), 'https://www.vlautosales.com/cars-for-sale', () => {
+    assert.equal(EX.carsforsale.detect(), true);
+    assert.equal(EX.autocorner.detect(), false);
+    assert.equal(pick().id, 'carsforsale');
+    assert.equal(EX.carsforsale.findCards().length, 1);
+    assert.equal(EX.carsforsale.cardKey(EX.carsforsale.findCards()[0]), '3VWCA7AU4FM507314');
+  });
+});
+
+maybe('Carsforsale: SRP card is enriched with stock and full signed gallery from the VDP', async () => {
+  await onPage(fixture('carsforsale-srp-card.html'), 'https://www.vlautosales.com/cars-for-sale', async () => {
+    global.fetch = async () => ({ ok: true, async text() { return fixture('carsforsale-vdp.html'); } });
+    const card = EX.carsforsale.findCards()[0];
+    const vehicle = await EX.carsforsale.extractVehicle(card, null, { location: 'Harrisonburg, VA' });
+    assert.equal(vehicle.vin, '3VWCA7AU4FM507314');
+    assert.equal(vehicle.stock, '7140');
+    assert.equal(vehicle.year, '2015');
+    assert.equal(vehicle.make, 'Volkswagen');
+    assert.equal(vehicle.model, 'Golf SportWagen TDI S');
+    assert.equal(vehicle.price, 9950);
+    assert.equal(vehicle.mileage, 122805);
+    assert.equal(vehicle.exteriorColor, 'Tornado Red');
+    assert.equal(vehicle.transmission, '6-Speed Double Clutch');
+    assert.equal(vehicle.bodyType, 'Wagon');
+    assert.equal(vehicle.drivetrain, 'FWD');
+    assert.equal(vehicle.fuelEconomy, '31 city / 42 highway MPG · 554 mi range');
+    assert.equal(vehicle.photoUrls.length, 3);
+    assert.equal(vehicle.location, 'Harrisonburg, VA');
+  });
+});
+
+// ---- AutoCorner: duplicated grid/list Alpine cards + a server-rendered VDP.
+maybe('AutoCorner: claims its SRP, drops sold/hidden duplicates, and keeps the active card', async () => {
+  await onPage(fixture('autocorner-srp-card.html'), 'https://www.keithsautosales.com/docs/vehicle_search.html', () => {
+    assert.equal(EX.autocorner.detect(), true);
+    assert.equal(EX.carsforsale.detect(), false);
+    assert.equal(pick().id, 'autocorner');
+    const cards = EX.autocorner.findCards();
+    assert.equal(cards.length, 1);
+    assert.equal(EX.autocorner.cardKey(cards[0]), '1FT8W3DT8SED24911');
+  });
+});
+
+maybe('AutoCorner: card is enriched from VDP details and full photo IDs', async () => {
+  await onPage(fixture('autocorner-srp-card.html'), 'https://www.keithsautosales.com/docs/vehicle_search.html', async () => {
+    global.fetch = async () => ({ ok: true, async text() { return fixture('autocorner-vdp.html'); } });
+    const card = EX.autocorner.findCards()[0];
+    const vehicle = await EX.autocorner.extractVehicle(card, null, { location: 'Penn Laird, VA' });
+    assert.equal(vehicle.vin, '1FT8W3DT8SED24911');
+    assert.equal(vehicle.stock, '291662');
+    assert.equal(vehicle.year, '2025');
+    assert.equal(vehicle.make, 'Ford');
+    assert.equal(vehicle.model, 'F350 XLT DRW DIESEL 8 ft');
+    assert.equal(vehicle.price, 64900);
+    assert.equal(vehicle.mileage, 28711);
+    assert.equal(vehicle.bodyType, 'Pickup');
+    assert.equal(vehicle.drivetrain, '4WD');
+    assert.equal(vehicle.fuelType, 'Diesel');
+    assert.match(vehicle.historyReportUrl, /^https:\/\/www\.carfax\.com\/VehicleHistory\//);
+    assert.equal(vehicle.exteriorColor, 'Gray');
+    assert.match(vehicle.transmission, /10-Spd/);
+    assert.equal(vehicle.photoUrls.length, 3);
+    assert.ok(vehicle.photoUrls.every((url) => /photos\.autocorner\.com\/1024x768\/.+\.jpg/.test(url)));
+  });
+});
+
+// ---- Generic schema.org fallback: an UNRECOGNIZED-platform detail page (only schema.org JSON-LD).
+maybe('Generic: claims a schema.org VDP that no specific provider recognizes; specifics never lose to it', async () => {
+  // On an unknown-platform VDP, generic wins.
+  await onPage(fixture('generic-vdp.html'), 'https://www.somedealer.com/inventory/2021-honda-accord-abc', () => {
+    assert.equal(EX.generic.detect(), true);
+    assert.equal(EX.dealercom.detect(), false);
+    assert.equal(EX.dealeron.detect(), false);
+    assert.equal(pick().id, 'generic');
+  });
+  // Generic must NOT claim recognized-platform pages (it's last in the dispatch order and its
+  // detect is narrow: schema.org Vehicle + VIN, which the SRP fixtures don't expose).
+  await onPage(fixture('dealercom-srp-card.html'), 'https://www.attleborochevrolet.com/used-inventory/index.htm', () => {
+    assert.equal(pick().id, 'dealercom', 'Dealer.com SRP → dealercom, not generic');
+  });
+  await onPage(fixture('dealeron-srp-card.html'), 'https://downtown.chevyman.com/searchall.aspx', () => {
+    assert.equal(pick().id, 'dealeron', 'DealerOn SRP → dealeron, not generic');
+  });
+});
+
+maybe('Generic: extractVehicle reads the whole vehicle from schema.org JSON-LD', async () => {
+  await onPage(fixture('generic-vdp.html'), 'https://www.somedealer.com/inventory/2021-honda-accord-abc', async () => {
+    const v = await EX.generic.extractVehicle(document.body, location.href, { location: 'Somewhere, US' });
+    assert.equal(v.vin, '1HGCV1F42MA012345');
+    assert.equal(v.year, '2021');
+    assert.equal(v.make, 'Honda');
+    assert.equal(v.model, 'Accord');
+    assert.equal(v.price, 27995);
+    assert.equal(v.mileage, 38210);
+    assert.equal(v.exteriorColor, 'Modern Steel Metallic');
+    assert.equal(v.interiorColor, 'Black');
+    assert.equal(v.transmission, 'Automatic');
+    assert.equal(v.bodyType, 'Sedan');
+    assert.equal(v.photoUrls.length, 2);
+    assert.equal(EX.generic.isVdpPage(), true);
+  });
+});

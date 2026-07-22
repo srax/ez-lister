@@ -1,22 +1,20 @@
 'use strict';
 
-// Shared pure mapping/parsing helpers for the Carxpert content scripts.
-// Loaded BEFORE dealerContent.js / facebookContent.js (see manifest content_scripts
-// order) and attached to globalThis; also exported for node:test (mappers.test.js).
-// Everything here must stay pure + DOM-free so it runs identically in both worlds.
+// Facebook Marketplace value taxonomy — maps a dealer's US-English feed terms to FB's
+// composer options. Canonical values are the US composer's options (the market, and the
+// language the dealer feed already speaks); the UK composer spells several differently —
+// see UK_FALLBACK below; the fill engine tries [US, UK] in order via optionCandidates().
+// This is the Facebook adapter's mapper; each other platform gets its own
+// lib/mappers.<platform>.js. Depends on the shared core helpers (norm, cleanAttr) — via
+// globalThis.CarxpertCore in the browser, via require in node:test. Loaded after
+// mappers.core.js (see manifest), attached to globalThis.CarxpertFb.
 
 (function attach(root) {
-  const norm = (s) => (s || '').toString().trim().toLowerCase();
+  const core = (typeof module !== 'undefined' && module.exports)
+    ? require('./mappers.core.js')
+    : root.CarxpertCore;
+  const { norm, cleanAttr } = core;
 
-  // Dealer feeds sometimes inject raw HTML into data attributes (live-probed: new-car
-  // data-extcolor carried a disclaimer link — "Wind Chill Pearl <a role='button'…>").
-  // Cut at the first tag and collapse whitespace before any value is used or shown.
-  const cleanAttr = (raw) => String(raw == null ? '' : raw).split('<')[0].replace(/\s+/g, ' ').trim();
-
-  // ---- dealer term -> Facebook option mapping ----
-  // Canonical values are the US-English composer's options (the market, and the language
-  // the dealer feed already speaks). The UK composer spells several differently — see
-  // UK_FALLBACK below; the fill engine tries [US, UK] in order via optionCandidates().
   // FB US body options: Convertible, Coupe, Hatchback, Minivan, SUV, Sedan, Truck, Van, Wagon, Other
   const FB_BODY = {
     suv: 'SUV', 'sport utility': 'SUV', crossover: 'SUV', '4x4': 'SUV', pickup: 'Truck', truck: 'Truck',
@@ -82,30 +80,27 @@
   };
   const mapTransmission = (raw) => (/manual/i.test(raw || '') ? 'Manual transmission' : 'Automatic transmission');
 
-  // ---- price ----
-  const plausiblePrice = (n) => typeof n === 'number' && n >= 1000 && n <= 500000;
+  // ---- publish-navigation judgement (Option A: never wrongly green) ----
+  // After our fill, leaving /marketplace/create/vehicle for the new item / your-listings pages
+  // is unambiguous proof of a publish. Landing on marketplace HOME is NOT — the form's close
+  // (X) button produces the exact same create→home SPA transition, and counting it once turned
+  // abandoned forms into fake sales in the stats. Home therefore only counts when the user
+  // clicked a Publish button moments before (facebookContent records the click; a click that
+  // does NOT navigate within the window was a failed validation, so a later X-close stays safe).
+  const PUBLISH_CLICK_WINDOW_MS = 15 * 1000;
+  const judgePublishNav = ({ fromCreate, path, publishClickMsAgo = null } = {}) => {
+    if (!fromCreate) return false;
+    const p = String(path || '');
+    if (/\/marketplace\/item\/\d+/.test(p)) return true;
+    if (/\/marketplace\/you(\/|$)/.test(p)) return true;
+    if (/\/marketplace\/selling(\/|$)/.test(p)) return true;
+    if (/\/marketplace\/?$/.test(p)) {
+      return publishClickMsAgo != null && publishClickMsAgo >= 0 && publishClickMsAgo <= PUBLISH_CLICK_WINDOW_MS;
+    }
+    return false;
+  };
 
-  // data-pricelib decodes (base64) to a labelled list: "Internet Price:7495.0;Selling
-  // Price:7495.0;reff_Flat Low Price:7495.0;calc_INTERNET PRICE:8490.0". The advertised
-  // price is the Selling/Internet entry — NEVER the max: calc_* rows fold in doc fees
-  // (taking the max turned a live $7,495 car into $8,490).
-  function decodePriceLib(b64) {
-    if (!b64) return undefined;
-    let txt = '';
-    try { txt = atob(b64); } catch { return undefined; }
-    const entries = [...txt.matchAll(/([^:;]+):\s*(\d+(?:\.\d+)?)/g)]
-      .map((m) => ({ label: m[1].trim().toLowerCase(), value: Math.round(parseFloat(m[2])) }));
-    const pick = (re) => {
-      const hit = entries.find((e) => re.test(e.label) && plausiblePrice(e.value));
-      return hit ? hit.value : undefined;
-    };
-    return pick(/^selling price$/)
-      ?? pick(/^internet price$/)
-      ?? pick(/flat low price$/)
-      ?? pick(/^msrp$/);
-  }
-
-  const api = { norm, cleanAttr, mapColor, mapBody, mapFuel, mapTransmission, optionCandidates, plausiblePrice, decodePriceLib };
-  root.CarxpertShared = api;
+  const api = { mapColor, mapBody, mapFuel, mapTransmission, optionCandidates, judgePublishNav, PUBLISH_CLICK_WINDOW_MS };
+  root.CarxpertFb = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(globalThis);

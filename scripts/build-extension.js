@@ -115,8 +115,13 @@ function main() {
   fs.rmSync(outDir, { recursive: true, force: true });
   fs.mkdirSync(outDir, { recursive: true });
   fs.cpSync(SRC, outDir, { recursive: true });
-  for (const file of fs.readdirSync(path.join(outDir, 'lib'))) {
-    if (file.endsWith('.test.js')) fs.rmSync(path.join(outDir, 'lib', file), { force: true });
+  // Strip test-only artifacts anywhere in the tree — *.test.js and _fixtures/ dirs never load at
+  // runtime and must stay out of Web Store ZIPs.
+  for (const rel of fs.readdirSync(outDir, { recursive: true })) {
+    const p = String(rel);
+    if (p.endsWith('.test.js') || path.basename(p) === '_fixtures') {
+      fs.rmSync(path.join(outDir, p), { recursive: true, force: true });
+    }
   }
   fs.writeFileSync(path.join(outDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   fs.writeFileSync(path.join(outDir, 'background.js'), bg);

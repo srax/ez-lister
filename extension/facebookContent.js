@@ -1,184 +1,36 @@
 'use strict';
 
 // ezlist — Facebook Marketplace "Vehicle for sale" auto-filler.
-// All field-interaction logic below was validated live against the real form via CDP:
-//  - dropdowns are <label role="combobox"> that open a portal [role="listbox"] of [role="option"]
-//  - text fields are bare <input>/<textarea> wrapped in a <label> (no id/aria)
-//  - field name resolves from aria-labelledby (dropdowns) else textContent (text fields)
-//  - photos upload via DataTransfer -> input.files -> dispatch('change')
+// The generic DOM-driving primitives now live in lib/fillkit.js (globalThis.CarxpertFill),
+// loaded first per the manifest. This file is Facebook adapter #1: it owns the field list,
+// UK-English labels, the "n / 20" photo counter, and publish detection.
+//   - dropdowns are <label role="combobox"> that open a portal [role="listbox"] of [role="option"]
+//   - text fields are bare <input>/<textarea> wrapped in a <label> (no id/aria)
+//   - field name resolves from aria-labelledby (dropdowns) else textContent (text fields)
+//   - photos upload via DataTransfer -> input.files -> dispatch('change')
 
 (() => {
   const isFacebook = /(\.|^)facebook\.com$/i.test(location.hostname) || /(\.|^)web\.facebook\.com$/i.test(location.hostname);
   if (!isFacebook) return;
-  if (document.getElementById('ezlist-facebook-host')) return;
+  if (globalThis.__carxpertFacebookContentLoaded) return;
+  globalThis.__carxpertFacebookContentLoaded = true;
 
-  // ---------- low-level DOM helpers (validated) ----------
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const norm = (s) => (s || '').toString().trim().toLowerCase();
-
-  // Poll a predicate; resolve with its first truthy value, or its last value on timeout.
-  const waitUntil = async (fn, timeout = 2500, interval = 30) => {
-    const t0 = Date.now();
-    for (;;) {
-      const v = fn();
-      if (v) return v;
-      if (Date.now() - t0 >= timeout) return v;
-      await sleep(interval);
-    }
-  };
-
-  const realClick = (el) => {
-    el.scrollIntoView({ block: 'center', inline: 'center' });
-    const o = { bubbles: true, cancelable: true, view: window };
-    el.dispatchEvent(new PointerEvent('pointerdown', o));
-    el.dispatchEvent(new MouseEvent('mousedown', o));
-    el.dispatchEvent(new PointerEvent('pointerup', o));
-    el.dispatchEvent(new MouseEvent('mouseup', o));
-    el.dispatchEvent(new MouseEvent('click', o));
-  };
-
-  const setNativeValue = (el, value) => {
-    const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-    if (desc && desc.set) desc.set.call(el, value);
-    else el.value = value;
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-  };
-
-  const fieldName = (l) => {
-    const lb = l.getAttribute('aria-labelledby');
-    if (lb) {
-      const t = lb.split(/\s+/).map((id) => document.getElementById(id)).filter(Boolean)
-        .map((n) => (n.textContent || '').trim()).join(' ').trim();
-      if (t) return t;
-    }
-    const al = (l.getAttribute('aria-label') || '').trim();
-    if (al) return al;
-    return (l.textContent || '').trim();
-  };
-
-  // Field labels differ per composer locale ("Exterior color" US vs "Exterior colour" UK),
-  // so lookups take one name or an ordered candidate list (US first — the market).
-  const getLabel = (names) => {
-    const list = Array.isArray(names) ? names : [names];
-    const labels = [...document.querySelectorAll('label')];
-    for (const n of list) {
-      const hit = labels.find((l) => fieldName(l).toLowerCase() === n.toLowerCase());
-      if (hit) return hit;
-    }
-    return undefined;
-  };
-  const displayName = (names) => (Array.isArray(names) ? names[0] : names);
-
-  const waitForLabel = async (names, timeout = 8000) => {
-    const t0 = Date.now();
-    while (Date.now() - t0 < timeout) {
-      if (getLabel(names)) return true;
-      await sleep(60);
-    }
-    return false;
-  };
-
-  const readOptions = () => [...document.querySelectorAll('[role="option"]')]
-    .map((o) => ({ el: o, txt: (o.getAttribute('aria-label') || o.textContent || '').trim() }))
-    .filter((o) => o.txt);
-
-  const matchOption = (opts, value) => {
-    const v = norm(value);
-    if (!v) return null;
-    return opts.find((o) => norm(o.txt) === v)
-      || opts.find((o) => norm(o.txt).startsWith(v))
-      || opts.find((o) => v.startsWith(norm(o.txt)) && o.txt.length > 2)
-      || opts.find((o) => norm(o.txt).includes(v) && v.length > 2);
-  };
-
-  const closeAnyDropdown = async () => {
-    const h1 = document.querySelector('h1');
-    for (let i = 0; i < 3 && document.querySelectorAll('[role="option"]').length; i += 1) {
-      if (h1) realClick(h1);
-      if (document.activeElement) {
-        document.activeElement.dispatchEvent(
-          new KeyboardEvent('keydown', { bubbles: true, key: 'Escape', code: 'Escape', keyCode: 27 }));
-      }
-      await sleep(150);
-    }
-  };
-
-  // After the fill, leave the form looking finished, not mid-edit: dismiss any
-  // lingering suggestion portal (esp. the Location autocomplete) and drop the caret.
-  const settleUi = async () => {
-    await closeAnyDropdown();
-    const a = document.activeElement;
-    if (a && typeof a.blur === 'function') a.blur();
-  };
-
-  async function fillTextField(name, value) {
-    const disp = displayName(name);
-    if (value === undefined || value === null || value === '') return { name: disp, ok: false, msg: 'no value' };
-    const label = getLabel(name);
-    if (!label) return { name: disp, ok: false, msg: 'field not found' };
-    const input = label.querySelector('input, textarea');
-    if (!input) return { name: disp, ok: false, msg: 'no input in field' };
-    input.focus();
-    setNativeValue(input, String(value));
-    await sleep(50); // let FB's controlled-input reformat (e.g. price -> $54,970) settle
-    const digits = (s) => String(s).replace(/\D/g, '');
-    const ok = norm(input.value) === norm(value) || (!!digits(value) && digits(input.value) === digits(value));
-    // Region guard: a non-US Marketplace region renders the price in local currency
-    // (live case: "$35,995" typed on a PK-region account became "Rs35,995" — a $130 car).
-    // The digits match, so without this check the fill would report success.
-    if (ok && disp === 'Price') {
-      const symbol = String(input.value).replace(/[\d.,\s]/g, '');
-      if (symbol && symbol !== '$') {
-        return { name: disp, ok: false, msg: `entered as "${input.value}" — Marketplace region isn't US, fix the price/currency before publishing` };
-      }
-    }
-    return { name: disp, ok, msg: ok ? `"${input.value}"` : `got "${input.value}"` };
-  }
-
-  async function selectDropdown(name, value) {
-    const disp = displayName(name);
-    // A value may arrive as a canonical US string (expanded to [US, UK] candidates here)
-    // or as an explicit pre-ordered candidate list.
-    const values = (Array.isArray(value) ? value : globalThis.CarxpertShared.optionCandidates(value)).filter(Boolean);
-    if (!values.length) return { name: disp, ok: false, msg: 'no value' };
-    const label = getLabel(name);
-    if (!label) return { name: disp, ok: false, msg: 'field not found' };
-    realClick(label);
-    // wait for the option portal to render, then try each locale candidate in order
-    await waitUntil(() => readOptions().length > 0, 3000);
-    let hit = null;
-    for (const v of values) {
-      hit = matchOption(readOptions(), v);
-      if (hit) break;
-    }
-    if (!hit) {
-      // searchable dropdown (e.g. Make): type to filter, then wait for a match to appear
-      const focused = document.activeElement;
-      if (focused && focused.tagName === 'INPUT') {
-        for (const v of values) {
-          setNativeValue(focused, String(v));
-          hit = await waitUntil(() => matchOption(readOptions(), v), 2500);
-          if (hit) break;
-        }
-      }
-    }
-    if (!hit) {
-      await closeAnyDropdown();
-      return { name: disp, ok: false, msg: `no option matched ${values.map((v) => `"${v}"`).join(' / ')}` };
-    }
-    realClick(hit.el);
-    // wait for the listbox to close (selection committed) before the next field opens its own
-    await waitUntil(() => readOptions().length === 0, 1500);
-    return { name: disp, ok: true, msg: `picked "${hit.txt}"` };
-  }
+  // ---------- shared DOM primitives (lib/fillkit.js, loaded first per manifest) ----------
+  const {
+    sleep, norm, waitUntil, getLabel, waitForLabel, readOptions,
+    closeAnyDropdown, settleUi, fillTextField, selectDropdown, fillAutocomplete,
+    attachPhotos, waitForCount,
+  } = globalThis.CarxpertFill;
 
   // ---------- dealer term -> Facebook option mapping ----------
-  // Shared with dealerContent via lib/mappers.js (loaded first per manifest); unit-tested
-  // in lib/mappers.test.js. Includes sanitization: HTML stripped from feed values,
-  // upholstery material words dropped before matching, unknown names -> blank for review.
-  const { mapColor, mapBody, mapFuel, mapTransmission } = globalThis.CarxpertShared;
+  // Facebook's value taxonomy (lib/mappers.fb.js, loaded first per manifest); unit-tested
+  // in lib/mappers.fb.test.js. Canonical values are the US composer's options;
+  // optionCandidates() expands each to [US, UK] so a UK-locale composer still matches.
+  const { mapColor, mapBody, mapFuel, mapTransmission, optionCandidates, judgePublishNav } = globalThis.CarxpertFb;
+
+  // Every FB dropdown fill goes through the locale-candidate expansion (US first, UK second).
+  const selectOpt = (name, value) =>
+    selectDropdown(name, Array.isArray(value) ? value : optionCandidates(value));
 
   // ---------- main fill routine ----------
   async function fillForm(draft, onStatus) {
@@ -192,58 +44,42 @@
 
     // 1) Vehicle type first — it gates every downstream field (they don't exist in the
     // DOM until it's chosen). US composer says "Car/Truck", UK says "Car/van".
-    await step(selectDropdown('Vehicle type', draft.vehicleType || 'Car/Truck'));
+    await step(selectOpt('Vehicle type', draft.vehicleType || 'Car/Truck'));
     await waitForLabel('Year'); // dependent fields render after Vehicle type is chosen
 
     // 2) the rest
-    await step(selectDropdown('Year', draft.year));
-    await step(selectDropdown('Make', draft.make));
+    await step(selectOpt('Year', draft.year));
+    await step(selectOpt('Make', draft.make));
     await step(fillTextField('Model', draft.model));
     // Facebook rejects mileage < 300; leave it blank for the user rather than blocking the form.
     await step((typeof draft.mileage === 'number' && draft.mileage < 300)
       ? Promise.resolve({ name: 'Mileage', ok: false, msg: `left blank — FB requires ≥300 mi (dealer shows ${draft.mileage})` })
       : fillTextField('Mileage', draft.mileage));
-    await step(fillTextField('Price', draft.price));
-    await step(selectDropdown('Body style', mapBody(draft.bodyType)));
+    // Currency guard: a non-US marketplace region silently re-denominates the amount.
+    await step(fillTextField('Price', draft.price, { currencySymbol: '$' }));
+    await step(selectOpt('Body style', mapBody(draft.bodyType)));
     // Marketing name first; DealerOn's coarse generic bucket ("Gray") as fallback when
     // the name doesn't map ("Other" maps to blank, so the fallback can't mis-color).
     // Label spelling differs per composer: "color" (US) / "colour" (UK).
-    await step(selectDropdown(['Exterior color', 'Exterior colour'], mapColor(draft.exteriorColor) || mapColor(draft.exteriorColorGeneric)));
-    await step(selectDropdown(['Interior color', 'Interior colour'], mapColor(draft.interiorColor)));
-    await step(selectDropdown('Vehicle condition', draft.condition || 'Excellent'));
-    await step(selectDropdown('Fuel type', mapFuel(draft.fuelType)));
-    await step(selectDropdown('Transmission', mapTransmission(draft.transmission)));
+    await step(selectOpt(['Exterior color', 'Exterior colour'], mapColor(draft.exteriorColor) || mapColor(draft.exteriorColorGeneric)));
+    await step(selectOpt(['Interior color', 'Interior colour'], mapColor(draft.interiorColor)));
+    await step(selectOpt('Vehicle condition', draft.condition || 'Excellent'));
+    await step(selectOpt('Fuel type', mapFuel(draft.fuelType)));
+    await step(selectOpt('Transmission', mapTransmission(draft.transmission)));
     await step(fillTextField('Description', draft.description));
 
-    // 3) Location (autocomplete: type then pick first suggestion)
-    if (draft.location) await step(setLocation(draft.location));
+    // 3) Location (autocomplete: type then pick first suggestion).
+    // A leftover portal from a failed dropdown must never feed this picker (live case:
+    // Location "picked" the vehicle-type option Car/Truck). Start from a clean slate so
+    // any options that appear belong to the location autocomplete.
+    await closeAnyDropdown();
+    if (draft.location) await step(fillAutocomplete('Location', draft.location));
 
     // 4) Photos (fetched by the background worker to bypass FB CSP/CORS)
     await step(uploadPhotos(draft, onStatus));
 
     await settleUi();
     return log;
-  }
-
-  async function setLocation(value) {
-    const label = getLabel('Location');
-    if (!label) return { name: 'Location', ok: false, msg: 'not found' };
-    const input = label.querySelector('input');
-    if (!input) return { name: 'Location', ok: false, msg: 'no input' };
-    // A leftover portal from a failed dropdown must never feed this picker (live case:
-    // Location "picked" the vehicle-type option Car/Truck). Start from a clean slate so
-    // any options that appear belong to the location autocomplete.
-    await closeAnyDropdown();
-    input.focus();
-    setNativeValue(input, '');
-    setNativeValue(input, String(value));
-    const opt = await waitUntil(() => readOptions()[0], 2500);
-    if (opt) {
-      realClick(opt.el);
-      await waitUntil(() => readOptions().length === 0, 1200);
-      return { name: 'Location', ok: true, msg: `picked "${opt.txt}"` };
-    }
-    return { name: 'Location', ok: false, msg: 'no suggestion (left default)' };
   }
 
   async function uploadPhotos(draft, onStatus) {
@@ -261,18 +97,11 @@
     const before = currentPhotoCount() || 0;
     const remaining = 20 - before; // FB caps vehicle listings at 20 photos
     if (remaining <= 0) return { name: 'Photos', ok: true, msg: `already has ${before}` };
-    const dt = new DataTransfer();
-    for (const img of resp.images.slice(0, remaining)) {
-      const file = dataUrlToFile(img.dataUrl, img.name);
-      if (file) dt.items.add(file);
-    }
-    if (!dt.files.length) return { name: 'Photos', ok: false, msg: 'no files built' };
-    input.files = dt.files;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    const target = before + dt.files.length;
-    const got = await waitForPhotoCount(target, 25000);
-    if (got == null) return { name: 'Photos', ok: true, msg: `attached ${dt.files.length} (count unverified)` };
+    const added = attachPhotos(input, resp.images, remaining);
+    if (!added) return { name: 'Photos', ok: false, msg: 'no files built' };
+    const target = before + added;
+    const got = await waitForCount(currentPhotoCount, target, 25000);
+    if (got == null) return { name: 'Photos', ok: true, msg: `attached ${added} (count unverified)` };
     const ok = got >= target;
     return { name: 'Photos', ok, msg: `${got} uploaded${ok ? '' : ` of ${target} (some may still be processing)`}` };
   }
@@ -283,32 +112,16 @@
     return el ? parseInt(el.textContent, 10) : null;
   }
 
-  async function waitForPhotoCount(target, timeout) {
-    const t0 = Date.now();
-    while (Date.now() - t0 < timeout) {
-      const c = currentPhotoCount();
-      if (c != null && c >= target) return c;
-      await sleep(500);
-    }
-    return currentPhotoCount();
-  }
-
-  function dataUrlToFile(dataUrl, name) {
-    try {
-      const [meta, b64] = dataUrl.split(',');
-      const mime = (meta.match(/data:([^;]+)/) || [])[1] || 'image/jpeg';
-      const bin = atob(b64);
-      const arr = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i += 1) arr[i] = bin.charCodeAt(i);
-      return new File([arr], name || 'photo.jpg', { type: mime });
-    } catch { return null; }
-  }
-
   // ---------- controller (no injected UI — the Carxpert side panel drives this) ----------
   let filling = false;
   let lastFilledKey = '';   // VIN/stock/url of the draft we filled — attributed to it on a real publish
+  let lastFilledContext = null;
   const isCreatePage = () => /\/marketplace\/create\/vehicle/i.test(location.pathname);
   const draftKey = (d) => d ? ((d.vin || '').toUpperCase() || d.stock || d.sourceUrl || '') : '';
+  const vinKey = (value) => {
+    const candidate = String(value || '').trim().toUpperCase();
+    return /^[A-HJ-NPR-Z0-9]{17}$/.test(candidate) ? candidate : '';
+  };
 
   const postStatus = (text, error) =>
     chrome.runtime.sendMessage({ type: 'EZLIST_FILL_STATUS', text, error: !!error }).catch(() => {});
@@ -317,14 +130,19 @@
     return chrome.runtime.sendMessage({ type: 'EZLIST_GET_DRAFT' });
   }
 
-  async function doFill(expectedKey) {
+  async function doFill(expectedKey, expectedContextKey) {
     if (filling || !isCreatePage()) return;
     filling = true; // claim synchronously so a near-simultaneous EZLIST_FILL + auto-fill can't double-run
     try {
       // Entitlement guard (belt-and-braces; the panel/dealer path gates first). No host —
       // just "is the user entitled to fill"; lease-first with /api/me fallback in the worker.
       const gate = await chrome.runtime.sendMessage({ type: 'EZLIST_CAN_LIST' }).catch(() => null);
-      if (!gate || !gate.ok) { postStatus('Sign in to Carxpert to fill listings.', true); return; }
+      if (!gate || !gate.ok) {
+        postStatus(gate && gate.reason === 'wrong_dealership'
+          ? "This car isn't from your linked dealership — CarXprt only lists your own inventory."
+          : 'Sign in to CarXprt to fill listings.', true);
+        return;
+      }
       const resp = await getStored();
       const draft = resp && resp.ezlistDraft;
       if (!draft) { postStatus('No vehicle draft found.', true); return; }
@@ -334,7 +152,13 @@
         postStatus('Vehicle changed — reopen the car and Fill again.', true);
         return;
       }
+      const draftContextKey = draft._carxpertContext && draft._carxpertContext.key;
+      if (expectedContextKey && draftContextKey && draftContextKey !== expectedContextKey) {
+        postStatus('Workspace changed — reopen the car and Fill again.', true);
+        return;
+      }
       lastFilledKey = draftKey(draft);
+      lastFilledContext = draft._carxpertContext || (resp && resp.ezlistActiveContext) || null;
       postStatus('Filling…');
       await waitForLabel('Vehicle type', 20000);
       const log = await fillForm(draft, (line) => postStatus(line));
@@ -350,6 +174,7 @@
         event: {
           type: 'fill_completed',
           clientKey: lastFilledKey,
+          context: lastFilledContext,
           data: {
             variant,
             lang: document.documentElement.lang || '',
@@ -365,74 +190,119 @@
     }
   }
 
-  // Auto-fill once when the draft was just set by a "List" click (one-shot flag).
+  // Auto-fill once when the draft was just set by a "List" click (one-shot flag). The flag is
+  // platform-tagged ({platform,key}); Facebook only fires on its own tag (or a legacy `true`),
+  // so a Craigslist-targeted List never fills an open FB create tab.
   async function maybeAutoFill() {
     if (!isCreatePage()) return;
     const resp = await getStored();
-    if (resp && resp.ezlistDraft && resp.ezlistAutoFill && !filling) {
+    const af = resp && resp.ezlistAutoFill;
+    const forFb = af === true || (af && af.platform === 'fb');
+    if (resp && resp.ezlistDraft && forFb && !filling) {
       chrome.storage.local.set({ ezlistAutoFill: false }); // one-shot; manual reloads won't re-fire
-      doFill();
+      doFill(af && af.key, af && af.contextKey);
     }
   }
 
-  chrome.runtime.onMessage.addListener((msg) => {
-    if (!msg) return;
-    if (msg.type === 'EZLIST_FILL') doFill(msg.key);
+  // Facebook can preserve a draft's visible fields across a page refresh, while this content
+  // script's in-memory vehicle key starts over. Recover attribution from the worker's previous
+  // stored copy or the same validated VIN. That lets a translation/rewrite replace this one field
+  // after a refresh or failed delivery without risking another vehicle.
+  async function recoverFilledVehicle(expectedKey, previousDescription) {
+    if (lastFilledKey || !expectedKey || !previousDescription || !isCreatePage()) return false;
+    await waitForLabel('Description', 3000);
+    const label = getLabel('Description');
+    const input = label && label.querySelector('input, textarea');
+    const comparable = (text) => String(text == null ? '' : text).replace(/\r\n/g, '\n').trim();
+    if (!input) return false;
+    const visibleDescription = comparable(input.value);
+    const expectedVin = vinKey(expectedKey);
+    const samePriorCopy = visibleDescription === comparable(previousDescription);
+    const sameVin = expectedVin && visibleDescription.toUpperCase().includes(expectedVin);
+    // A failed AI/translation delivery updates the stored draft before the page, so after an
+    // extension reload the two descriptions can legitimately differ. The VIN in the still-open
+    // Facebook copy is a stronger vehicle identity check than text equality and lets us recover
+    // without ever accepting another vehicle's composer.
+    if (!samePriorCopy && !sameVin) return false;
+    const resp = await getStored().catch(() => null);
+    const draft = resp && resp.ezlistDraft;
+    if (!draft || draftKey(draft) !== expectedKey) return false;
+    lastFilledKey = expectedKey;
+    lastFilledContext = draft._carxpertContext || (resp && resp.ezlistActiveContext) || null;
+    return true;
+  }
+
+  async function updateDescription(expectedKey, value, previousDescription) {
+    if (!isCreatePage()) return { ok: true, updated: false, reason: 'not_vehicle_form' };
+    // Let an in-progress full fill finish first. Otherwise its older Description step could land
+    // after this edit and overwrite the dealer's newest copy.
+    for (let i = 0; filling && i < 300; i += 1) await sleep(100);
+    if (!lastFilledKey) await recoverFilledVehicle(expectedKey, previousDescription);
+    if (!expectedKey || !lastFilledKey || expectedKey !== lastFilledKey) {
+      return { ok: true, updated: false, reason: 'different_vehicle' };
+    }
+    const result = await fillTextField('Description', String(value == null ? '' : value).slice(0, 1000));
+    return { ok: true, updated: !!result.ok, result };
+  }
+
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (!msg) return false;
+    if (msg.type === 'EZLIST_FILL') doFill(msg.key, msg.contextKey);
     else if (msg.type === 'EZLIST_DRAFT_UPDATED') maybeAutoFill();
+    else if (msg.type === 'EZLIST_UPDATE_DESCRIPTION') {
+      updateDescription(msg.key, msg.description, msg.previousDescription)
+        .then(sendResponse)
+        .catch((error) => sendResponse({ ok: false, updated: false, error: error.message }));
+      return true;
+    }
+    return false;
   });
 
   // ---------- publish detection (Option A: green only on a real publish) ----------
   // Conservative: we only mark a VIN "listed" when, AFTER we filled it, the page leaves
   // /marketplace/create/vehicle for a created-listing or your-listings URL. An abandoned
   // form never produces that transition, so we never mark green on a form the user bailed on.
-  async function markListed(key) {
-    if (!key) return;
-    const s = await chrome.storage.local.get(['ezlistListedVins', 'ezlistListings', 'ezlistDraft']);
-    const listed = s.ezlistListedVins || {};
-    const listings = s.ezlistListings || {};
-    const now = new Date().toISOString();
-    const alreadyGreen = !!listed[key];
-    const alreadyActive = listings[key] && listings[key].status === 'active';
-    if (alreadyGreen && alreadyActive) return;
-
-    // ezlistListedVins stays the source of truth for the dealer-page green button.
-    if (!alreadyGreen) listed[key] = { listedAt: now };
-
-    // ezlistListings is the richer, stats-facing record. Capture the vehicle fields
-    // from the draft we just filled (keys match unless the user switched cars mid-flow).
-    const d = (s.ezlistDraft && draftKey(s.ezlistDraft) === key) ? s.ezlistDraft : null;
-    const prev = listings[key] || {};
-    listings[key] = {
-      key,
-      vin: (d && d.vin) || prev.vin || (key.length === 17 ? key : undefined),
-      title: (d ? [d.year, d.make, d.model].filter(Boolean).join(' ') : prev.title) || undefined,
-      year: (d && d.year) || prev.year,
-      make: (d && d.make) || prev.make,
-      model: (d && d.model) || prev.model,
-      price: (d && Number(d.price)) || prev.price,
-      sourceUrl: (d && d.sourceUrl) || prev.sourceUrl,
-      platform: 'fb',
-      status: 'active',
-      listedAt: prev.listedAt || now,
-    };
-    await chrome.storage.local.set({ ezlistListedVins: listed, ezlistListings: listings });
-    // Publish event → sync queue; the ezlistListings write above also triggers the listing sync. C5.
-    chrome.runtime.sendMessage({ type: 'EZLIST_ENQUEUE_EVENT', event: { type: 'publish_detected', clientKey: key } }).catch(() => {});
-    postStatus('✓ Listed on Marketplace.');
+  async function markListed(key, context) {
+    if (!key || !context) return;
+    const result = await chrome.runtime.sendMessage({
+      type: 'EZLIST_MARK_LISTED',
+      payload: { key, context, platform: 'fb', url: location.href }
+    }).catch(() => null);
+    if (result && result.ok) postStatus('✓ Listed on Marketplace.');
   }
 
   function installPublishDetection() {
     let lastPath = location.pathname;
+    // Post-publish FB lands on the new item, "your listings", or (observed live 2026-07) plain
+    // marketplace home. Home is ambiguous — the form's close (X) button produces the same
+    // create→home transition — so judgePublishNav accepts it only when a Publish button was
+    // clicked moments before. We OBSERVE the user's click (capture phase, works for keyboard
+    // activation too); we never click Publish ourselves. A Publish click that does NOT navigate
+    // (client-side validation failure) ages out of the window, so a later X-close stays safe.
+    let publishClickAt = null;
+    document.addEventListener('click', (e) => {
+      if (!isCreatePage()) return;
+      const btn = e.target && e.target.closest ? e.target.closest('[role="button"], button') : null;
+      if (!btn) return;
+      const text = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.textContent || '')).trim().toLowerCase();
+      if (/^publish$|(^|\s)publish($|\s)/.test(text)) publishClickAt = Date.now();
+    }, true);
     const check = () => {
       const path = location.pathname;
       if (path === lastPath) return;
       const left = lastPath;
       lastPath = path;
       if (!lastFilledKey) return;
-      const published = /\/marketplace\/item\/\d+/.test(path) || /\/marketplace\/you(\/|$)/.test(path);
-      if (published && /\/marketplace\/create\/vehicle/.test(left)) {
-        markListed(lastFilledKey);
+      const published = judgePublishNav({
+        fromCreate: /\/marketplace\/create\/vehicle/.test(left),
+        path,
+        publishClickMsAgo: publishClickAt == null ? null : Date.now() - publishClickAt
+      });
+      if (published) {
+        markListed(lastFilledKey, lastFilledContext);
         lastFilledKey = '';
+        lastFilledContext = null;
+        publishClickAt = null;
       }
     };
     // FB is a SPA; the content script can't hook the page's pushState across worlds,

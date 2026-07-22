@@ -1,5 +1,5 @@
 import { isValidVin } from '../../vin.js';
-import { DEALER_UA } from '../../dealer-url.js';
+import { DEALER_UA, isBlockedHost } from '../../dealer-url.js';
 
 // Server-side DealerOn adapter — mirrors the extension's client-side DealerOn reader.
 // Primary roster source is sitemap.aspx (one page, VIN-bearing inventory roster — verified
@@ -58,6 +58,15 @@ function bust(url) {
 // must never sell on null).
 export async function checkVdpAlive(sourceUrl, vin, { fetchImpl = politeFetch } = {}) {
   if (!sourceUrl || !vin) return null;
+  // Belt-and-braces SSRF guard: source_url is sanitized at sync time (listings.js pins it to
+  // the dealership's alias domains), but the worker must never fetch a blocked/non-http target
+  // even if a bad value predates that rule or arrives another way. null = unknown, never sells.
+  try {
+    const u = new URL(String(sourceUrl));
+    if ((u.protocol !== 'http:' && u.protocol !== 'https:') || isBlockedHost(u.hostname.toLowerCase())) return null;
+  } catch {
+    return null;
+  }
   let resp;
   try {
     resp = await fetchImpl(bust(sourceUrl), {});
