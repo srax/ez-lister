@@ -74,3 +74,24 @@ test('Dealer Inspire detected from its client asset/data-vehicle signal', () => 
   assert.equal(r.scores.dealeron, 0);
   assert.equal(r.scores.dealercom, 0);
 });
+
+test('Carsforsale detected from Chassis live-DOM signals', () => {
+  const r = scorePlatform(buildEvidence({ carsForSaleAssets: true, carsForSaleCards: true }));
+  assert.equal(r.platform, 'carsforsale');
+  assert.equal(r.scores.carsforsale, 3);
+  assert.equal(r.scores.autocorner, 0);
+});
+
+test('AutoCorner detected from its vendor assets and SRP root', () => {
+  const r = scorePlatform(buildEvidence({ autoCornerAssets: true, autoCornerSrp: true }));
+  assert.equal(r.platform, 'autocorner');
+  assert.equal(r.scores.autocorner, 5);
+  assert.equal(r.scores.carsforsale, 0);
+});
+
+test('server markers distinguish Carsforsale from AutoCorner', () => {
+  const cars = scorePlatform(buildEvidence({ mentionsCarsForSale: true, hasChassisInventory: true }));
+  const corner = scorePlatform(buildEvidence({ mentionsAutoCorner: true, hasAutoCornerSrpEndpoint: true }));
+  assert.equal(cars.platform, 'carsforsale');
+  assert.equal(corner.platform, 'autocorner');
+});

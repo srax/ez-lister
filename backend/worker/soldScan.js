@@ -1,14 +1,24 @@
 import crypto from 'node:crypto';
 import { pool } from '../db.js';
-import { isEntitled } from '../entitlement/index.js';
+import { listingWorkspaceEntitlement } from '../entitlement/index.js';
 import { pruneUsageEvents } from '../listings-admin.js';
 import { pruneExpiredAuthCodes } from '../auth-codes.js';
 import { fetchRoster, checkVdpAlive } from './adapters/dealeron.js';
+import { expireClaimReservations } from '../claims.js';
+import { expireOrganizationInvitations } from '../organizations.js';
+import {
+  enforceOrganizationBillingLifecycle,
+  pruneSubscriptionReconciliationRuns,
+  reconcileOrganizationSubscriptions
+} from '../billing-lifecycle.js';
+import { applyScheduledCapacityReductions } from '../capacity-billing.js';
+import { applyScheduledRooftopRemovals } from '../rooftop-billing.js';
+import { expireOwnershipTransfers } from '../ownership-transfers.js';
 
 const HOUR_MS = 3600 * 1000;
-const SCAN_INTERVAL_MS = 3 * HOUR_MS; // roster check cadence (3h)
+const SCAN_INTERVAL_MS = HOUR_MS; // roster check cadence (hourly, 24/7)
 const CONFIRM_GAP_MS = 25 * 60 * 1000; // second gone-confirmation must be ≥25min after the first
-                                       // (at a 3h cadence the real gap is ~3h, so a sale lands ~6h after the car leaves)
+                                       // (the next hourly cycle qualifies, so two misses are required)
 const RESUME_STALE_MS = 48 * HOUR_MS; // clear miss/confirm clocks older than this (worker pause)
 const PROBE_BUDGET = 10; // VDP ground-truth fetches per dealership per cycle (politeFetch spaces them ≥2s)
 
@@ -82,7 +92,7 @@ function keepTelemetry(decision) {
 }
 
 // ---- DB-driven scan of one dealership ----
-async function scanDealership(dealership, { db = pool, now = Date.now(), adapters = ADAPTERS, vdpCheckers = VDP_CHECKERS, condStates = new Map(), isEntitledFn = isEntitled } = {}) {
+async function scanDealership(dealership, { db = pool, now = Date.now(), adapters = ADAPTERS, vdpCheckers = VDP_CHECKERS, condStates = new Map(), isEntitledFn = listingWorkspaceEntitlement } = {}) {
   const adapter = adapters[dealership.platform];
   const scanId = crypto.randomUUID();
   const startedAt = new Date(now).toISOString();
@@ -140,7 +150,8 @@ async function scanDealership(dealership, { db = pool, now = Date.now(), adapter
 // diagnosable from logs instead of forensics.
 async function applyPresence(db, dealershipId, rosterSet, now, { isEntitledFn = isEntitled, vdpCheck = null } = {}) {
   const { rows } = await db.query(
-    `select l.id, l.owner_id, l.client_key, l.vin, l.status, l.sold_source,
+    `select l.id, l.owner_id, l.workspace_id, l.organization_id, l.actor_user_id,
+            l.client_key, l.vin, l.status, l.sold_source,
             l.first_missed_at, l.gone_confirmed_at, l.source_url
      from listings l
      where l.dealership_id = $1 and l.vin is not null
@@ -156,8 +167,12 @@ async function applyPresence(db, dealershipId, rosterSet, now, { isEntitledFn = 
   const entCache = new Map();
   let probeBudget = PROBE_BUDGET;
   for (const listing of rows) {
-    let ent = entCache.get(listing.owner_id);
-    if (!ent) { ent = await isEntitledFn(listing.owner_id); entCache.set(listing.owner_id, ent); }
+    const entitlementKey = listing.workspace_id || `personal:${listing.owner_id}`;
+    let ent = entCache.get(entitlementKey);
+    if (!ent) {
+      ent = await isEntitledFn(listing, db);
+      entCache.set(entitlementKey, ent);
+    }
     if (!ent.entitled) continue;
 
     // Resume hygiene: a first_missed_at older than 48h (accumulated around a pause) is stale.
@@ -196,10 +211,16 @@ async function applyPresence(db, dealershipId, rosterSet, now, { isEntitledFn = 
     // Scan decisions that change what the salesperson sees become user-visible events too.
     if (decision.markSold || decision.revive) {
       await db.query(
-        `insert into usage_events (id, user_id, type, client_key, data, occurred_at)
-         values ($1,$2,$3,$4,$5,now()) on conflict (id) do nothing`,
-        [crypto.randomUUID(), listing.owner_id, decision.markSold ? 'scan_marked_sold' : 'scan_revived',
-         listing.client_key, JSON.stringify({ vin: listing.vin, dealershipId })]
+        `insert into usage_events (
+           id, user_id, workspace_id, organization_id, actor_user_id,
+           type, client_key, data, occurred_at
+         ) values ($1,$2,$3,$4,$5,$6,$7,$8,now()) on conflict (id) do nothing`,
+        [
+          crypto.randomUUID(), listing.owner_id, listing.workspace_id, listing.organization_id,
+          listing.actor_user_id || listing.owner_id,
+          decision.markSold ? 'scan_marked_sold' : 'scan_revived', listing.client_key,
+          JSON.stringify({ vin: listing.vin, dealershipId })
+        ]
       ).catch(() => {});
     }
   }
@@ -270,39 +291,70 @@ async function previousSuccessfulCount(db, dealershipId) {
 // Dealerships with ≥1 tracked valid-VIN listing that a scan could still change: 'listed'
 // cars (miss clock) AND scanner-sold cars (revival) — otherwise a dealership whose tracked
 // cars are all scan-sold drops out of the cycle and reappearances are never noticed.
-async function dealershipsToScan(db) {
+export async function dealershipsToScan(db, adapters = ADAPTERS) {
+  const platforms = Object.keys(adapters || {});
+  if (!platforms.length) return [];
   const { rows } = await db.query(
     `select distinct d.* from dealerships d
      join listings l on l.dealership_id = d.id
      where d.status = 'supported'
+       and d.platform = any($1::text[])
        and l.vin is not null
-       and (l.status = 'listed' or (l.status = 'sold' and l.sold_source = 'scan'))`
+       and (l.status = 'listed' or (l.status = 'sold' and l.sold_source = 'scan'))`,
+    [platforms]
   );
   return rows;
 }
 
 // One full cycle over all dealerships (exported for tests / manual runs).
-export async function runScanCycle({ db = pool, now = Date.now(), condStates = new Map(), adapters = ADAPTERS, isEntitledFn = isEntitled } = {}) {
-  const dealerships = await dealershipsToScan(db);
+export async function runScanCycle({
+  db = pool,
+  now = Date.now(),
+  condStates = new Map(),
+  adapters = ADAPTERS,
+  isEntitledFn = listingWorkspaceEntitlement,
+  scanInventory = true
+} = {}) {
+  // Billing repair and lifecycle jobs are not inventory jobs. Run them even in an
+  // environment where dealer-site polling is disabled, and reconcile Stripe before acting
+  // on locally cached grace/cancellation state.
+  const reconciliation = await reconcileOrganizationSubscriptions(db).catch((error) => ({
+    checked: 0,
+    synced: 0,
+    errors: [{ code: error && error.code ? error.code : 'reconcile_failed' }]
+  }));
+  if (reconciliation.errors && reconciliation.errors.length) {
+    console.error(`organization billing reconciliation: ${reconciliation.errors.length} error(s)`);
+  }
+  await enforceOrganizationBillingLifecycle(db).catch(() => {});
+  await applyScheduledCapacityReductions(db).catch(() => {});
+  await applyScheduledRooftopRemovals(db, new Date(now)).catch(() => {});
+
+  const dealerships = scanInventory ? await dealershipsToScan(db, adapters) : [];
   const results = [];
   for (const d of dealerships) {
     results.push({ dealership: d.id, ...(await scanDealership(d, { db, now, condStates, adapters, isEntitledFn })) });
   }
   await pruneUsageEvents(db).catch(() => {});
   await pruneExpiredAuthCodes(db).catch(() => {});
+  await pruneSubscriptionReconciliationRuns(db).catch(() => {});
+  await expireClaimReservations(db, new Date(now)).catch(() => {});
+  await expireOrganizationInvitations(db).catch(() => {});
+  await expireOwnershipTransfers(db).catch(() => {});
   return results;
 }
 
-// ---- the in-process loop (every 3h; sale needs two gone-confirms, so real-world sold
-// detection lands ~6h after the car leaves the dealer site) ----
+// ---- the in-process loop (hourly; sale still needs two independent gone confirmations) ----
 let timer = null;
-export function startWorker({ intervalMs = SCAN_INTERVAL_MS } = {}) {
+export function startWorker({ intervalMs = SCAN_INTERVAL_MS, inventoryEnabled = true } = {}) {
   if (timer) return;
   const condStates = new Map();
   const tick = async () => {
     try {
-      const res = await runScanCycle({ condStates });
-      console.log(`sold-scan: ${res.length} dealership(s) scanned`);
+      const res = await runScanCycle({ condStates, scanInventory: inventoryEnabled });
+      console.log(inventoryEnabled
+        ? `sold-scan: ${res.length} dealership(s) scanned`
+        : 'organization maintenance: cycle complete');
     } catch (err) {
       console.error(`sold-scan error: ${err.message}`);
     }
@@ -314,7 +366,7 @@ export function startWorker({ intervalMs = SCAN_INTERVAL_MS } = {}) {
   timer = setTimeout(function loop() {
     tick().finally(() => { timer = setTimeout(loop, intervalMs); });
   }, firstDelay);
-  console.log(`sold-scan worker armed (first run in ~${Math.round(firstDelay / 60000)} min, then every ${Math.round(intervalMs / 60000)} min)`);
+  console.log(`${inventoryEnabled ? 'sold-scan + maintenance' : 'organization maintenance'} worker armed (first run in ~${Math.round(firstDelay / 60000)} min, then every ${Math.round(intervalMs / 60000)} min)`);
 }
 
 export function stopWorker() {

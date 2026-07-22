@@ -101,3 +101,28 @@ test('optionCandidates: locale-identical values pass through; empty stays empty'
   assert.deepEqual(M.optionCandidates(null), []);
 });
 // (decodePriceLib tests live in mappers.core.test.js — that's where the function moved.)
+
+// ---- judgePublishNav: Option A's "never wrongly green" contract ----
+test('judgePublishNav: item / your-listings / selling URLs are unambiguous publishes', () => {
+  assert.equal(M.judgePublishNav({ fromCreate: true, path: '/marketplace/item/1234567890' }), true);
+  assert.equal(M.judgePublishNav({ fromCreate: true, path: '/marketplace/you/' }), true);
+  assert.equal(M.judgePublishNav({ fromCreate: true, path: '/marketplace/you' }), true);
+  assert.equal(M.judgePublishNav({ fromCreate: true, path: '/marketplace/selling' }), true);
+});
+
+test('judgePublishNav: marketplace home needs a recent Publish click (X-close must not green)', () => {
+  // The X button also lands create→home — without a Publish click it is an abandon, never a publish.
+  assert.equal(M.judgePublishNav({ fromCreate: true, path: '/marketplace/' }), false);
+  assert.equal(M.judgePublishNav({ fromCreate: true, path: '/marketplace', publishClickMsAgo: null }), false);
+  // Publish clicked seconds ago → the observed-live publish-lands-on-home case.
+  assert.equal(M.judgePublishNav({ fromCreate: true, path: '/marketplace/', publishClickMsAgo: 3000 }), true);
+  // Publish click that never navigated (validation failure), user closes later → aged out.
+  assert.equal(M.judgePublishNav({ fromCreate: true, path: '/marketplace/', publishClickMsAgo: M.PUBLISH_CLICK_WINDOW_MS + 1 }), false);
+});
+
+test('judgePublishNav: transitions not leaving the create page never count', () => {
+  assert.equal(M.judgePublishNav({ fromCreate: false, path: '/marketplace/item/1234567890' }), false);
+  assert.equal(M.judgePublishNav({ fromCreate: false, path: '/marketplace/', publishClickMsAgo: 1000 }), false);
+  assert.equal(M.judgePublishNav({ fromCreate: true, path: '/marketplace/category/vehicles' }), false);
+  assert.equal(M.judgePublishNav({}), false);
+});

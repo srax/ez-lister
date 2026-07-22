@@ -19,7 +19,14 @@
   const EX = globalThis.CarxpertExtractors || {};
   // Specific providers first; `generic` (schema.org VDP fallback) is last so a recognized platform
   // always wins and generic only claims detail pages nothing else handled. DealerOn is the final fallback.
-  const provider = [EX.dealercom, EX.dealeron, EX.dealerinspire, EX.generic].find((p) => p && p.detect()) || EX.dealeron;
+  const provider = [
+    EX.carsforsale,
+    EX.autocorner,
+    EX.dealercom,
+    EX.dealeron,
+    EX.dealerinspire,
+    EX.generic
+  ].find((p) => p && p.detect()) || EX.dealeron;
   if (!provider) return; // extractor modules failed to load — do nothing rather than throw
 
   // Record what we're on so the side panel's Detect/onboard flow can resolve + link this dealer.
@@ -38,7 +45,8 @@
   // ezlistMe). Missing location just leaves the marketplace location field for the user to fill.
   const DEALER = { location: '' };
   const applyDealerConfig = (me) => {
-    const cfg = me && me.dealership && me.dealership.config;
+    const dealership = me && (me.activeDealership || me.dealership);
+    const cfg = dealership && dealership.config;
     DEALER.location = (cfg && cfg.location) || '';
   };
   chrome.storage.local.get('ezlistMe').then((s) => applyDealerConfig(s.ezlistMe)).catch(() => {});
@@ -64,8 +72,8 @@
   // background verifies the lease (dom-matched to this dealer host) / falls back to /api/me.
   let entitled = false;
   function refreshEntitled() {
-    chrome.runtime.sendMessage({ type: 'EZLIST_GET_AUTH' })
-      .then((r) => { const next = !!(r && r.ok && r.auth && r.auth.entitled); if (next !== entitled) { entitled = next; repaintAll(); } })
+    chrome.runtime.sendMessage({ type: 'EZLIST_GET_AUTH', host: location.hostname })
+      .then((r) => { const next = !!(r && r.ok && r.auth && r.auth.canList); if (next !== entitled) { entitled = next; repaintAll(); } })
       .catch(() => {});
   }
   chrome.storage.local.get(['ezlistListedVins', 'ezlistPrefs'])
@@ -133,7 +141,7 @@
   // so weak dealerships/themes surface in the data automatically — we can't manually test every
   // dealership on a platform. Fire-and-forget; it must NEVER break listing. Reported even when the
   // draft is incomplete (a missing VIN is exactly the signal worth capturing).
-  function reportExtraction(draft) {
+  function reportExtraction(draft, context) {
     try {
       const has = (v) => v !== undefined && v !== null && v !== '';
       const photoCount = Array.isArray(draft.photoUrls) ? draft.photoUrls.length : 0;
@@ -150,6 +158,7 @@
         event: {
           type: 'extraction_completed',
           clientKey: (draft.vin || '').toUpperCase() || draft.stock || undefined,
+          context,
           data: {
             provider: provider.id,
             host: location.hostname,
@@ -190,11 +199,27 @@
     btn.dataset.busy = '1';
     btn.textContent = '…'; btn.disabled = true;
     try {
+      // Host gate: List only works on the user's LINKED dealership site (one dealership per
+      // user). Entitlement alone isn't enough — static/granted hosts exist on every install,
+      // so an entitled user on another dealer's site must be stopped here, not at fill time.
+      const gate = await chrome.runtime.sendMessage({ type: 'EZLIST_CAN_LIST', host: location.hostname }).catch(() => null);
+      if (gate && !gate.ok && gate.reason === 'wrong_dealership') {
+        btn.textContent = 'Not your dealership';
+        return; // finally still restores the steady state
+      }
       const draft = await provider.extractVehicle(scope, sourceUrl, { location: DEALER.location });
-      reportExtraction(draft); // capture quality before the VIN gate — incomplete drafts are the signal
+      reportExtraction(draft, gate && gate.context); // capture quality before the VIN gate — incomplete drafts are the signal
       if (!draft.vin) throw new Error('no VIN found on this card');
       await applyDescriptionPrefs(draft); // saved draft must match what the panel shows (one template)
-      await chrome.runtime.sendMessage({ type: 'EZLIST_SAVE_DRAFT', draft, autoFill: true, platform, key: (draft.vin || '').toUpperCase() });
+      const saved = await chrome.runtime.sendMessage({
+        type: 'EZLIST_SAVE_DRAFT',
+        draft,
+        autoFill: true,
+        platform,
+        key: (draft.vin || '').toUpperCase(),
+        context: gate && gate.context
+      });
+      if (!saved || !saved.ok) throw new Error((saved && saved.error) || 'Could not save this vehicle.');
       // Overlap: start downloading photos now, in parallel with the FB tab opening + form fill.
       // (FB uploads photos during the fill; Craigslist adds them on a later step, so skip there.)
       if (platform === 'fb') {

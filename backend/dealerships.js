@@ -5,11 +5,13 @@ import { scorePlatform, buildEvidence } from './fingerprint.js';
 import { fetchSiteEvidence } from './detect.js';
 import { createDealership } from './admin-ops.js';
 import { activeSubscription } from './entitlement/index.js';
+import { dealershipAutoOnboardEnabled, organizationsEnabled } from './features.js';
 
-// Platforms our extractor actually supports end-to-end: detection at/above threshold on one
-// of these AUTO-ONBOARDS the dealership (row + aliases, status 'supported') so any dealer on
-// that platform can self-serve. Everything else stays curated (request → triage → admin).
-const AUTO_SUPPORT_PLATFORMS = new Set(['dealeron', 'dealercom', 'dealerinspire', 'generic']);
+// Auto-onboarding is an explicit rollout tool, not the V1 default. Generic schema.org pages
+// never qualify: a parseable VDP does not prove the full SRP/photo/fill workflow is accurate.
+// The opt-in path also requires server-observed evidence; client fingerprints are useful for
+// triage but are untrusted and must not promote an arbitrary domain to `supported`.
+const AUTO_SUPPORT_PLATFORMS = new Set(['dealeron', 'dealercom', 'dealerinspire']);
 
 export function slugFromHost(host) {
   return String(host || '').toLowerCase().replace(/^www\./, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
@@ -49,8 +51,27 @@ export async function findDealershipByHosts(hosts, db = pool) {
   return rows[0] || null;
 }
 
+export async function dealershipClaimState(dealershipId, db = pool) {
+  const { rows } = await db.query(
+    `select organization_id, status from organization_rooftops
+      where dealership_id=$1
+        and status in ('reserved','active','past_due','suspended','pending_removal')
+      limit 1`,
+    [dealershipId]
+  );
+  return rows.length
+    ? { claimed: true, organizationId: rows[0].organization_id, rooftopStatus: rows[0].status }
+    : { claimed: false, organizationId: null, rooftopStatus: null };
+}
+
 // resolve: alias hit → supported dealership; miss → detected platform (triage only).
-export async function resolveDealer({ url, fingerprints }, { db = pool, allowNetwork = true, fetchImpl = fetch } = {}) {
+export async function resolveDealer({ url, fingerprints }, {
+  db = pool,
+  allowNetwork = true,
+  fetchImpl = fetch,
+  enforceClaims = organizationsEnabled(),
+  allowAutoOnboard = dealershipAutoOnboardEnabled()
+} = {}) {
   let inputHost = null;
   let hosts = [];
   if (url) {
@@ -65,7 +86,13 @@ export async function resolveDealer({ url, fingerprints }, { db = pool, allowNet
 
   const dealership = await findDealershipByHosts(hosts, db);
   if (dealership && dealership.status === 'supported') {
-    return { supported: true, dealership: publicDealership(dealership), normalizedDomain: inputHost };
+    const claim = enforceClaims ? await dealershipClaimState(dealership.id, db) : { claimed: false };
+    return {
+      supported: true,
+      dealership: publicDealership(dealership),
+      normalizedDomain: inputHost,
+      claimed: Boolean(claim.claimed)
+    };
   }
   if (dealership) {
     // The domain maps to a KNOWN dealership that curation disabled — never auto-revive it.
@@ -82,21 +109,31 @@ export async function resolveDealer({ url, fingerprints }, { db = pool, allowNet
   const { confidence } = scored;
   let platform = scored.platform;
 
+  // Promotion decisions use only evidence fetched by this backend. A signed-in client can
+  // claim any fingerprint values, so merged client evidence is advisory only.
+  const serverPlatform = siteInfo
+    ? scorePlatform(buildEvidence(siteInfo.evidence)).platform
+    : null;
+
   // Universal fallback: an UNRECOGNIZED platform (e.g. Dealer Inspire/Cars.com) that still exposes
   // schema.org dealer/vehicle data can self-serve as 'generic' — the generic extractor lists from
   // its detail pages. Only when no specific platform matched, so it never overrides a real one.
   const fp = fingerprints || {};
   if (!platform && (fp.hasSchemaAutoDealer || fp.hasSchemaVehicle)) platform = 'generic';
 
-  // Supported-platform site → self-serve onboarding: create the dealership + aliases now and
-  // return it as supported, so the user can connect without waiting on manual curation.
-  if (platform && AUTO_SUPPORT_PLATFORMS.has(platform) && inputHost) {
-    // Bot-walled sites (Dealer.com) yield no server siteInfo, so the extension's live-DOM probe
-    // sends a siteName to name the row properly instead of falling back to the bare domain.
+  // Future controlled rollout: server-verified supported-platform sites may self-onboard only
+  // when the deployment explicitly enables it. Production V1 leaves this disabled.
+  if (allowAutoOnboard && serverPlatform && AUTO_SUPPORT_PLATFORMS.has(serverPlatform) && inputHost) {
     const clientSiteName = (fingerprints || {}).siteName;
-    const created = await autoOnboardDealer({ inputHost, hosts, siteInfo, platform, clientSiteName }, db);
+    const created = await autoOnboardDealer({ inputHost, hosts, siteInfo, platform: serverPlatform, clientSiteName }, db);
     if (created) {
-      return { supported: true, dealership: created, normalizedDomain: inputHost, autoOnboarded: true };
+      return {
+        supported: true,
+        dealership: created,
+        normalizedDomain: inputHost,
+        autoOnboarded: true,
+        claimed: false
+      };
     }
   }
 
@@ -136,12 +173,15 @@ async function autoOnboardDealer({ inputHost, hosts, siteInfo, platform, clientS
   }
 }
 
-// link: only supported dealerships; one per user (user_dealerships PK enforces it).
+// Personal link: only supported dealerships; one per user (user_dealerships PK enforces it).
+// Organization ownership is a separate workspace boundary, not an exclusive lock on independent
+// salespeople. A claimed rooftop may therefore have both an organization and self-paid personal
+// users without sharing billing, seats, permissions, or statistics.
 // Switching to a DIFFERENT dealership is allowed only while the account has NO live paid
 // subscription (active/trialing) — once the user has paid, the dealership the subscription
 // was sold for is locked; changing it is a support/admin action (/api/admin/link|unlink).
 // Expired/canceled subscriptions may switch (they pay again on renewal).
-export async function linkDealer(userId, dealershipId, db = pool) {
+export async function linkDealer(userId, dealershipId, db = pool, _options = {}) {
   const { rows } = await db.query('select id, status from dealerships where id = $1', [dealershipId]);
   if (!rows.length) { const e = new Error('unknown dealership'); e.status = 404; throw e; }
   if (rows[0].status !== 'supported') { const e = new Error('dealership not supported'); e.status = 400; throw e; }

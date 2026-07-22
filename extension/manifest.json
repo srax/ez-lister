@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "CarXprt Lightning Lister",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "List dealership inventory to Facebook Marketplace in one click.",
   "minimum_chrome_version": "114",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAh+/v+3hk+JNqIWhqlLjdp+eHTbPlYuei4l9U8kpuN5qcBi/k5BW0L0b5rSrcbf7v+ruqbadpV1/TjB355MEXnijEoENxN9Y3X5hlqrvbt2PAT8jG8TSrzuRTa5fQ/hRugkecJLBwFfXjuWQlArQljMAsqfpHEFqFcgrdAsUys0Z9rxIocgPxOGzRkQ5lW5ajzSVZUZPdlRjGQmPkXE7Tl9sKJNy3gp5vKJQ3pEW3S2hy0a1gXHtv8C80/KXtDVg4dPC+lzXNPB691ZBQjqySFYiQ+q6hFE7qphcI2fqFUuykcuMAsaXrYwkdDzri3kmzH48xJAFBfGpWBmw2brBSowIDAQAB",
   "permissions": [
     "storage",
     "sidePanel",
+    "activeTab",
     "identity",
     "alarms",
     "scripting"
@@ -17,6 +18,10 @@
   ],
   "host_permissions": [
     "https://www.alexandriatoyota.com/*",
+    "https://*.vlautosales.com/*",
+    "https://*.keithsautosales.com/*",
+    "https://*.carsforsale.com/*",
+    "https://photos.autocorner.com/*",
     "https://*.facebook.com/*",
     "https://post.craigslist.org/*",
     "http://127.0.0.1:3737/*",
@@ -47,7 +52,9 @@
   "content_scripts": [
     {
       "matches": [
-        "https://www.alexandriatoyota.com/*"
+        "https://www.alexandriatoyota.com/*",
+        "https://*.vlautosales.com/*",
+        "https://*.keithsautosales.com/*"
       ],
       "js": [
         "lib/mappers.core.js",
@@ -56,6 +63,8 @@
         "lib/extractors/dealeron.js",
         "lib/extractors/dealercom.js",
         "lib/extractors/dealerinspire.js",
+        "lib/extractors/carsforsale.js",
+        "lib/extractors/autocorner.js",
         "lib/extractors/generic.js",
         "dealerContent.js"
       ],

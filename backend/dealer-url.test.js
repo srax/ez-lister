@@ -66,3 +66,33 @@ test('candidateHosts: input + final host, deduped', async () => {
   assert.equal(inputHost, 'foo.com');
   assert.deepEqual(hosts, ['foo.com', 'www.foo.com']);
 });
+
+// ---- hostMatchesDomains: pins listings/probes to a dealership's own domains ----
+import { hostMatchesDomains } from './dealer-url.js';
+
+test('hostMatchesDomains: exact aliases and www/apex equivalence', () => {
+  const domains = ['www.alexandriatoyota.com', 'alexandriatoyota.com'];
+  assert.equal(hostMatchesDomains('www.alexandriatoyota.com', domains), true);
+  assert.equal(hostMatchesDomains('alexandriatoyota.com', domains), true);
+  assert.equal(hostMatchesDomains('ALEXANDRIATOYOTA.COM', domains), true); // case-insensitive
+  assert.equal(hostMatchesDomains('alexandriatoyota.com.', domains), true); // trailing dot
+});
+
+test('hostMatchesDomains: subdomains of a www-stripped alias match (inventory subdomain gap)', () => {
+  assert.equal(hostMatchesDomains('inventory.alexandriatoyota.com', ['www.alexandriatoyota.com']), true);
+  assert.equal(hostMatchesDomains('m.alexandriatoyota.com', ['alexandriatoyota.com']), true);
+});
+
+test('hostMatchesDomains: lookalike domains never match (dot boundary required)', () => {
+  assert.equal(hostMatchesDomains('evil-alexandriatoyota.com', ['alexandriatoyota.com']), false);
+  assert.equal(hostMatchesDomains('alexandriatoyota.com.evil.com', ['alexandriatoyota.com']), false);
+  assert.equal(hostMatchesDomains('notalexandriatoyota.com', ['www.alexandriatoyota.com']), false);
+});
+
+test('hostMatchesDomains: empty/garbage input is false, never throws', () => {
+  assert.equal(hostMatchesDomains('', ['x.com']), false);
+  assert.equal(hostMatchesDomains(null, ['x.com']), false);
+  assert.equal(hostMatchesDomains('x.com', []), false);
+  assert.equal(hostMatchesDomains('x.com', null), false);
+  assert.equal(hostMatchesDomains('x.com', [null, '', 'x.com']), true);
+});

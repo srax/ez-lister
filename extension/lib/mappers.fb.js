@@ -80,7 +80,27 @@
   };
   const mapTransmission = (raw) => (/manual/i.test(raw || '') ? 'Manual transmission' : 'Automatic transmission');
 
-  const api = { mapColor, mapBody, mapFuel, mapTransmission, optionCandidates };
+  // ---- publish-navigation judgement (Option A: never wrongly green) ----
+  // After our fill, leaving /marketplace/create/vehicle for the new item / your-listings pages
+  // is unambiguous proof of a publish. Landing on marketplace HOME is NOT — the form's close
+  // (X) button produces the exact same create→home SPA transition, and counting it once turned
+  // abandoned forms into fake sales in the stats. Home therefore only counts when the user
+  // clicked a Publish button moments before (facebookContent records the click; a click that
+  // does NOT navigate within the window was a failed validation, so a later X-close stays safe).
+  const PUBLISH_CLICK_WINDOW_MS = 15 * 1000;
+  const judgePublishNav = ({ fromCreate, path, publishClickMsAgo = null } = {}) => {
+    if (!fromCreate) return false;
+    const p = String(path || '');
+    if (/\/marketplace\/item\/\d+/.test(p)) return true;
+    if (/\/marketplace\/you(\/|$)/.test(p)) return true;
+    if (/\/marketplace\/selling(\/|$)/.test(p)) return true;
+    if (/\/marketplace\/?$/.test(p)) {
+      return publishClickMsAgo != null && publishClickMsAgo >= 0 && publishClickMsAgo <= PUBLISH_CLICK_WINDOW_MS;
+    }
+    return false;
+  };
+
+  const api = { mapColor, mapBody, mapFuel, mapTransmission, optionCandidates, judgePublishNav, PUBLISH_CLICK_WINDOW_MS };
   root.CarxpertFb = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(globalThis);

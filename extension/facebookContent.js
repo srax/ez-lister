@@ -12,7 +12,8 @@
 (() => {
   const isFacebook = /(\.|^)facebook\.com$/i.test(location.hostname) || /(\.|^)web\.facebook\.com$/i.test(location.hostname);
   if (!isFacebook) return;
-  if (document.getElementById('ezlist-facebook-host')) return;
+  if (globalThis.__carxpertFacebookContentLoaded) return;
+  globalThis.__carxpertFacebookContentLoaded = true;
 
   // ---------- shared DOM primitives (lib/fillkit.js, loaded first per manifest) ----------
   const {
@@ -25,7 +26,7 @@
   // Facebook's value taxonomy (lib/mappers.fb.js, loaded first per manifest); unit-tested
   // in lib/mappers.fb.test.js. Canonical values are the US composer's options;
   // optionCandidates() expands each to [US, UK] so a UK-locale composer still matches.
-  const { mapColor, mapBody, mapFuel, mapTransmission, optionCandidates } = globalThis.CarxpertFb;
+  const { mapColor, mapBody, mapFuel, mapTransmission, optionCandidates, judgePublishNav } = globalThis.CarxpertFb;
 
   // Every FB dropdown fill goes through the locale-candidate expansion (US first, UK second).
   const selectOpt = (name, value) =>
@@ -114,8 +115,13 @@
   // ---------- controller (no injected UI — the Carxpert side panel drives this) ----------
   let filling = false;
   let lastFilledKey = '';   // VIN/stock/url of the draft we filled — attributed to it on a real publish
+  let lastFilledContext = null;
   const isCreatePage = () => /\/marketplace\/create\/vehicle/i.test(location.pathname);
   const draftKey = (d) => d ? ((d.vin || '').toUpperCase() || d.stock || d.sourceUrl || '') : '';
+  const vinKey = (value) => {
+    const candidate = String(value || '').trim().toUpperCase();
+    return /^[A-HJ-NPR-Z0-9]{17}$/.test(candidate) ? candidate : '';
+  };
 
   const postStatus = (text, error) =>
     chrome.runtime.sendMessage({ type: 'EZLIST_FILL_STATUS', text, error: !!error }).catch(() => {});
@@ -124,14 +130,19 @@
     return chrome.runtime.sendMessage({ type: 'EZLIST_GET_DRAFT' });
   }
 
-  async function doFill(expectedKey) {
+  async function doFill(expectedKey, expectedContextKey) {
     if (filling || !isCreatePage()) return;
     filling = true; // claim synchronously so a near-simultaneous EZLIST_FILL + auto-fill can't double-run
     try {
       // Entitlement guard (belt-and-braces; the panel/dealer path gates first). No host —
       // just "is the user entitled to fill"; lease-first with /api/me fallback in the worker.
       const gate = await chrome.runtime.sendMessage({ type: 'EZLIST_CAN_LIST' }).catch(() => null);
-      if (!gate || !gate.ok) { postStatus('Sign in to CarXprt to fill listings.', true); return; }
+      if (!gate || !gate.ok) {
+        postStatus(gate && gate.reason === 'wrong_dealership'
+          ? "This car isn't from your linked dealership — CarXprt only lists your own inventory."
+          : 'Sign in to CarXprt to fill listings.', true);
+        return;
+      }
       const resp = await getStored();
       const draft = resp && resp.ezlistDraft;
       if (!draft) { postStatus('No vehicle draft found.', true); return; }
@@ -141,7 +152,13 @@
         postStatus('Vehicle changed — reopen the car and Fill again.', true);
         return;
       }
+      const draftContextKey = draft._carxpertContext && draft._carxpertContext.key;
+      if (expectedContextKey && draftContextKey && draftContextKey !== expectedContextKey) {
+        postStatus('Workspace changed — reopen the car and Fill again.', true);
+        return;
+      }
       lastFilledKey = draftKey(draft);
+      lastFilledContext = draft._carxpertContext || (resp && resp.ezlistActiveContext) || null;
       postStatus('Filling…');
       await waitForLabel('Vehicle type', 20000);
       const log = await fillForm(draft, (line) => postStatus(line));
@@ -157,6 +174,7 @@
         event: {
           type: 'fill_completed',
           clientKey: lastFilledKey,
+          context: lastFilledContext,
           data: {
             variant,
             lang: document.documentElement.lang || '',
@@ -182,86 +200,109 @@
     const forFb = af === true || (af && af.platform === 'fb');
     if (resp && resp.ezlistDraft && forFb && !filling) {
       chrome.storage.local.set({ ezlistAutoFill: false }); // one-shot; manual reloads won't re-fire
-      doFill();
+      doFill(af && af.key, af && af.contextKey);
     }
   }
 
-  chrome.runtime.onMessage.addListener((msg) => {
-    if (!msg) return;
-    if (msg.type === 'EZLIST_FILL') doFill(msg.key);
+  // Facebook can preserve a draft's visible fields across a page refresh, while this content
+  // script's in-memory vehicle key starts over. Recover attribution from the worker's previous
+  // stored copy or the same validated VIN. That lets a translation/rewrite replace this one field
+  // after a refresh or failed delivery without risking another vehicle.
+  async function recoverFilledVehicle(expectedKey, previousDescription) {
+    if (lastFilledKey || !expectedKey || !previousDescription || !isCreatePage()) return false;
+    await waitForLabel('Description', 3000);
+    const label = getLabel('Description');
+    const input = label && label.querySelector('input, textarea');
+    const comparable = (text) => String(text == null ? '' : text).replace(/\r\n/g, '\n').trim();
+    if (!input) return false;
+    const visibleDescription = comparable(input.value);
+    const expectedVin = vinKey(expectedKey);
+    const samePriorCopy = visibleDescription === comparable(previousDescription);
+    const sameVin = expectedVin && visibleDescription.toUpperCase().includes(expectedVin);
+    // A failed AI/translation delivery updates the stored draft before the page, so after an
+    // extension reload the two descriptions can legitimately differ. The VIN in the still-open
+    // Facebook copy is a stronger vehicle identity check than text equality and lets us recover
+    // without ever accepting another vehicle's composer.
+    if (!samePriorCopy && !sameVin) return false;
+    const resp = await getStored().catch(() => null);
+    const draft = resp && resp.ezlistDraft;
+    if (!draft || draftKey(draft) !== expectedKey) return false;
+    lastFilledKey = expectedKey;
+    lastFilledContext = draft._carxpertContext || (resp && resp.ezlistActiveContext) || null;
+    return true;
+  }
+
+  async function updateDescription(expectedKey, value, previousDescription) {
+    if (!isCreatePage()) return { ok: true, updated: false, reason: 'not_vehicle_form' };
+    // Let an in-progress full fill finish first. Otherwise its older Description step could land
+    // after this edit and overwrite the dealer's newest copy.
+    for (let i = 0; filling && i < 300; i += 1) await sleep(100);
+    if (!lastFilledKey) await recoverFilledVehicle(expectedKey, previousDescription);
+    if (!expectedKey || !lastFilledKey || expectedKey !== lastFilledKey) {
+      return { ok: true, updated: false, reason: 'different_vehicle' };
+    }
+    const result = await fillTextField('Description', String(value == null ? '' : value).slice(0, 1000));
+    return { ok: true, updated: !!result.ok, result };
+  }
+
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (!msg) return false;
+    if (msg.type === 'EZLIST_FILL') doFill(msg.key, msg.contextKey);
     else if (msg.type === 'EZLIST_DRAFT_UPDATED') maybeAutoFill();
+    else if (msg.type === 'EZLIST_UPDATE_DESCRIPTION') {
+      updateDescription(msg.key, msg.description, msg.previousDescription)
+        .then(sendResponse)
+        .catch((error) => sendResponse({ ok: false, updated: false, error: error.message }));
+      return true;
+    }
+    return false;
   });
 
   // ---------- publish detection (Option A: green only on a real publish) ----------
   // Conservative: we only mark a VIN "listed" when, AFTER we filled it, the page leaves
   // /marketplace/create/vehicle for a created-listing or your-listings URL. An abandoned
   // form never produces that transition, so we never mark green on a form the user bailed on.
-  // ezlistListedVins entries are per-platform: { fb?:{listedAt}, craigslist?:{...} }. Legacy
-  // entries were flat { listedAt } (all Facebook) — normalize them so old data reads as { fb }.
-  const listedPlatforms = (entry) => {
-    if (!entry || typeof entry !== 'object') return {};
-    if ('listedAt' in entry) return { fb: { listedAt: entry.listedAt } };
-    return entry;
-  };
-
-  async function markListed(key) {
-    if (!key) return;
-    const s = await chrome.storage.local.get(['ezlistListedVins', 'ezlistListings', 'ezlistDraft']);
-    const listed = s.ezlistListedVins || {};
-    const listings = s.ezlistListings || {};
-    const now = new Date().toISOString();
-    const entry = listedPlatforms(listed[key]);
-    const alreadyGreen = !!entry.fb;
-    const alreadyActive = listings[key] && listings[key].status === 'active';
-    if (alreadyGreen && alreadyActive) return;
-
-    // ezlistListedVins is the source of truth for the dealer-page green button — per platform.
-    // Capture the published URL (we're on /marketplace/item/<id> or /you) for "View listing".
-    if (!alreadyGreen) entry.fb = { listedAt: now, url: location.href };
-    listed[key] = entry;
-
-    // ezlistListings is the richer, stats-facing record. Capture the vehicle fields
-    // from the draft we just filled (keys match unless the user switched cars mid-flow).
-    const d = (s.ezlistDraft && draftKey(s.ezlistDraft) === key) ? s.ezlistDraft : null;
-    const prev = listings[key] || {};
-    listings[key] = {
-      key,
-      vin: (d && d.vin) || prev.vin || (key.length === 17 ? key : undefined),
-      title: (d ? [d.year, d.make, d.model].filter(Boolean).join(' ') : prev.title) || undefined,
-      year: (d && d.year) || prev.year,
-      make: (d && d.make) || prev.make,
-      model: (d && d.model) || prev.model,
-      price: (d && Number(d.price)) || prev.price,
-      sourceUrl: (d && d.sourceUrl) || prev.sourceUrl,
-      platform: 'fb',
-      status: 'active',
-      listedAt: prev.listedAt || now,
-    };
-    await chrome.storage.local.set({ ezlistListedVins: listed, ezlistListings: listings });
-    // Publish event → sync queue; the ezlistListings write above also triggers the listing sync. C5.
-    chrome.runtime.sendMessage({ type: 'EZLIST_ENQUEUE_EVENT', event: { type: 'publish_detected', clientKey: key } }).catch(() => {});
-    postStatus('✓ Listed on Marketplace.');
+  async function markListed(key, context) {
+    if (!key || !context) return;
+    const result = await chrome.runtime.sendMessage({
+      type: 'EZLIST_MARK_LISTED',
+      payload: { key, context, platform: 'fb', url: location.href }
+    }).catch(() => null);
+    if (result && result.ok) postStatus('✓ Listed on Marketplace.');
   }
 
   function installPublishDetection() {
     let lastPath = location.pathname;
+    // Post-publish FB lands on the new item, "your listings", or (observed live 2026-07) plain
+    // marketplace home. Home is ambiguous — the form's close (X) button produces the same
+    // create→home transition — so judgePublishNav accepts it only when a Publish button was
+    // clicked moments before. We OBSERVE the user's click (capture phase, works for keyboard
+    // activation too); we never click Publish ourselves. A Publish click that does NOT navigate
+    // (client-side validation failure) ages out of the window, so a later X-close stays safe.
+    let publishClickAt = null;
+    document.addEventListener('click', (e) => {
+      if (!isCreatePage()) return;
+      const btn = e.target && e.target.closest ? e.target.closest('[role="button"], button') : null;
+      if (!btn) return;
+      const text = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.textContent || '')).trim().toLowerCase();
+      if (/^publish$|(^|\s)publish($|\s)/.test(text)) publishClickAt = Date.now();
+    }, true);
     const check = () => {
       const path = location.pathname;
       if (path === lastPath) return;
       const left = lastPath;
       lastPath = path;
       if (!lastFilledKey) return;
-      // Post-publish FB lands on the new item, "your listings", or (observed live 2026-07)
-      // plain marketplace home. Home is accepted only right after OUR fill (lastFilledKey set):
-      // the create tab is opened directly with no history, so bailing out of the form almost
-      // never produces a create→home SPA transition — publishing does.
-      const published = /\/marketplace\/item\/\d+/.test(path)
-        || /\/marketplace\/you(\/|$)/.test(path)
-        || /\/marketplace\/?$/.test(path)
-        || /\/marketplace\/selling(\/|$)/.test(path);
-      if (published && /\/marketplace\/create\/vehicle/.test(left)) {
-        markListed(lastFilledKey);
+      const published = judgePublishNav({
+        fromCreate: /\/marketplace\/create\/vehicle/.test(left),
+        path,
+        publishClickMsAgo: publishClickAt == null ? null : Date.now() - publishClickAt
+      });
+      if (published) {
+        markListed(lastFilledKey, lastFilledContext);
         lastFilledKey = '';
+        lastFilledContext = null;
+        publishClickAt = null;
       }
     };
     // FB is a SPA; the content script can't hook the page's pushState across worlds,

@@ -1,75 +1,139 @@
-# Chrome Web Store submission — Carxpert Lightning Lister v0.2.1
+# Chrome Web Store submission — CarXprt Lightning Lister v0.3.0
 
-Everything to paste into the dev console (chrome.google.com/webstore/devconsole). The item
-was created (Draft) with ID `nfpnkiknibofeiicekdehonjmpnonaeh` via the one-time
-`--first-upload` zip (key.pem at the zip root — see scripts/build-extension.js). Every
-upload from now on uses the normal keyless build: `npm run build:ext:prod` →
-`dist/carxpert-extension-prod-v<version>.zip`. The ID is fixed for the item's lifetime —
-the backend's OAuth redirect and CORS depend on it staying `nfpn…`.
-The old unlisted "ezlist" item (`ejagn…`) stays untouched; archive it once this is live.
+Use this as the source of truth for the Chrome Web Store dashboard. The existing item ID is
+`nfpnkiknibofeiicekdehonjmpnonaeh`; update uploads use the normal keyless production build:
 
-## Listing
+```sh
+PROD_BACKEND_URL=https://carxpert-tools-backend-production.up.railway.app npm run build:ext:prod
+```
 
-- **Name:** Carxpert Lightning Lister (taken from the manifest `name`, not this doc)
-- **Summary (132 chars max):** List your dealership's inventory to Facebook Marketplace in
-  one click — with AI descriptions, sync, and sales stats.
-- **Category:** Workflow & Planning (or Tools)
-- **Language:** English (US)
+Upload `dist/carxpert-extension-prod-v0.3.0.zip`. Never use `--first-upload` for an update.
+The extension ID is fixed for the item's lifetime, and the backend OAuth redirect and CORS
+configuration depend on it.
+
+## Store listing
+
+- **Name:** CarXprt Lightning Lister
+- **Summary (132 characters max):** Turn dealership inventory into ready-to-review Facebook
+  Marketplace and Craigslist vehicle drafts.
+- **Category:** Tools
+- **Language:** English (United States)
 
 **Description:**
 
-> Carxpert turns hours of re-typing into one click. Browse your dealership's inventory site,
-> hit ⚡ List on any vehicle, and Carxpert fills the Facebook Marketplace "Vehicle for sale"
-> form — photos, price, mileage, colors, description — in your own logged-in Facebook
-> session. You review and click Publish yourself.
+> CarXprt Lightning Lister helps dealership salespeople turn vehicles from supported dealership
+> inventory pages into ready-to-review Facebook Marketplace and Craigslist drafts.
 >
-> • One-click extraction from your dealership website (DealerOn-powered sites supported today)
-> • Accurate form fill: UK/US term mapping, color matching, price validation, up to 20 photos
-> • AI-written descriptions and translations (optional)
-> • Automatic sold detection: when a car leaves your website, your stats update
-> • Sales dashboard: active listings, time-to-sale, inventory value
+> Open a supported inventory page, choose a vehicle, review its details, and fill the destination
+> form in the browser session you already use. CarXprt can transfer the vehicle's photos, price,
+> mileage, VIN, colors, specifications, source link, and description where the destination form
+> supports those fields.
 >
-> Carxpert never auto-publishes and never touches your Facebook credentials. A subscription
-> is required; sign in with Google to get started.
-
-- **Visibility:** Unlisted for the pilot (flip to Public when ready).
+> • Fill Facebook Marketplace and Craigslist vehicle drafts without retyping every field
+> • Review and adjust vehicle details before they are sent to the destination form
+> • Generate or revise an SEO-friendly listing description with your own AI instructions
+> • Translate the current description into Spanish, Urdu, or Farsi
+> • Use miles or kilometers while keeping the selected unit consistent in the listing
+> • Keep a private history of listings and dealership sales activity
+>
+> CarXprt does not collect Facebook credentials and never clicks Publish. You remain responsible
+> for reviewing the completed draft and publishing it yourself. Google sign-in and an active
+> CarXprt subscription are required.
 
 ## Privacy tab
 
-- **Single purpose:** Re-post a car dealership's own vehicle inventory from its dealership
-  website to Facebook Marketplace, with listing tracking and stats.
-- **Privacy policy URL:** `https://carxpert-tools-backend-production.up.railway.app/privacy`
+- **Single purpose:** Help dealership staff transfer vehicle data from supported dealership
+  inventory pages into ready-to-review Facebook Marketplace and Craigslist listing forms, with
+  optional AI-assisted descriptions and private listing history.
+- **Privacy policy URL:**
+  `https://carxpert-tools-backend-production.up.railway.app/privacy`
 
-**Permission justifications:**
+### Permission justifications
 
-- `storage` — caches the vehicle draft, user preferences, and listing history locally so the
-  side panel and form fill work across pages.
-- `sidePanel` — the extension's main UI (vehicle review, description editing, stats) lives in
-  Chrome's side panel.
-- `identity` — Google sign-in for the user's Carxpert account (launchWebAuthFlow); no other
-  account access.
-- `alarms` — periodically flushes queued listing events to the user's account when the
-  service worker was asleep.
-- Host `www.alexandriatoyota.com` — reads vehicle data (VIN, price, specs, photos) from the
-  dealership's own inventory pages to build the listing. V1 supports this pilot dealership;
-  further dealer sites ship in updates.
-- Host `*.facebook.com` — fills the Marketplace "Vehicle for sale" form in the user's session
-  and detects when the user publishes. Never reads credentials; never auto-publishes.
-- Host `carxpert-tools-backend-production.up.railway.app` — the extension's own backend:
-  sign-in, subscription check, listing sync, AI text generation.
+- `storage` — stores the signed-in account state, selected dealership/workspace, vehicle drafts,
+  user preferences, queued synchronization events, and private listing history needed across
+  dealership and destination tabs.
+- `sidePanel` — provides the extension's main interface for vehicle review, AI instructions,
+  translations, listing actions, account controls, and stats.
+- `activeTab` — inspects the dealership tab only after the user invokes CarXprt, so dealership
+  detection can work without permanent access to every site.
+- `identity` — opens the Google sign-in flow and returns a one-time code to this extension. It is
+  not used to access unrelated Google account data.
+- `alarms` — refreshes account entitlement, synchronizes queued listing events, and checks tracked
+  inventory periodically while the MV3 service worker is asleep.
+- `scripting` — registers or injects CarXprt's own packaged dealership content script after the
+  user grants access to a supported dealership host. It does not download or execute remote code.
+- Optional host `https://*/*` — lets the user explicitly grant access to their own supported
+  dealership website when it is not one of the preconfigured pilot hosts. Access is requested for
+  the detected dealership host, not silently granted to all sites.
+- Hosts `www.alexandriatoyota.com`, `*.vlautosales.com`, and `*.keithsautosales.com` — read the
+  dealership's public vehicle inventory fields and photos to prepare a listing draft for the pilot
+  dealerships.
+- Hosts `*.carsforsale.com` and `photos.autocorner.com` — retrieve public vehicle detail or image
+  resources referenced by supported dealership inventory pages.
+- Host `*.facebook.com` — fills the Facebook Marketplace "Vehicle for sale" form in the user's
+  existing session and observes the listing flow for status updates. It never reads Facebook
+  credentials and never clicks Publish.
+- Host `post.craigslist.org` — fills the Craigslist vehicle form in the user's existing session.
+  It never clicks Publish.
+- Host `carxpert-tools-backend-production.up.railway.app` — accesses Carxprt's own backend for
+  sign-in, subscription and dealership access checks, listing synchronization, and AI text
+  generation.
 
-**Data usage disclosures (check exactly these):**
+### Data usage disclosures
 
-- Personally identifiable information: **yes** (email/name via Google sign-in) — used for
-  app functionality, not sold, not shared for unrelated purposes.
-- Authentication information: **no** (Facebook credentials are never accessed).
-- Website content: **yes** (vehicle data from the dealership site) — app functionality only.
-- Everything else (location, web history, user activity, personal communications,
-  financial/health info): **no**.
+Select only the categories the current production package handles:
 
-## Known V1 limitations (roadmap, not blockers)
+- Personally identifiable information: **yes** — Google account name and email are used for
+  account functionality and dealership access.
+- Authentication information: **no** — Carxprt never reads Facebook or Craigslist credentials;
+  the Carxprt bearer session is an application session rather than a password collected from the
+  user.
+- User activity: **yes** — user-initiated listing events and outcomes are recorded to provide
+  private history and dealership stats.
+- Website content: **yes** — public vehicle information and photos are read from supported
+  dealership pages and written to user-selected listing forms.
+- Location, web history, personal communications, financial/payment information, and health
+  information: **no**.
 
-- One dealer host baked in; each new dealership platform/site needs a version bump (until we
-  move dealer hosts to `optional_host_permissions`).
-- Views/leads metrics show "coming soon" (Facebook-side scraping not shipped).
-- Stripe runs in test mode until the live cutover (B4).
+The required limited-use certifications must remain checked. Data is used only to deliver the
+listing/account functionality, is not sold, and is not used for unrelated advertising or lending.
+
+## Distribution and publishing
+
+- `Contains in-app purchases`: **yes** (an active subscription is required).
+- Regions: all regions unless product or legal scope changes.
+- Visibility for the broad launch: **Public**. Use **Unlisted** instead while access is limited to
+  invited pilots.
+- Submit with **deferred publishing**. Approval should stage v0.3.0 without automatically replacing
+  the currently published version; manually publish after the approved build passes a final smoke
+  test.
+
+## Test instructions
+
+The reviewer needs an entitled Carxprt test account because the core workflow is behind Google
+sign-in and subscription checks. Create a dedicated Google reviewer account, grant it an active
+test entitlement and a supported dealership connection, then enter its credentials directly in
+the confidential Chrome Web Store **Test instructions** fields. Never put the password in this
+repository or chat.
+
+Suggested additional instructions:
+
+> 1. Sign in to CarXprt with the reviewer Google account supplied above.
+> 2. The account is already entitled and connected to V&L Auto Sales.
+> 3. Open the supplied public V&L vehicle-detail URL, then click the CarXprt toolbar icon.
+> 4. Select a vehicle and choose Facebook or Craigslist. CarXprt prepares a draft; no listing is
+>    published automatically.
+> 5. If testing Facebook or Craigslist form fill, sign in to that third-party site with your own
+>    reviewer account. Click Fill listing and confirm that fields are populated. Stop before the
+>    site's final Publish/Post action.
+> 6. AI description generation and translation are optional and operate on the selected vehicle's
+>    draft text.
+
+## Release boundary
+
+- Production keeps dealership-organization features disabled until the separate organization,
+  rooftop, role, seat, and billing rollout is approved.
+- Sold/inventory scanning runs only for dealership platforms with a server-side scan adapter;
+  AutoCorner and CarsForSale pilot sites are not scheduled for unsupported scans.
+- The extension fills drafts and stops before every destination's final publish action.

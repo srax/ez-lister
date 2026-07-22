@@ -32,6 +32,22 @@ const RULES = {
   dealerinspire: [
     ['client.hasDealerInspire', 3], // dealerinspire.com assets or [data-vehicle][data-vehicle-vin]
     ['server.bodyMentionsDealerInspire', 3] // "dealerinspire.com" / x-cars-signature in HTML
+  ],
+  // Carsforsale.com dealer websites run the Chassis inventory modules and publish signed vehicle
+  // images from cdn*.carsforsale.com. Either the live module/card signal or the server marker is
+  // sufficient to identify the source adapter.
+  carsforsale: [
+    ['client.hasCarsForSale', 3],
+    ['server.bodyMentionsCarsForSale', 3],
+    ['server.hasChassisInventory', 2]
+  ],
+  // AutoCorner / stockNum Systems. The strongest browser signal is the vendor asset host; the SRP
+  // root corroborates it. Reachable sites also identify themselves in HTML and response assets.
+  autocorner: [
+    ['client.hasAutoCorner', 3],
+    ['client.hasAutoCornerSrp', 2],
+    ['server.bodyMentionsAutoCorner', 3],
+    ['server.hasAutoCornerSrpEndpoint', 1]
   ]
 };
 const MAX_SCORE = Object.fromEntries(
@@ -54,7 +70,10 @@ export function buildEvidence(fingerprints = {}) {
       hasDdcNamespace: pick('ddcNamespace', 'hasDdcNamespace'),
       hasVehicleCardUuid: pick('vehicleCardUuid', 'hasVehicleCardUuid'),
       hasDdcInventoryPath: pick('ddcInventoryPath', 'hasDdcInventoryPath'),
-      hasDealerInspire: pick('diAssets', 'diVehicleData', 'hasDealerInspire')
+      hasDealerInspire: pick('diAssets', 'diVehicleData', 'hasDealerInspire'),
+      hasCarsForSale: pick('carsForSaleAssets', 'carsForSaleCards', 'carsForSaleCdn', 'hasCarsForSale'),
+      hasAutoCorner: pick('autoCornerAssets', 'autoCornerPhotos', 'hasAutoCorner'),
+      hasAutoCornerSrp: pick('autoCornerSrp', 'hasAutoCornerSrp')
     },
     server: {
       bodyMentionsDealerOn: pick('mentionsDealerOn', 'bodyMentionsDealerOn'),
@@ -64,7 +83,11 @@ export function buildEvidence(fingerprints = {}) {
       hasInventoryPhotos: pick('hasInventoryPhotos', 'inventoryPhotos'),
       bodyMentionsDealerDotCom: pick('mentionsDealerDotCom', 'bodyMentionsDealerDotCom'),
       hasDdcInventoryPath: pick('serverDdcInventoryPath', 'hasServerDdcInventoryPath'),
-      bodyMentionsDealerInspire: pick('mentionsDealerInspire', 'bodyMentionsDealerInspire')
+      bodyMentionsDealerInspire: pick('mentionsDealerInspire', 'bodyMentionsDealerInspire'),
+      bodyMentionsCarsForSale: pick('mentionsCarsForSale', 'bodyMentionsCarsForSale'),
+      hasChassisInventory: pick('hasChassisInventory', 'serverChassisInventory'),
+      bodyMentionsAutoCorner: pick('mentionsAutoCorner', 'bodyMentionsAutoCorner'),
+      hasAutoCornerSrpEndpoint: pick('hasAutoCornerSrpEndpoint', 'autoCornerSrpEndpoint')
     }
   };
 }

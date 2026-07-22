@@ -26,6 +26,10 @@
       Stats
       <span id="stats-dot" class="stats-dot" hidden title="Some listings need your attention"></span>
     </button>
+    <button id="team-btn" class="stats-btn" title="Team dashboard" hidden>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      Team
+    </button>
     <button id="account-btn" class="icon-btn" title="Account" hidden>
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
     </button>
@@ -35,12 +39,26 @@
   <div id="account-menu" class="account-menu" hidden>
     <div class="account-email" id="account-email"></div>
     <div class="account-plan" id="account-plan"></div>
+    <button id="acct-team" class="menu-item">Join or set up a team</button>
+    <button id="acct-personal-cancel" class="menu-item" hidden>End personal plan at renewal</button>
     <button id="acct-billing" class="menu-item">Manage billing</button>
     <button id="acct-signout" class="menu-item danger">Sign out</button>
   </div>
 
   <!-- Scrollable body -->
   <main class="body vsl-scroll">
+
+    <div id="workspace-bar" class="workspace-bar" hidden>
+      <div class="workspace-field">
+        <label for="workspace-select">Workspace</label>
+        <select id="workspace-select" class="vsl-sel"></select>
+      </div>
+      <div class="workspace-field">
+        <label for="rooftop-select">Rooftop</label>
+        <select id="rooftop-select" class="vsl-sel"></select>
+      </div>
+      <span id="workspace-seat" class="workspace-seat"></span>
+    </div>
 
     <!-- Current vehicle -->
     <div id="vehicle" class="vehicle empty">
@@ -125,40 +143,30 @@
 
     <div class="divider"></div>
 
-    <!-- Description -->
+    <!-- AI description instructions -->
     <div class="desc-head">
-      <label class="section-label">Listing description</label>
-      <span id="charcount" class="charcount">0 / 1000</span>
+      <label class="section-label" for="ai-instructions">AI description instructions</label>
     </div>
-    <textarea id="desc" class="vsl-in" maxlength="1000" placeholder="Write your listing description, or pick a car to auto-generate it…"></textarea>
-
+    <textarea id="ai-instructions" class="vsl-in" maxlength="800" placeholder="Example: Make it more formal and simple. Use short paragraphs and include the CARFAX link."></textarea>
+    <div class="field-help">SEO friendly</div>
     <button id="ai-draft" class="ghost-btn">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.6L18.5 9 14 11l-2 4.6L10 11 5.5 9 10 7.6 12 3z"/></svg>
-      Draft with A.I.
+      Improve Facebook description
     </button>
 
     <!-- Translate -->
-    <div class="translate-row">
-      <div class="select-wrap grow">
-        <svg class="globe" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9a9caa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z"/></svg>
-        <select id="lang" class="vsl-sel has-icon">
-          <option value="en">English</option>
-          <option value="es">Español (Spanish)</option>
-          <option value="fa">فارسی (Farsi)</option>
-          <option value="ur">اردو (Urdu)</option>
-        </select>
-        <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9a9caa" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+    <div class="translate-block">
+      <div id="lang" class="lang-options" role="radiogroup" aria-label="Translation language">
+        <button class="lang-btn on" type="button" role="radio" aria-checked="true" data-lang="en">English</button>
+        <button class="lang-btn" type="button" role="radio" aria-checked="false" data-lang="es" lang="es">Español</button>
+        <button class="lang-btn" type="button" role="radio" aria-checked="false" aria-label="Farsi" data-lang="fa" lang="fa" dir="rtl">فارسی</button>
+        <button class="lang-btn" type="button" role="radio" aria-checked="false" aria-label="Urdu" data-lang="ur" lang="ur" dir="rtl">اردو</button>
       </div>
-      <button id="translate" class="accent-btn sm">Translate</button>
+      <button id="translate" class="accent-btn translate-btn">Translate</button>
     </div>
 
-    <!-- Toggles -->
+    <!-- Listing options -->
     <div class="toggles">
-      <button class="toggle" id="t-ai">
-        <span class="track"><span class="knob"></span></span>
-        <span class="toggle-label">Auto A.I. description <span class="toggle-hint">drafts on every car pick</span></span>
-      </button>
-      <div class="hairline"></div>
       <button class="toggle" id="t-mileage">
         <span class="track"><span class="knob"></span></span>
         <span class="toggle-label">Add mileage</span>
@@ -175,7 +183,6 @@
     <div id="status" class="status" role="status">Pick a car to get started.</div>
     <div class="foot-actions">
       <button id="fill" class="accent-btn primary" disabled>Fill listing</button>
-      <button id="openfb" class="ghost-btn compact">Open FB form</button>
     </div>
   </footer>
   </div><!-- /#view-lister -->
@@ -306,6 +313,72 @@
     </main>
   </div>
 
+  <!-- Organization team view. The backend filters every metric and member operation to the
+       signed-in member's role and rooftop scope; this view never performs client-side auth. -->
+  <div id="view-team" class="view" hidden>
+    <header class="head stats-head">
+      <button id="team-back" class="icon-btn back-btn" title="Back to lister">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <div class="brand">
+        <div class="brand-name" id="team-name">Team overview</div>
+        <div class="stats-sub" id="team-role"></div>
+      </div>
+      <button id="team-refresh" class="icon-btn" title="Refresh team data">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10M1 14l5.36 4.36A9 9 0 0 0 20.49 15"/></svg>
+      </button>
+    </header>
+    <main class="body vsl-scroll stats-body">
+      <div class="team-filter-row">
+        <label for="team-rooftop">Rooftop</label>
+        <select id="team-rooftop" class="vsl-sel"><option value="">All accessible rooftops</option></select>
+      </div>
+      <div id="team-error" class="gate-err" hidden></div>
+      <div class="stat-grid team-metrics">
+        <div class="stat-tile"><div class="stat-tile-head"><span>Listing actions</span></div><div class="stat-tile-num" id="team-listed">0</div><div class="stat-tile-sub">last 30 days</div></div>
+        <div class="stat-tile"><div class="stat-tile-head"><span>Currently listed</span></div><div class="stat-tile-num" id="team-active">0</div><div class="stat-tile-sub">live inventory</div></div>
+        <div class="stat-tile"><div class="stat-tile-head"><span>Sold at dealership</span></div><div class="stat-tile-num" id="team-sold">0</div><div class="stat-tile-sub">inventory outcome</div></div>
+        <div class="stat-tile"><div class="stat-tile-head"><span>Observed views</span></div><div class="stat-tile-num" id="team-views">—</div><div class="stat-tile-sub" id="team-views-sub">Not available</div></div>
+      </div>
+      <div class="divider"></div>
+      <div class="section-row"><span class="section-label nomargin">Seat capacity</span><button id="team-add-rooftop-toggle" class="ghost-btn compact" type="button" hidden>Add rooftop</button></div>
+      <form id="team-rooftop-form" class="team-invite" hidden>
+        <input id="team-rooftop-url" type="url" placeholder="https://www.yourdealership.com" autocomplete="url" required>
+        <div id="team-rooftop-result" class="team-invite-result" hidden></div>
+        <label id="team-rooftop-attest-row" class="claim-attest" hidden>
+          <input id="team-rooftop-attested" type="checkbox">
+          <span>I am authorized to set up CarXprt for this dealership.</span>
+        </label>
+        <div class="dealer-request-actions"><button id="team-rooftop-cancel" class="ghost-btn compact" type="button">Cancel</button><button id="team-rooftop-submit" class="accent-btn sm" type="submit">Detect dealership</button></div>
+      </form>
+      <div id="team-approved-rooftops" class="team-approved-rooftops" hidden>
+        <div id="team-approved-rooftops-copy" class="team-invite-result"></div>
+        <button id="team-activate-rooftops" class="accent-btn sm" type="button">Activate approved rooftop</button>
+      </div>
+      <div id="team-capacity" class="team-list"></div>
+      <div class="divider"></div>
+      <div class="section-row"><span class="section-label nomargin">People</span><div class="team-section-actions"><button id="team-transfer-accept-toggle" class="ghost-btn compact" type="button">Ownership code</button><button id="team-invite-toggle" class="ghost-btn compact" type="button" hidden>Invite</button></div></div>
+      <form id="team-transfer-form" class="team-invite" hidden>
+        <input id="team-transfer-code" type="text" autocomplete="one-time-code" placeholder="Ownership transfer code" required>
+        <div class="dealer-request-actions"><button id="team-transfer-cancel" class="ghost-btn compact" type="button">Cancel</button><button class="accent-btn sm" type="submit">Accept ownership</button></div>
+        <div id="team-transfer-result" class="team-invite-result" hidden></div>
+      </form>
+      <form id="team-invite-form" class="team-invite" hidden>
+        <input id="team-invite-email" type="email" placeholder="name@dealership.com" required>
+        <select id="team-invite-role" class="vsl-sel"><option value="salesperson">Salesperson</option><option value="manager">Manager</option></select>
+        <select id="team-invite-rooftop" class="vsl-sel" required></select>
+        <div class="dealer-request-actions"><button id="team-invite-cancel" class="ghost-btn compact" type="button">Cancel</button><button class="accent-btn sm" type="submit">Create invite</button></div>
+        <div id="team-invite-result" class="team-invite-result" hidden></div>
+      </form>
+      <div id="team-members" class="team-list"></div>
+      <div id="team-requests-section" hidden>
+        <div class="divider"></div>
+        <div class="section-label">Access requests</div>
+        <div id="team-requests" class="team-list"></div>
+      </div>
+    </main>
+  </div>
+
   <!-- Entitlement gate — covers the panel until signed in + subscribed + dealership-linked.
        One screen per /api/me reason: signed_out → no_dealership → no_subscription → ready.
        Boots VISIBLE in a "checking" state so a signed-out user never sees the app flash. -->
@@ -320,6 +393,12 @@
       <div class="gate-icon" id="gate-icon" aria-hidden="true"><span class="gate-spinner"></span></div>
       <h2 class="gate-title" id="gate-title">One moment…</h2>
       <p class="gate-msg" id="gate-msg">Checking your account.</p>
+      <div class="gate-intents" id="gate-intents" hidden>
+        <button type="button" data-intent="personal"><b>Use CarXprt myself</b><span>One salesperson, one dealership</span></button>
+        <button type="button" data-intent="organization"><b>Set up a dealership</b><span>Team seats, rooftops, and reporting</span></button>
+        <button type="button" data-intent="join"><b>Join an existing team</b><span>Request access from your manager</span></button>
+      </div>
+      <div class="gate-workspaces" id="gate-workspaces" hidden></div>
       <div class="gate-benefits" id="gate-benefits" hidden>
         <div class="gate-benefit">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="#1c1e12" aria-hidden="true"><path d="M13 2L4.5 13.5H11l-1 8.5L19.5 10H13l0-8z"/></svg>
@@ -343,6 +422,14 @@
       <button class="ghost-btn compact gate-secondary" id="gate-secondary" hidden></button>
       <div class="dealer-connect" id="dealer-connect" hidden>
         <div class="dealer-pending" id="dealer-pending" hidden></div>
+        <div class="dealer-candidates" id="dealer-candidates" hidden></div>
+        <form class="dealer-request join-invite" id="join-invite-form" hidden>
+          <label>
+            <span>Invitation code</span>
+            <input id="join-invite-code" type="text" autocomplete="one-time-code" placeholder="Paste the code from your invitation email" required>
+          </label>
+          <button class="accent-btn sm" id="join-invite-submit" type="submit">Accept invitation</button>
+        </form>
         <button class="gate-link" id="dealer-keep" type="button" hidden>Keep current dealership</button>
         <button class="gate-link" id="dealer-switch-toggle" type="button">Not my dealership? Enter your website</button>
         <div class="dealer-url-row" id="dealer-url-row" hidden>
@@ -377,6 +464,12 @@
           </div>
         </form>
       </div>
+      <form id="claim-form" class="dealer-request" hidden>
+        <label><span>Organization name</span><input id="claim-org-name" type="text" placeholder="Stevens Auto Group" maxlength="120" required></label>
+        <div id="claim-rooftops" class="claim-rooftops"></div>
+        <button id="claim-add-rooftop" class="gate-link claim-add-rooftop" type="button">Add another rooftop</button>
+        <label class="claim-attest"><input id="claim-attested" type="checkbox" required><span>I am authorized to set up CarXprt for the selected dealership locations.</span></label>
+      </form>
       <div class="gate-err" id="gate-err" hidden></div>
       <button class="gate-link" id="gate-signout" hidden>Sign out</button>
     </div>
@@ -384,6 +477,9 @@
 
   <script src="lib/mappers.core.js"></script>
   <script src="lib/dealerOutcome.js"></script>
+  <script src="lib/workspaceContext.js"></script>
+  <script src="lib/onboarding.js"></script>
+  <script src="lib/dealerCandidates.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

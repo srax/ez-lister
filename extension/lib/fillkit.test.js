@@ -7,7 +7,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { matchOption, norm } = require('./fillkit.js');
+const { getLabel, matchOption, norm } = require('./fillkit.js');
 
 const opts = (...txts) => txts.map((txt) => ({ el: txt, txt })); // el is irrelevant to matching
 
@@ -16,6 +16,28 @@ test('norm lowercases and trims, tolerates nullish', () => {
   assert.equal(norm(null), '');
   assert.equal(norm(undefined), '');
   assert.equal(norm(2024), '2024');
+});
+
+test('getLabel ignores Facebook textarea mirror text after Description is filled', () => {
+  const originalDocument = global.document;
+  const description = '2014 Nissan Versa Note — call today for a test drive.';
+  const label = {
+    getAttribute: () => null,
+    innerText: 'Description',
+    // Facebook renders two aria-hidden textarea mirrors inside the label. textContent includes
+    // both copies after the first fill even though the visible field name remains Description.
+    textContent: `Description${description}${description}`
+  };
+  global.document = {
+    getElementById: () => null,
+    querySelectorAll: (selector) => selector === 'label' ? [label] : []
+  };
+  try {
+    assert.equal(getLabel('Description'), label);
+  } finally {
+    if (originalDocument === undefined) delete global.document;
+    else global.document = originalDocument;
+  }
 });
 
 test('matchOption: exact match wins over looser tiers', () => {

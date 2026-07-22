@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { isProduction } from '../env.js';
 import * as ai from '../ai.js';
 import { requireUser } from '../mw.js';
-import { isEntitled } from '../entitlement/index.js';
+import { requireEntitled } from '../entitlement/gate.js';
 import { bumpAiUsage } from '../ai-limits.js';
 
 const router = Router();
@@ -41,11 +41,11 @@ function guards(kind) {
   if (AUTH_MODE === 'bearer') {
     return [
       requireUser,
+      requireEntitled,
       async (req, res, next) => {
         try {
-          const ent = await isEntitled(req.user.id);
-          if (!ent.entitled) { res.status(402).json({ ok: false, error: 'subscription required', reason: ent.reason }); return; }
-          const usage = await bumpAiUsage(req.user.id, kind);
+          const dealershipId = req.get('x-carxpert-dealership-id') || (req.body && req.body.dealershipId) || null;
+          const usage = await bumpAiUsage(req.user.id, kind, undefined, dealershipId);
           if (usage.limited) { res.status(429).json({ ok: false, error: `daily ${kind} limit reached` }); return; }
           next();
         } catch (err) { next(err); }

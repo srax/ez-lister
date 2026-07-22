@@ -10,3 +10,7 @@ export const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STR
 export function stripeConfigured() {
   return Boolean(stripe && process.env.STRIPE_PRICE_ID);
 }
+
+export function organizationStripeConfigured() {
+  return Boolean(stripe && process.env.STRIPE_DEALERSHIP_PRICE_ID);
+}

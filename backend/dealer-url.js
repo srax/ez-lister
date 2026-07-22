@@ -32,6 +32,23 @@ export function isBlockedHost(host) {
   return BLOCKED_HOST_RE.test(host || '');
 }
 
+// Does `host` belong to one of a dealership's alias domains? Exact match, or a dot-boundary
+// subdomain of a www-stripped alias — 'inventory.dealer.com' matches alias 'www.dealer.com',
+// while a lookalike 'evil-dealer.com' can never match (the '.' boundary is required). Used to
+// pin a listing's source_url (and probe targets) to the dealership it claims to come from.
+export function hostMatchesDomains(host, domains) {
+  const h = String(host || '').toLowerCase().replace(/\.$/, '');
+  if (!h) return false;
+  for (const d of domains || []) {
+    const alias = String(d || '').toLowerCase().replace(/\.$/, '');
+    if (!alias) continue;
+    if (h === alias) return true;
+    const apex = alias.replace(/^www\./, '');
+    if (h === apex || h.endsWith(`.${apex}`)) return true;
+  }
+  return false;
+}
+
 // Follow redirects (max 3, GET, ~5s timeout, http(s) only) and return the FINAL host.
 // Best-effort: any network/parse failure falls back to the last known host. Injectable
 // fetchImpl for tests.

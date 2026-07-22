@@ -32,6 +32,8 @@
   const clmap = globalThis.CarxpertCl;
 
   const IMG_FILE_SEL = 'input[type="file"][accept*="image"]';
+  const FLOW_STORE = 'ezlistMarketplaceFlows';
+  const flowId = () => `craigslist:${location.pathname}`;
   const isImagesPage = () => !!(document.querySelector('section.editimage') || document.querySelector('.imgcount') || document.querySelector(IMG_FILE_SEL));
 
   // ---- validated field selectors (by name) ----
@@ -128,9 +130,21 @@
   const postStatus = (text, error) =>
     chrome.runtime.sendMessage({ type: 'EZLIST_FILL_STATUS', text, error: !!error }).catch(() => {});
 
-  async function getDraft() {
-    const resp = await chrome.runtime.sendMessage({ type: 'EZLIST_GET_DRAFT' }).catch(() => null);
+  async function getDraft(context) {
+    const resp = await chrome.runtime.sendMessage({ type: 'EZLIST_GET_DRAFT', context: context || null }).catch(() => null);
     return resp && resp.ezlistDraft;
+  }
+
+  async function getFlow() {
+    const flows = (await chrome.storage.local.get(FLOW_STORE))[FLOW_STORE] || {};
+    return flows[flowId()] || null;
+  }
+
+  async function setFlow(value) {
+    const flows = (await chrome.storage.local.get(FLOW_STORE))[FLOW_STORE] || {};
+    if (value) flows[flowId()] = value;
+    else delete flows[flowId()];
+    await chrome.storage.local.set({ [FLOW_STORE]: flows });
   }
 
   async function doFill() {
@@ -138,7 +152,16 @@
     filling = true;
     try {
       const gate = await chrome.runtime.sendMessage({ type: 'EZLIST_CAN_LIST' }).catch(() => null);
-      if (!gate || !gate.ok) { setBtn('Sign in to CarXprt to fill'); postStatus('Sign in to CarXprt to fill listings.', true); return; }
+      if (!gate || !gate.ok) {
+        if (gate && gate.reason === 'wrong_dealership') {
+          setBtn('Not your dealership');
+          postStatus("This car isn't from your linked dealership — CarXprt only lists your own inventory.", true);
+        } else {
+          setBtn('Sign in to CarXprt to fill');
+          postStatus('Sign in to CarXprt to fill listings.', true);
+        }
+        return;
+      }
       const draft = await getDraft();
       if (!draft) { setBtn('No car — List one first'); postStatus('No vehicle draft found — List a car first.', true); return; }
       setBtn('Filling…');
@@ -148,23 +171,31 @@
       log.forEach((r) => postStatus(`${r.ok ? '✓' : '•'} ${r.name}: ${r.msg}`));
       chrome.runtime.sendMessage({
         type: 'EZLIST_ENQUEUE_EVENT',
-        event: { type: 'fill_completed', clientKey: draftKey(draft), data: { platform: 'craigslist', fields: log.map((r) => ({ name: r.name, ok: r.ok, msg: r.msg })) } }
+        event: {
+          type: 'fill_completed',
+          clientKey: draftKey(draft),
+          context: draft._carxpertContext || null,
+          data: { platform: 'craigslist', fields: log.map((r) => ({ name: r.name, ok: r.ok, msg: r.msg })) }
+        }
       }).catch(() => {});
       // Hand off to the images step (photos auto-attach there), and record this post as in-flight
       // so publish-detection can attribute the eventual publish to this car across CL's page loads.
       const clKey = draftKey(draft);
+      const flow = {
+        key: clKey, platform: 'craigslist', path: location.pathname, step: 'form',
+        context: draft._carxpertContext || null,
+        meta: {
+          title: [draft.year, draft.make, draft.model].filter(Boolean).join(' '),
+          year: draft.year, make: draft.make, model: draft.model,
+          price: Number(draft.price) || undefined, vin: draft.vin,
+          sourceUrl: draft.sourceUrl,
+          context: draft._carxpertContext || null
+        }
+      };
+      await setFlow(flow);
       chrome.storage.local.set({
         ezlistClPendingPhotos: clKey,
-        ezlistInFlight: {
-          key: clKey, platform: 'craigslist', path: location.pathname, step: 'form',
-          // Vehicle basics so the "Your listings" view can show this car even though CL listings
-          // aren't in the (FB-side) ezlistListings record this phase.
-          meta: {
-            title: [draft.year, draft.make, draft.model].filter(Boolean).join(' '),
-            year: draft.year, make: draft.make, model: draft.model,
-            price: Number(draft.price) || undefined, vin: draft.vin,
-          },
-        },
+        ezlistInFlight: flow,
       }).catch(() => {});
       setBtn(missed.length ? `Filled ✓ · add: ${missed.join(', ')}` : 'Filled ✓ — continue to photos');
       postStatus(missed.length ? `Filled ✓ · add manually: ${missed.join(', ')}` : 'Craigslist filled ✓');
@@ -213,7 +244,8 @@
       // photos the user added), stop here rather than re-uploading the same set.
       const before = imgCount() || 0;
       if (before > 0) { photosAttached = true; setBtn(`✓ ${before} photo${before === 1 ? '' : 's'} already added`); scheduleDismiss(); return; }
-      const draft = await getDraft();
+      const flow = await getFlow();
+      const draft = await getDraft(flow && flow.context);
       const hasUrls = draft && Array.isArray(draft.photoUrls) && draft.photoUrls.length;
       if (!draft || (!hasUrls && !draft.photoBaseUrl)) { setBtn('No photos in draft'); return; }
       setBtn('Fetching photos…');
@@ -298,13 +330,15 @@
   async function maybeShowButton() {
     if (btnEl) return;
     if (isVehicleForm()) {
-      const draft = await getDraft();
+      const flow = await getFlow();
+      const draft = await getDraft(flow && flow.context);
       if (draft) {
         const car = [draft.year, draft.make, draft.model].filter(Boolean).join(' ') || 'this listing';
         ensureButton(`⚡ Fill ${car} with CarXprt`, doFill);
       }
     } else if (isImagesPage()) {
-      const draft = await getDraft();
+      const flow = await getFlow();
+      const draft = await getDraft(flow && flow.context);
       if (draft && (draft.photoBaseUrl || (draft.photoUrls && draft.photoUrls.length))) {
         ensureButton('⚡ Add photos with CarXprt', addPhotos);
       }
@@ -335,8 +369,9 @@
       // never retry — which is why auto-upload previously needed a manual button click.
       if (!document.querySelector(IMG_FILE_SEL)) return; // not ready yet — retry next poll tick
       autoTried = true;
+      const flow = await getFlow();
       const s = await chrome.storage.local.get(['ezlistClPendingPhotos']);
-      if (s.ezlistClPendingPhotos) {
+      if (flow || s.ezlistClPendingPhotos) {
         await chrome.storage.local.set({ ezlistClPendingPhotos: false }); // one-shot
         addPhotos();
       }
@@ -349,62 +384,45 @@
   // PUBLISH lands on the SAME path with NO ?s param. We persist the in-flight car + last step
   // across those loads; when we hit the bare path having last seen ?s=preview, that car published.
   // Conservative like Facebook: only greens on a real preview→publish transition, never on fill.
-  const listedPlatforms = (entry) => {
-    if (!entry || typeof entry !== 'object') return {};
-    if ('listedAt' in entry) return { fb: { listedAt: entry.listedAt } };
-    return entry;
-  };
-
   async function markPublished(key, meta) {
-    if (!key) return;
-    const s = await chrome.storage.local.get(['ezlistListedVins', 'ezlistListings']);
-    const listed = s.ezlistListedVins || {};
-    const entry = listedPlatforms(listed[key]);
-    if (entry.craigslist) return; // already recorded
+    if (!key || !meta || !meta.context) return;
     const now = new Date().toISOString();
     // "View listing" URL = the post-manage page: /manage/<hash1> derived from /k/<hash1>/<hash2>.
     const h1 = (location.pathname.match(/^\/k\/([^/]+)/) || [])[1];
     const url = h1 ? `https://post.craigslist.org/manage/${h1}` : undefined;
-    // Store the vehicle basics + manage URL alongside the timestamp so the listings view can
-    // render this car and open it later.
-    entry.craigslist = { listedAt: now, ...(meta || {}), url };
-    listed[key] = entry;
-    // Also write the canonical stats record (like Facebook's markListed does) so a CL-only car
-    // syncs to the server on publish — the per-platform child rows need a parent listing row.
-    const listings = s.ezlistListings || {};
-    const prev = listings[key] || {};
-    listings[key] = {
-      key,
-      vin: (meta && meta.vin) || prev.vin || (key.length === 17 ? key : undefined),
-      title: (meta && meta.title) || prev.title || undefined,
-      year: (meta && meta.year) || prev.year,
-      make: (meta && meta.make) || prev.make,
-      model: (meta && meta.model) || prev.model,
-      price: (meta && meta.price != null) ? Number(meta.price) : prev.price,
-      sourceUrl: prev.sourceUrl,
-      platform: prev.platform || 'craigslist',
-      status: 'active',
-      listedAt: prev.listedAt || now,
-    };
-    await chrome.storage.local.set({ ezlistListedVins: listed, ezlistListings: listings });
-    chrome.runtime.sendMessage({ type: 'EZLIST_ENQUEUE_EVENT', event: { type: 'publish_detected', clientKey: key, data: { platform: 'craigslist' } } }).catch(() => {});
-    postStatus('✓ Listed on Craigslist.');
+    const result = await chrome.runtime.sendMessage({
+      type: 'EZLIST_MARK_LISTED',
+      payload: {
+        key,
+        context: meta.context,
+        platform: 'craigslist',
+        listedAt: now,
+        url,
+        meta
+      }
+    }).catch(() => null);
+    if (result && result.ok) postStatus('✓ Listed on Craigslist.');
   }
 
   async function trackStepAndPublish() {
     const s = await chrome.storage.local.get(['ezlistInFlight']);
-    const inf = s.ezlistInFlight;
+    const inf = await getFlow() || s.ezlistInFlight;
     if (!inf || inf.platform !== 'craigslist') return;
     if (location.pathname !== inf.path) return; // a different post — ignore
     const step = new URLSearchParams(location.search).get('s'); // edit | editimage | preview | null
     const known = { edit: 'form', editimage: 'images', preview: 'preview' };
     if (step && known[step]) {
-      if (inf.step !== known[step]) { inf.step = known[step]; chrome.storage.local.set({ ezlistInFlight: inf }).catch(() => {}); }
+      if (inf.step !== known[step]) {
+        inf.step = known[step];
+        setFlow(inf).catch(() => {});
+        chrome.storage.local.set({ ezlistInFlight: inf }).catch(() => {});
+      }
       return;
     }
     // Bare path (no ?s): a publish only if the last step we recorded for this post was the preview.
     if (!step && inf.step === 'preview') {
       await markPublished(inf.key, inf.meta);
+      await setFlow(null);
       chrome.storage.local.set({ ezlistInFlight: null }).catch(() => {});
     }
   }

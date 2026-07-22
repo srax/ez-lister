@@ -6,7 +6,7 @@ import { linkDealer } from './dealerships.js';
 //  - fresh link inserts; re-linking the same dealership is a no-op
 //  - switching is allowed while there is NO live subscription (expired/canceled included)
 //  - switching is 409 dealership_locked while an active/trialing subscription is live
-function fakeDb({ dealershipStatus = 'supported', existingDealerId = null, subRow = null } = {}) {
+function fakeDb({ dealershipStatus = 'supported', existingDealerId = null, subRow = null, claimed = false } = {}) {
   const writes = [];
   return {
     writes,
@@ -14,6 +14,9 @@ function fakeDb({ dealershipStatus = 'supported', existingDealerId = null, subRo
       const q = sql.replace(/\s+/g, ' ').trim().toLowerCase();
       if (q.includes('from dealerships')) return { rows: [{ id: 'd-new', status: dealershipStatus }] };
       if (q.includes('from user_dealerships')) return { rows: existingDealerId ? [{ dealership_id: existingDealerId }] : [] };
+      if (q.includes('from organization_rooftops')) {
+        return { rows: claimed ? [{ organization_id: 'org-1', status: 'active' }] : [] };
+      }
       if (q.includes('from "subscription"')) return { rows: subRow ? [subRow] : [] };
       if (q.startsWith('update user_dealerships')) { writes.push('update'); return { rows: [] }; }
       if (q.startsWith('insert into user_dealerships')) { writes.push('insert'); return { rows: [] }; }
@@ -63,4 +66,23 @@ test('switch LOCKED while a live subscription exists (409 dealership_locked)', a
 test('live subscription with no periodEnd also locks', async () => {
   const db = fakeDb({ existingDealerId: 'd-old', subRow: { periodEnd: null } });
   await assert.rejects(() => linkDealer('u1', 'd-new', db), (e) => e.reason === 'dealership_locked');
+});
+
+test('personal links remain independent when an organization has claimed the dealership', async () => {
+  const fresh = fakeDb({ claimed: true });
+  const linked = await linkDealer('u1', 'd-new', fresh, { enforceClaims: true });
+  assert.equal(linked.linked, true);
+  assert.deepEqual(fresh.writes, ['insert']);
+
+  const switching = fakeDb({ existingDealerId: 'd-old', claimed: true });
+  const switched = await linkDealer('u1', 'd-new', switching, { enforceClaims: true });
+  assert.equal(switched.switched, true);
+  assert.deepEqual(switching.writes, ['update']);
+});
+
+test('an existing same-dealership personal link remains valid after a team claim', async () => {
+  const db = fakeDb({ existingDealerId: 'd-new', claimed: true });
+  const result = await linkDealer('u1', 'd-new', db, { enforceClaims: true });
+  assert.deepEqual(result, { linked: true, dealershipId: 'd-new' });
+  assert.deepEqual(db.writes, []);
 });

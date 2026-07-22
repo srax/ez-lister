@@ -21,11 +21,23 @@ const DEALERCOM_HTML = `<html><head><title>Chevy of Attleboro</title></head><bod
 <div class="ddc-content"></div>
 </body></html>`;
 
+const CARSFORSALE_HTML = `<html><head><title>V &amp; L Auto Sales</title>
+<script src="/_content/Chassis.Modules.Inventory/app/InventoryDetails.min.js"></script></head><body>
+<a href="/Inventory/Details/529a34e5-ed99-4496-b143-246af6ad8799">Vehicle</a>
+<footer>Powered by Carsforsale.com</footer></body></html>`;
+
+const AUTOCORNER_HTML = `<html><head><title>Keith's Auto Sales</title>
+<script src="https://js-include.autocorner.com/javascript/srp.js"></script></head><body>
+<div x-data="alpineInventoryHandler()"></div>
+<script>fetch('/cgi-bin/srp_vehicles.cgi')</script><footer>stockNum Systems</footer></body></html>`;
+
 test('evidenceFromHtml: DealerOn markers all detected (Dealer.com markers stay off)', () => {
   const e = evidenceFromHtml(DEALERON_HTML);
   assert.deepEqual(e, {
     mentionsDealerOn: true, hasSitemapAspx: true, hasSearchNew: true, hasSearchUsed: true, hasInventoryPhotos: true,
-    mentionsDealerDotCom: false, serverDdcInventoryPath: false, mentionsDealerInspire: false
+    mentionsDealerDotCom: false, serverDdcInventoryPath: false, mentionsDealerInspire: false,
+    mentionsCarsForSale: false, hasChassisInventory: false,
+    mentionsAutoCorner: false, hasAutoCornerSrpEndpoint: false
   });
 });
 
@@ -41,6 +53,18 @@ test('evidenceFromHtml: unknown-platform site scores nothing', () => {
   assert.equal(Object.values(e).some(Boolean), false);
 });
 
+test('evidenceFromHtml: Carsforsale Chassis and AutoCorner markers stay isolated', () => {
+  const cars = evidenceFromHtml(CARSFORSALE_HTML);
+  assert.equal(cars.mentionsCarsForSale, true);
+  assert.equal(cars.hasChassisInventory, true);
+  assert.equal(cars.mentionsAutoCorner, false);
+
+  const corner = evidenceFromHtml(AUTOCORNER_HTML);
+  assert.equal(corner.mentionsAutoCorner, true);
+  assert.equal(corner.hasAutoCornerSrpEndpoint, true);
+  assert.equal(corner.mentionsCarsForSale, false);
+});
+
 test('siteNameFromHtml: og:site_name beats title; title is fallback; fallback of last resort', () => {
   assert.equal(siteNameFromHtml(DEALERON_HTML), 'Toyota Direct');
   assert.equal(siteNameFromHtml(OTHER_HTML), 'Some Dealer');
@@ -54,7 +78,7 @@ test('slugFromHost strips www and non-alphanumerics', () => {
 
 // ---- auto-onboard round trip against a fake db + fake fetch ----
 
-function autoDb() {
+function autoDb({ claimed = false } = {}) {
   const dealers = new Map();
   const aliases = new Map();
   return {
@@ -74,6 +98,9 @@ function autoDb() {
       }
       if (q.startsWith('select id from dealerships')) {
         return { rows: dealers.has(params[0]) ? [{ id: params[0] }] : [] };
+      }
+      if (q.includes('from organization_rooftops')) {
+        return { rows: claimed ? [{ organization_id: 'org-1', status: 'active' }] : [] };
       }
       if (q.startsWith('insert into dealerships')) {
         dealers.set(params[0], {
@@ -99,11 +126,22 @@ const fakeFetch = (html) => async (url) => ({
   text: async () => html
 });
 
-test('resolveDealer auto-onboards an unknown DealerOn site', async () => {
+test('resolveDealer keeps an unknown supported-platform site in triage by default', async () => {
   const db = autoDb();
   const r = await resolveDealer(
     { url: 'https://www.toyotadirect.com/' },
     { db, allowNetwork: true, fetchImpl: fakeFetch(DEALERON_HTML) }
+  );
+  assert.equal(r.supported, false);
+  assert.equal(r.detectedPlatform, 'dealeron');
+  assert.equal(db.dealers.size, 0);
+});
+
+test('resolveDealer auto-onboards server-verified DealerOn only with the rollout flag', async () => {
+  const db = autoDb();
+  const r = await resolveDealer(
+    { url: 'https://www.toyotadirect.com/' },
+    { db, allowNetwork: true, fetchImpl: fakeFetch(DEALERON_HTML), allowAutoOnboard: true }
   );
   assert.equal(r.supported, true);
   assert.equal(r.autoOnboarded, true);
@@ -113,7 +151,7 @@ test('resolveDealer auto-onboards an unknown DealerOn site', async () => {
   assert.equal(db.dealers.get('toyotadirect-com').config.sitemapUrl, 'https://www.toyotadirect.com/sitemap.aspx');
 });
 
-test('resolveDealer auto-onboards a Dealer.com site from client fingerprints when the server fetch is Akamai-walled', async () => {
+test('resolveDealer never auto-onboards from client-only platform fingerprints', async () => {
   const db = autoDb();
   // Akamai 403s the backend fetch → no server evidence; only the extension's live-DOM probe reaches us.
   const walled = async () => ({ ok: false, status: 403, url: '', headers: { get: () => null }, text: async () => '' });
@@ -125,16 +163,14 @@ test('resolveDealer auto-onboards a Dealer.com site from client fingerprints whe
         ddcNamespace: true, siteName: 'Chevrolet Buick GMC of Attleboro'
       }
     },
-    { db, allowNetwork: true, fetchImpl: walled }
+    { db, allowNetwork: true, fetchImpl: walled, allowAutoOnboard: true }
   );
-  assert.equal(r.supported, true);
-  assert.equal(r.autoOnboarded, true);
-  assert.equal(r.dealership.platform, 'dealercom');
-  assert.equal(r.dealership.name, 'Chevrolet Buick GMC of Attleboro'); // client probe named the row
-  assert.ok(db.aliases.has('www.attleborochevrolet.com') && db.aliases.has('attleborochevrolet.com'));
+  assert.equal(r.supported, false);
+  assert.equal(r.detectedPlatform, 'dealercom');
+  assert.equal(db.dealers.size, 0);
 });
 
-test('resolveDealer GENERIC-onboards an unrecognized platform that exposes schema.org dealer data', async () => {
+test('resolveDealer never auto-onboards generic schema.org evidence', async () => {
   const db = autoDb();
   const walled = async () => ({ ok: false, status: 403, url: '', headers: { get: () => null }, text: async () => '' });
   const r = await resolveDealer(
@@ -142,23 +178,23 @@ test('resolveDealer GENERIC-onboards an unrecognized platform that exposes schem
       url: 'https://www.classicchevrolet.com/',
       fingerprints: { source: 'extension_manual', host: 'www.classicchevrolet.com', hasSchemaAutoDealer: true, siteName: 'Classic Chevrolet' }
     },
-    { db, allowNetwork: true, fetchImpl: walled }
+    { db, allowNetwork: true, fetchImpl: walled, allowAutoOnboard: true }
   );
-  assert.equal(r.supported, true);
-  assert.equal(r.autoOnboarded, true);
-  assert.equal(r.dealership.platform, 'generic');
-  assert.equal(r.dealership.name, 'Classic Chevrolet');
+  assert.equal(r.supported, false);
+  assert.equal(r.detectedPlatform, 'generic');
+  assert.equal(db.dealers.size, 0);
 });
 
-test('a SPECIFIC platform still wins over generic even when schema.org is also present', async () => {
+test('a specific detected platform still wins over generic triage metadata', async () => {
   const db = autoDb();
   const walled = async () => ({ ok: false, status: 403, url: '', headers: { get: () => null }, text: async () => '' });
   const r = await resolveDealer(
     { url: 'https://x.example.com/', fingerprints: { host: 'x.example.com', ddcNamespace: true, hasSchemaAutoDealer: true, hasSchemaVehicle: true } },
     { db, allowNetwork: true, fetchImpl: walled }
   );
-  assert.equal(r.supported, true);
-  assert.equal(r.dealership.platform, 'dealercom'); // specific detection beats the generic fallback
+  assert.equal(r.supported, false);
+  assert.equal(r.detectedPlatform, 'dealercom'); // specific detection beats the generic fallback
+  assert.equal(db.dealers.size, 0);
 });
 
 test('resolveDealer does NOT generic-onboard a site with no schema.org / platform signal', async () => {
@@ -193,4 +229,17 @@ test('resolveDealer still matches an existing supported dealership first', async
   assert.equal(r.supported, true);
   assert.equal(r.autoOnboarded, undefined);
   assert.equal(r.dealership.id, 'alexandria-toyota');
+});
+
+test('resolveDealer exposes claimed status without exposing the organization identity', async () => {
+  const db = autoDb({ claimed: true });
+  db.dealers.set('alexandria-toyota', { id: 'alexandria-toyota', name: 'Alexandria Toyota', platform: 'dealeron', status: 'supported', config: {} });
+  db.aliases.set('www.alexandriatoyota.com', 'alexandria-toyota');
+  const r = await resolveDealer(
+    { url: 'https://www.alexandriatoyota.com/' },
+    { db, allowNetwork: false, enforceClaims: true }
+  );
+  assert.equal(r.supported, true);
+  assert.equal(r.claimed, true);
+  assert.equal(r.organizationId, undefined);
 });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isPlausibleScan, judgeListing, resolveWithVdp } from './soldScan.js';
+import { dealershipsToScan, isPlausibleScan, judgeListing, resolveWithVdp } from './soldScan.js';
 import { extractVins, fetchRoster, checkVdpAlive } from './adapters/dealeron.js';
 import { isValidVin } from '../vin.js';
 
@@ -19,6 +19,22 @@ function makeVins(n) {
 
 const HOUR = 3600 * 1000;
 const T0 = Date.parse('2026-06-01T00:00:00Z');
+
+test('dealershipsToScan schedules only platforms with an implemented sold-scan adapter', async () => {
+  const calls = [];
+  const db = {
+    async query(sql, params) {
+      calls.push({ sql, params });
+      return { rows: [{ id: 'dealeron-only' }] };
+    }
+  };
+  const rows = await dealershipsToScan(db, { dealeron: async () => ({ ok: true, vins: [] }) });
+  assert.deepEqual(rows, [{ id: 'dealeron-only' }]);
+  assert.match(calls[0].sql, /d\.platform = any\(\$1::text\[\]\)/);
+  assert.deepEqual(calls[0].params, [['dealeron']]);
+  assert.deepEqual(await dealershipsToScan(db, {}), []);
+  assert.equal(calls.length, 1, 'no adapters means no database scan target query');
+});
 
 test('isPlausibleScan: failed scan never counts', () => {
   assert.equal(isPlausibleScan({ ok: false, vinCount: 500, prevCount: 500 }), false);
