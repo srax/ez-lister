@@ -30,7 +30,13 @@ export function evidenceFromHtml(html) {
     serverDdcInventoryPath: /\/(?:used|new|all)-inventory\/index\.htm/i.test(h),
     // Dealer Inspire (Cars.com) — usually Cloudflare-walled, so this is a fallback for the rare
     // reachable case; live detection leans on the client probe.
-    mentionsDealerInspire: /dealerinspire\.com|carscommerce\.inc|data-vehicle-vin/i.test(h)
+    mentionsDealerInspire: /dealerinspire\.com|carscommerce\.inc|data-vehicle-vin/i.test(h),
+    // Carsforsale.com Chassis
+    mentionsCarsForSale: /carsforsale\.com|powered\s+by\s+carsforsale/i.test(h),
+    hasChassisInventory: /Chassis\.Modules\.Inventory|\/Inventory\/Details\//i.test(h),
+    // AutoCorner / stockNum Systems
+    mentionsAutoCorner: /(?:js-include|photos)\.autocorner\.com|powered-by["']?\s*[:=]\s*["']?AutoCorner|stockNum Systems/i.test(h),
+    hasAutoCornerSrpEndpoint: /\/cgi-bin\/srp_vehicles\.cgi|alpineInventoryHandler/i.test(h)
   };
 }
 

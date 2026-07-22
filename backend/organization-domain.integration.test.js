@@ -13,14 +13,17 @@ import {
   acceptInvitation,
   assignSeat,
   createAccessRequest,
+  cancelAccessRequest,
   createInvitation,
   decideAccessRequest,
   getCapacity,
   listAccessRequests,
   listMembers,
   removeMember,
-  setOwnerListingPreference
+  setOwnerListingPreference,
+  updateMemberRole
 } from './organizations.js';
+import { personalToTeamBillingState } from './entitlement/index.js';
 import { changeRooftopCapacity, reconcilePendingCapacity } from './capacity-billing.js';
 import {
   applyScheduledRooftopRemovals,
@@ -43,6 +46,7 @@ const skip = process.env.DATABASE_URL ? false : 'no DATABASE_URL - set it to run
 const users = {
   owner: { id: 'org-test-owner', name: 'Owner', email: 'owner@example.com', emailVerified: true },
   manager: { id: 'org-test-manager', name: 'Manager', email: 'manager@example.com', emailVerified: true },
+  scopeManager: { id: 'org-test-scope-manager', name: 'Scope Manager', email: 'scope-manager@example.com', emailVerified: true },
   salesperson: { id: 'org-test-sales', name: 'Sales', email: 'sales@example.com', emailVerified: true },
   prepay: { id: 'org-test-prepay', name: 'Prepay Sales', email: 'prepay@example.com', emailVerified: true },
   groupOwner: { id: 'org-test-group-owner', name: 'Group Owner', email: 'group@example.com', emailVerified: true }
@@ -104,14 +108,13 @@ test('claim, activation, scoped team access, and serialized seat capacity lifecy
   assert.equal(checkoutBeforePayment.rooftopCount, 2);
   assert.ok(checkoutBeforePayment.reservationExpiresAt instanceof Date);
 
-  // A reserved rooftop is already claimed: employees can queue an access request, but a new
-  // personal account cannot claim the same dealership while the organization checks out.
+  // A reserved rooftop can accept team requests while an independent salesperson can still
+  // choose a personal, self-paid workspace at that same public dealership.
   const prepayRequest = await createAccessRequest(users.prepay, { dealershipId: 'org-test-d1' });
   assert.equal(prepayRequest.status, 'pending');
-  await assert.rejects(
-    linkDealer(users.prepay.id, 'org-test-d1', pool, { enforceClaims: true }),
-    (err) => err.reason === 'dealership_claimed'
-  );
+  assert.equal((await linkDealer(users.prepay.id, 'org-test-d1', pool, { enforceClaims: true })).linked, true);
+  const canceledPrepay = await cancelAccessRequest(users.prepay.id, prepayRequest.id);
+  assert.equal(canceledPrepay.request.status, 'canceled');
 
   await activateOrganizationClaims(organizationId);
   assert.equal((await pool.query(
@@ -162,6 +165,98 @@ test('claim, activation, scoped team access, and serialized seat capacity lifecy
   });
   const managerAccepted = await acceptInvitation(users.manager, managerInvite.token);
   assert.ok(managerAccepted.memberId);
+
+  // Owners can promote/demote an existing member without changing their rooftop scope or
+  // consuming/releasing a listing seat. Managers cannot grant manager authority themselves.
+  await assert.rejects(
+    updateMemberRole(users.manager.id, organizationId, approved.memberId, { role: 'manager' }),
+    (err) => err.reason === 'owner_required'
+  );
+  const promoted = await updateMemberRole(
+    users.owner.id,
+    organizationId,
+    approved.memberId,
+    { role: 'manager' }
+  );
+  assert.equal(promoted.member.role, 'manager');
+  assert.equal(promoted.member.allRooftops, false);
+  assert.equal((await pool.query(
+    `select count(*)::int as count from seat_assignments
+      where member_id=$1 and released_at is null`,
+    [approved.memberId]
+  )).rows[0].count, 1);
+  const demoted = await updateMemberRole(
+    users.owner.id,
+    organizationId,
+    approved.memberId,
+    { role: 'salesperson' }
+  );
+  assert.equal(demoted.member.role, 'salesperson');
+  assert.equal((await pool.query(
+    `select role from member_rooftop_access
+      where member_id=$1 and dealership_id='org-test-d1' and revoked_at is null`,
+    [approved.memberId]
+  )).rows[0].role, 'salesperson');
+
+  const scopeInvite = await createInvitation(users.owner.id, organizationId, {
+    email: users.scopeManager.email,
+    role: 'manager',
+    allRooftops: true,
+    reserveSeat: false
+  });
+  const scopeAccepted = await acceptInvitation(users.scopeManager, scopeInvite.token);
+  // Simulate a rooftop added after this manager received all-rooftop scope: there is no
+  // explicit access row, but the implicit manager grant still allows a seat assignment.
+  await pool.query(
+    `update member_rooftop_access set revoked_at=now()
+      where member_id=$1 and dealership_id='org-test-d2'`,
+    [scopeAccepted.memberId]
+  );
+  await assignSeat(users.owner.id, organizationId, 'org-test-d2', scopeAccepted.memberId);
+  const scopeDemoted = await updateMemberRole(
+    users.owner.id,
+    organizationId,
+    scopeAccepted.memberId,
+    { role: 'salesperson' }
+  );
+  assert.equal(scopeDemoted.member.role, 'salesperson');
+  assert.deepEqual((await pool.query(
+    `select role,revoked_at from member_rooftop_access
+      where member_id=$1 and dealership_id='org-test-d2'`,
+    [scopeAccepted.memberId]
+  )).rows, [{ role: 'salesperson', revoked_at: null }]);
+
+  // A personal subscription is only eligible for end-of-period transition after the same
+  // user has a paid, operational team listing seat. Scheduling cancellation removes the CTA.
+  await pool.query(
+    `insert into "subscription" (
+       id,plan,"referenceId","stripeCustomerId","stripeSubscriptionId",status,
+       "periodStart","periodEnd","cancelAtPeriodEnd"
+     ) values ($1,'carxpert',$2,'cus_personal_test','sub_personal_test','active',
+       now(),now()+interval '1 month',false)`,
+    ['org-test-personal-subscription', users.salesperson.id]
+  );
+  const transition = await personalToTeamBillingState(users.salesperson.id);
+  assert.equal(transition.personal.active, true);
+  assert.equal(transition.teamSeat.active, true);
+  assert.equal(transition.available, true);
+  await pool.query(
+    `update member_rooftop_access set revoked_at=now()
+      where member_id=$1 and dealership_id='org-test-d1'`,
+    [approved.memberId]
+  );
+  assert.equal((await personalToTeamBillingState(users.salesperson.id)).available, false);
+  await pool.query(
+    `update member_rooftop_access set revoked_at=null
+      where member_id=$1 and dealership_id='org-test-d1'`,
+    [approved.memberId]
+  );
+  assert.equal((await personalToTeamBillingState(users.salesperson.id)).available, true);
+  await pool.query(
+    `update "subscription" set "cancelAtPeriodEnd"=true
+      where id='org-test-personal-subscription'`
+  );
+  assert.equal((await personalToTeamBillingState(users.salesperson.id)).available, false);
 
   const d2OnlyUser = {
     id: 'org-test-d2-only',

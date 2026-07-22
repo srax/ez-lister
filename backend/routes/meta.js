@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { isProduction } from '../env.js';
-import { DESCRIBE_MODEL, TRANSLATE_MODEL, TRANSLATE_MODEL_STRONG } from '../ai.js';
+import { DESCRIBE_MODEL, TRANSLATE_MODEL } from '../ai.js';
 
 const router = Router();
 
@@ -15,7 +15,7 @@ router.get('/health', (req, res) => {
     ok: true,
     service: 'carxpert-backend',
     ai: Boolean(process.env.OPENAI_API_KEY),
-    models: { describe: DESCRIBE_MODEL, translate: TRANSLATE_MODEL, translateStrong: TRANSLATE_MODEL_STRONG }
+    models: { describe: DESCRIBE_MODEL, translate: TRANSLATE_MODEL }
   });
 });
 

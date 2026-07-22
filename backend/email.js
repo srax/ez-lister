@@ -161,6 +161,105 @@ export async function notifyOrganizationInvitation(details = {}) {
   }
 }
 
+export function buildOrganizationAccessRequestEmail(details = {}) {
+  const organizationName = String(details.organizationName || 'your dealership team').trim();
+  const dealershipName = String(details.dealershipName || 'your dealership').trim();
+  const requesterName = String(details.requesterName || details.requesterEmail || 'A salesperson').trim();
+  const requesterEmail = String(details.requesterEmail || '').trim();
+  const requestedRole = String(details.requestedRole || 'salesperson').trim();
+  const storeUrl = String(details.storeUrl || '').trim();
+  const subject = `${requesterName} requested access to ${dealershipName} on CarXprt`;
+  const open = storeUrl ? `\nOpen CarXprt: ${storeUrl}` : '';
+  const html = `<h2 style="margin:0 0 8px">New team access request</h2>`
+    + `<p><b>${esc(requesterName)}</b>${requesterEmail ? ` (${esc(requesterEmail)})` : ''} requested ${esc(requestedRole)} access to <b>${esc(dealershipName)}</b> in ${esc(organizationName)}.</p>`
+    + '<p>Open CarXprt and review <b>Team → Access requests</b>. Approval is available only to an authenticated owner or authorized manager.</p>'
+    + (storeUrl ? `<p><a href="${esc(storeUrl)}">Open CarXprt</a></p>` : '');
+  const text = [
+    'New team access request', '',
+    `${requesterName}${requesterEmail ? ` (${requesterEmail})` : ''} requested ${requestedRole} access to ${dealershipName} in ${organizationName}.`,
+    'Open CarXprt and review Team > Access requests. Approval requires an authenticated owner or authorized manager.',
+    open
+  ].filter(Boolean).join('\n');
+  return { subject, html, text };
+}
+
+export async function notifyOrganizationAccessRequest(details = {}) {
+  try {
+    const { subject, html, text } = buildOrganizationAccessRequestEmail(details);
+    return await sendEmail({
+      to: details.recipients || [],
+      subject,
+      html,
+      text,
+      replyTo: details.requesterEmail || undefined
+    });
+  } catch (e) {
+    console.error('[email] notifyOrganizationAccessRequest error', (e && e.message) || e);
+    return { ok: false, error: 'notify error' };
+  }
+}
+
+export function buildOrganizationAccessDecisionEmail(details = {}) {
+  const organizationName = String(details.organizationName || 'your dealership team').trim();
+  const dealershipName = String(details.dealershipName || 'your dealership').trim();
+  const role = String(details.role || 'salesperson').trim();
+  const status = String(details.status || '').trim();
+  const reason = String(details.reason || '').trim();
+  const storeUrl = String(details.storeUrl || '').trim();
+  const approved = status === 'approved';
+  const waiting = status === 'approved_awaiting_capacity';
+  const subject = approved
+    ? `Your CarXprt access to ${dealershipName} was approved`
+    : waiting
+      ? `Your CarXprt access to ${dealershipName} is waiting for a seat`
+      : `Update on your CarXprt access request for ${dealershipName}`;
+  const heading = approved ? 'Team access approved' : waiting ? 'Approved, waiting for a seat' : 'Team access request declined';
+  const message = approved
+    ? `You now have ${role} access to ${dealershipName} in ${organizationName}.`
+    : waiting
+      ? `Your ${role} access to ${dealershipName} in ${organizationName} was approved, but the rooftop has no listing seat available yet. CarXprt will unlock automatically after capacity is added.`
+      : `Your request for ${role} access to ${dealershipName} in ${organizationName} was not approved.${reason ? ` Reason: ${reason}` : ''}`;
+  const html = `<h2 style="margin:0 0 8px">${esc(heading)}</h2><p>${esc(message)}</p>`
+    + (storeUrl ? `<p><a href="${esc(storeUrl)}">Open CarXprt</a></p>` : '');
+  const text = [heading, '', message, storeUrl ? `Open CarXprt: ${storeUrl}` : ''].filter(Boolean).join('\n');
+  return { subject, html, text };
+}
+
+export async function notifyOrganizationAccessDecision(details = {}) {
+  try {
+    const { subject, html, text } = buildOrganizationAccessDecisionEmail(details);
+    return await sendEmail({ to: details.email, subject, html, text });
+  } catch (e) {
+    console.error('[email] notifyOrganizationAccessDecision error', (e && e.message) || e);
+    return { ok: false, error: 'notify error' };
+  }
+}
+
+export function buildOrganizationRoleChangedEmail(details = {}) {
+  const organizationName = String(details.organizationName || 'your dealership team').trim();
+  const role = String(details.role || 'salesperson').trim();
+  const roleLabel = role === 'manager' ? 'Manager' : 'Salesperson';
+  const storeUrl = String(details.storeUrl || '').trim();
+  const subject = `Your CarXprt role in ${organizationName} is now ${roleLabel}`;
+  const message = role === 'manager'
+    ? `An organization owner changed your role in ${organizationName} to Manager. You can review team activity and manage salespeople within your assigned dealership locations.`
+    : `An organization owner changed your role in ${organizationName} to Salesperson. Listing access depends on the dealership seats assigned to you.`;
+  const html = `<h2 style="margin:0 0 8px">Role updated</h2><p>${esc(message)}</p>`
+    + (storeUrl ? `<p><a href="${esc(storeUrl)}">Open CarXprt</a></p>` : '');
+  const text = ['Role updated', '', message, storeUrl ? `Open CarXprt: ${storeUrl}` : ''].filter(Boolean).join('\n');
+  return { subject, html, text };
+}
+
+export async function notifyOrganizationRoleChanged(details = {}) {
+  try {
+    const { subject, html, text } = buildOrganizationRoleChangedEmail(details);
+    return await sendEmail({ to: details.email, subject, html, text });
+  } catch (e) {
+    console.error('[email] notifyOrganizationRoleChanged error', (e && e.message) || e);
+    return { ok: false, error: 'notify error' };
+  }
+}
+
 export function buildOwnershipTransferEmail(details = {}) {
   const organizationName = String(details.organizationName || 'your dealership team').trim();
   const ownerName = String(details.currentOwnerName || 'The current owner').trim();

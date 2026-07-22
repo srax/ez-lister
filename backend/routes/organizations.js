@@ -4,6 +4,7 @@ import { requireOrganizationsEnabled } from '../features.js';
 import {
   acceptInvitation,
   assignSeat,
+  cancelAccessRequest,
   createAccessRequest,
   createInvitation,
   decideAccessRequest,
@@ -15,7 +16,8 @@ import {
   markNotificationRead,
   releaseSeat,
   removeMember,
-  setOwnerListingPreference
+  setOwnerListingPreference,
+  updateMemberRole
 } from '../organizations.js';
 import { requireMembership, requireRooftopAccess } from '../organization-authz.js';
 import { organizationPaidState } from '../entitlement/index.js';
@@ -55,6 +57,12 @@ router.get('/api/access-requests/mine', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+router.delete('/api/access-requests/:requestId', async (req, res, next) => {
+  try {
+    res.json({ ok: true, ...(await cancelAccessRequest(req.user.id, req.params.requestId)) });
+  } catch (err) { next(err); }
+});
+
 router.get('/api/organizations/:organizationId/access-requests', requirePaidOrganization, async (req, res, next) => {
   try {
     res.json({ ok: true, requests: await listAccessRequests(req.user.id, req.params.organizationId) });
@@ -88,6 +96,17 @@ router.post('/api/invitations/accept', async (req, res, next) => {
 router.get('/api/organizations/:organizationId/members', requirePaidOrganization, async (req, res, next) => {
   try {
     res.json({ ok: true, members: await listMembers(req.user.id, req.params.organizationId) });
+  } catch (err) { next(err); }
+});
+
+router.patch('/api/organizations/:organizationId/members/:memberId', requirePaidOrganization, async (req, res, next) => {
+  try {
+    res.json({ ok: true, ...(await updateMemberRole(
+      req.user.id,
+      req.params.organizationId,
+      req.params.memberId,
+      req.body || {}
+    )) });
   } catch (err) { next(err); }
 });
 

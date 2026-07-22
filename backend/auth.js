@@ -11,6 +11,7 @@ import {
   checkoutExpiry,
   reconcileOrganizationStripeEvent
 } from './billing-lifecycle.js';
+import { googleProviderConfig } from './google-auth.js';
 
 // Better Auth instance. Google is the only provider in v1; the bearer plugin lets the
 // extension authenticate every API call with `Authorization: Bearer <session token>`.
@@ -22,12 +23,11 @@ const devExtensionIds = (process.env.EXTENSION_IDS_DEV || '')
 // Configure Google only when creds are present, so the server still boots (and
 // /api/auth/* + the /api/me shell work) before the OAuth client is wired up.
 const socialProviders = {};
-if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
-  socialProviders.google = {
-    clientId: process.env.GOOGLE_CLIENT_ID,
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET
-  };
-}
+const googleProvider = googleProviderConfig(
+  process.env.GOOGLE_CLIENT_ID,
+  process.env.GOOGLE_CLIENT_SECRET
+);
+if (googleProvider) socialProviders.google = googleProvider;
 
 // Stripe billing (billing agent B). Guarded on STRIPE_SECRET_KEY so the server still boots
 // (health + auth shell) before billing env is wired. On the shared live account the plugin

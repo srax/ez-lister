@@ -21,7 +21,7 @@ test('explicit accessible workspace wins', () => {
   assert.equal(selectWorkspace(workspaces, { requestedId: 'missing' }), null);
 });
 
-test('matching organization seat beats a matching grandfathered personal workspace', () => {
+test('matching organization seat is the inferred default over an independent personal workspace', () => {
   const workspaces = [
     { id: 'personal:u', type: 'personal', status: 'active', rooftops: [dealer('d', 'dealer.example')] },
     { id: 'org:o', type: 'organization', status: 'active', rooftops: [dealer('d', 'dealer.example', true)] }

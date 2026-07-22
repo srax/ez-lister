@@ -8,6 +8,7 @@
   "permissions": [
     "storage",
     "sidePanel",
+    "activeTab",
     "identity",
     "alarms",
     "scripting"
@@ -17,6 +18,10 @@
   ],
   "host_permissions": [
     "https://www.alexandriatoyota.com/*",
+    "https://*.vlautosales.com/*",
+    "https://*.keithsautosales.com/*",
+    "https://*.carsforsale.com/*",
+    "https://photos.autocorner.com/*",
     "https://*.facebook.com/*",
     "https://post.craigslist.org/*",
     "http://127.0.0.1:3737/*",
@@ -47,7 +52,9 @@
   "content_scripts": [
     {
       "matches": [
-        "https://www.alexandriatoyota.com/*"
+        "https://www.alexandriatoyota.com/*",
+        "https://*.vlautosales.com/*",
+        "https://*.keithsautosales.com/*"
       ],
       "js": [
         "lib/mappers.core.js",
@@ -56,6 +63,8 @@
         "lib/extractors/dealeron.js",
         "lib/extractors/dealercom.js",
         "lib/extractors/dealerinspire.js",
+        "lib/extractors/carsforsale.js",
+        "lib/extractors/autocorner.js",
         "lib/extractors/generic.js",
         "dealerContent.js"
       ],

@@ -41,6 +41,91 @@ export async function activeSubscription(userId, db = pool, { plan = null } = {}
   return { active: !periodEnd || periodEnd.getTime() > Date.now(), hadRow: true, periodEnd };
 }
 
+// Personal billing remains independent from organization access. Expose enough Stripe-owned
+// state for the extension to offer a safe transition after a real team listing seat is active;
+// never expose customer/subscription identifiers to the client.
+export async function personalSubscriptionState(userId, db = pool) {
+  const { rows } = await db.query(
+    `select status,"periodEnd","cancelAtPeriodEnd","cancelAt","stripeSubscriptionId"
+       from "subscription"
+      where "referenceId"=$1 and plan='carxpert' and status in ('active','trialing')
+      order by ("periodEnd" is null or "periodEnd" > now()) desc,"periodEnd" desc nulls first
+      limit 1`,
+    [userId]
+  );
+  if (!rows.length) {
+    return {
+      active: false,
+      status: null,
+      periodEnd: null,
+      cancelAtPeriodEnd: false,
+      cancelAt: null,
+      stripeSubscriptionId: null
+    };
+  }
+  const row = rows[0];
+  const periodEnd = row.periodEnd ? new Date(row.periodEnd) : null;
+  return {
+    active: !periodEnd || periodEnd.getTime() > Date.now(),
+    status: row.status,
+    periodEnd,
+    cancelAtPeriodEnd: Boolean(row.cancelAtPeriodEnd),
+    cancelAt: row.cancelAt ? new Date(row.cancelAt) : null,
+    stripeSubscriptionId: row.stripeSubscriptionId || null
+  };
+}
+
+export async function activeOrganizationListingSeat(userId, db = pool) {
+  const { rows } = await db.query(
+    `select distinct m."organizationId" as organization_id,s.dealership_id
+       from "member" m
+       join organization_member_profiles mp on mp.member_id=m.id
+       join seat_assignments s on s.organization_id=m."organizationId" and s.member_id=m.id
+       join organization_rooftops r on r.organization_id=s.organization_id
+        and r.dealership_id=s.dealership_id
+      where m."userId"=$1 and mp.status='active' and s.released_at is null
+        and r.status in ('active','past_due','pending_removal')
+        and (
+          mp.role='owner' or mp.all_rooftops=true or exists (
+            select 1 from member_rooftop_access a
+             where a.member_id=m.id and a.organization_id=m."organizationId"
+               and a.dealership_id=s.dealership_id and a.revoked_at is null
+          )
+        )`,
+    [userId]
+  );
+  for (const row of rows) {
+    const paid = await organizationPaidState(row.organization_id, db);
+    if (paid.paid) {
+      return {
+        active: true,
+        organizationId: row.organization_id,
+        dealershipId: row.dealership_id
+      };
+    }
+  }
+  return { active: false, organizationId: null, dealershipId: null };
+}
+
+export function canTransitionPersonalToTeam({ personal, teamSeat } = {}) {
+  return Boolean(personal && personal.active && !personal.cancelAtPeriodEnd
+    && teamSeat && teamSeat.active);
+}
+
+export async function personalToTeamBillingState(userId, db = pool) {
+  const personal = await personalSubscriptionState(userId, db);
+  const teamSeat = personal.active ? await activeOrganizationListingSeat(userId, db) : {
+    active: false,
+    organizationId: null,
+    dealershipId: null
+  };
+  return {
+    personal,
+    teamSeat,
+    available: canTransitionPersonalToTeam({ personal, teamSeat })
+  };
+}
+
 export async function isEntitled(userId, db = pool) {
   const [dealerRes, compRes, sub] = await Promise.all([
     db.query('select 1 from user_dealerships where user_id = $1 limit 1', [userId]),

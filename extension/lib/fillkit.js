@@ -58,6 +58,11 @@
     }
     const al = (l.getAttribute('aria-label') || '').trim();
     if (al) return al;
+    // Facebook's controlled textarea adds aria-hidden mirror nodes inside its <label> after a
+    // value is entered. textContent includes those mirrors, turning the field name into
+    // "Description + full ad + full ad". innerText keeps the visible label only.
+    const visible = (l.innerText || '').trim();
+    if (visible) return visible;
     return (l.textContent || '').trim();
   };
 

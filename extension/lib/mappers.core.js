@@ -50,6 +50,22 @@
     ? `${Math.round(mi * 1.60934).toLocaleString('en-US')} km`
     : `${Number(mi).toLocaleString('en-US')} miles`);
 
+  // Dealership adapters expose one of two photo shapes: modern adapters return concrete
+  // photoUrls, while DealerOn returns a numbered photoBaseUrl. The side panel should render the
+  // same hero photo for both instead of silently supporting only the older shape.
+  function vehiclePhotoCandidates(d) {
+    if (!d) return [];
+    const direct = Array.isArray(d.photoUrls)
+      ? d.photoUrls.map((url) => String(url || '').trim()).filter((url) => /^https?:\/\//i.test(url))
+      : [];
+    const base = /^https?:\/\//i.test(String(d.photoBaseUrl || '').trim())
+      ? String(d.photoBaseUrl).trim()
+      : '';
+    const ext = String(d.photoExt || 'jpg').replace(/^\./, '') || 'jpg';
+    const numbered = base ? [`${base}1.${ext}`, `${base}0.${ext}`, `${base}2.${ext}`] : [];
+    return [...new Set([...direct, ...numbered])];
+  }
+
   function composeDescription(d, prefs) {
     if (!d) return '';
     const p = { emoji: '', unit: 'mi', mileage: true, ...(prefs || {}) };
@@ -90,7 +106,10 @@
     });
   }
 
-  const api = { norm, cleanAttr, plausiblePrice, decodePriceLib, formatDistance, composeDescription, convertDistances };
+  const api = {
+    norm, cleanAttr, plausiblePrice, decodePriceLib, formatDistance, vehiclePhotoCandidates,
+    composeDescription, convertDistances
+  };
   root.CarxpertCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(globalThis);

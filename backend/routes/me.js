@@ -4,6 +4,7 @@ import {
   isEntitled,
   issueLease,
   issueWorkspaceLease,
+  personalToTeamBillingState,
   workspaceEntitlement
 } from '../entitlement/index.js';
 import { getPendingDealerRequest, getUserDealership } from '../dealerships.js';
@@ -17,7 +18,7 @@ const router = Router();
 // `entitled`/`reason` (which step to show) and verifies `lease` locally before paid actions.
 router.get('/api/me', requireUser, async (req, res, next) => {
   try {
-    const [ent, dealership, requestPending, workspaceContext, accessRequests] = await Promise.all([
+    const [ent, dealership, requestPending, workspaceContext, accessRequests, billingTransition] = await Promise.all([
       isEntitled(req.user.id),
       getUserDealership(req.user.id),
       getPendingDealerRequest(req.user.id),
@@ -26,7 +27,8 @@ router.get('/api/me', requireUser, async (req, res, next) => {
         host: req.query.host || null,
         dealershipId: req.query.dealershipId || null
       }),
-      listUserAccessRequests(req.user.id)
+      listUserAccessRequests(req.user.id),
+      personalToTeamBillingState(req.user.id)
     ]);
 
     const workspaceAccess = await workspaceEntitlement(
@@ -72,6 +74,17 @@ router.get('/api/me', requireUser, async (req, res, next) => {
       entitled: workspaceContext.selected ? workspaceAccess.entitled : ent.entitled,
       reason: workspaceContext.selected ? workspaceAccess.reason : ent.reason,
       subscription: workspaceAccess.periodEnd ? { periodEnd: workspaceAccess.periodEnd } : null,
+      personalBilling: {
+        active: billingTransition.personal.active,
+        status: billingTransition.personal.status,
+        periodEnd: billingTransition.personal.periodEnd,
+        cancelAtPeriodEnd: billingTransition.personal.cancelAtPeriodEnd,
+        cancelAt: billingTransition.personal.cancelAt
+      },
+      billingTransition: {
+        available: billingTransition.available,
+        teamSeatActive: billingTransition.teamSeat.active
+      },
       lease
     });
   } catch (err) {

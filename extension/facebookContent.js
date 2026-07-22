@@ -12,7 +12,8 @@
 (() => {
   const isFacebook = /(\.|^)facebook\.com$/i.test(location.hostname) || /(\.|^)web\.facebook\.com$/i.test(location.hostname);
   if (!isFacebook) return;
-  if (document.getElementById('ezlist-facebook-host')) return;
+  if (globalThis.__carxpertFacebookContentLoaded) return;
+  globalThis.__carxpertFacebookContentLoaded = true;
 
   // ---------- shared DOM primitives (lib/fillkit.js, loaded first per manifest) ----------
   const {
@@ -117,6 +118,10 @@
   let lastFilledContext = null;
   const isCreatePage = () => /\/marketplace\/create\/vehicle/i.test(location.pathname);
   const draftKey = (d) => d ? ((d.vin || '').toUpperCase() || d.stock || d.sourceUrl || '') : '';
+  const vinKey = (value) => {
+    const candidate = String(value || '').trim().toUpperCase();
+    return /^[A-HJ-NPR-Z0-9]{17}$/.test(candidate) ? candidate : '';
+  };
 
   const postStatus = (text, error) =>
     chrome.runtime.sendMessage({ type: 'EZLIST_FILL_STATUS', text, error: !!error }).catch(() => {});
@@ -199,10 +204,58 @@
     }
   }
 
-  chrome.runtime.onMessage.addListener((msg) => {
-    if (!msg) return;
+  // Facebook can preserve a draft's visible fields across a page refresh, while this content
+  // script's in-memory vehicle key starts over. Recover attribution from the worker's previous
+  // stored copy or the same validated VIN. That lets a translation/rewrite replace this one field
+  // after a refresh or failed delivery without risking another vehicle.
+  async function recoverFilledVehicle(expectedKey, previousDescription) {
+    if (lastFilledKey || !expectedKey || !previousDescription || !isCreatePage()) return false;
+    await waitForLabel('Description', 3000);
+    const label = getLabel('Description');
+    const input = label && label.querySelector('input, textarea');
+    const comparable = (text) => String(text == null ? '' : text).replace(/\r\n/g, '\n').trim();
+    if (!input) return false;
+    const visibleDescription = comparable(input.value);
+    const expectedVin = vinKey(expectedKey);
+    const samePriorCopy = visibleDescription === comparable(previousDescription);
+    const sameVin = expectedVin && visibleDescription.toUpperCase().includes(expectedVin);
+    // A failed AI/translation delivery updates the stored draft before the page, so after an
+    // extension reload the two descriptions can legitimately differ. The VIN in the still-open
+    // Facebook copy is a stronger vehicle identity check than text equality and lets us recover
+    // without ever accepting another vehicle's composer.
+    if (!samePriorCopy && !sameVin) return false;
+    const resp = await getStored().catch(() => null);
+    const draft = resp && resp.ezlistDraft;
+    if (!draft || draftKey(draft) !== expectedKey) return false;
+    lastFilledKey = expectedKey;
+    lastFilledContext = draft._carxpertContext || (resp && resp.ezlistActiveContext) || null;
+    return true;
+  }
+
+  async function updateDescription(expectedKey, value, previousDescription) {
+    if (!isCreatePage()) return { ok: true, updated: false, reason: 'not_vehicle_form' };
+    // Let an in-progress full fill finish first. Otherwise its older Description step could land
+    // after this edit and overwrite the dealer's newest copy.
+    for (let i = 0; filling && i < 300; i += 1) await sleep(100);
+    if (!lastFilledKey) await recoverFilledVehicle(expectedKey, previousDescription);
+    if (!expectedKey || !lastFilledKey || expectedKey !== lastFilledKey) {
+      return { ok: true, updated: false, reason: 'different_vehicle' };
+    }
+    const result = await fillTextField('Description', String(value == null ? '' : value).slice(0, 1000));
+    return { ok: true, updated: !!result.ok, result };
+  }
+
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (!msg) return false;
     if (msg.type === 'EZLIST_FILL') doFill(msg.key, msg.contextKey);
     else if (msg.type === 'EZLIST_DRAFT_UPDATED') maybeAutoFill();
+    else if (msg.type === 'EZLIST_UPDATE_DESCRIPTION') {
+      updateDescription(msg.key, msg.description, msg.previousDescription)
+        .then(sendResponse)
+        .catch((error) => sendResponse({ ok: false, updated: false, error: error.message }));
+      return true;
+    }
+    return false;
   });
 
   // ---------- publish detection (Option A: green only on a real publish) ----------

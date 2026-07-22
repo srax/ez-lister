@@ -8,7 +8,12 @@ import {
   requireTeamManagement
 } from './organization-authz.js';
 import { createOrganizationNotification, recordOrganizationAudit } from './organization-audit.js';
-import { notifyOrganizationInvitation } from './email.js';
+import {
+  notifyOrganizationAccessDecision,
+  notifyOrganizationAccessRequest,
+  notifyOrganizationInvitation,
+  notifyOrganizationRoleChanged
+} from './email.js';
 
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -25,6 +30,17 @@ function normalizeEmail(value) {
 
 function hashToken(value) {
   return crypto.createHash('sha256').update(String(value)).digest('hex');
+}
+
+export function approvalRole(actorRole, requestedRole, selectedRole = null) {
+  const role = selectedRole || requestedRole || 'salesperson';
+  if (!['manager', 'salesperson'].includes(role)) {
+    throw domainError('invalid approved role', 400, 'invalid_role');
+  }
+  if (actorRole !== 'owner' && role !== 'salesperson') {
+    throw domainError('only owners can approve managers', 403, 'owner_required');
+  }
+  return role;
 }
 
 function publicMember(row) {
@@ -280,10 +296,12 @@ export async function createAccessRequest(user, {
   if (!['manager', 'salesperson'].includes(requestedRole)) {
     throw domainError('invalid requested role', 400, 'invalid_role');
   }
-  return withTransaction(async (tx) => {
+  const result = await withTransaction(async (tx) => {
     const { rows: rooftopRows } = await tx.query(
-      `select r.organization_id
+      `select r.organization_id, o.name as organization_name, d.name as dealership_name
          from organization_rooftops r
+         join "organization" o on o.id=r.organization_id
+         join dealerships d on d.id=r.dealership_id
         where r.dealership_id=$1
           and r.status in ('reserved','active','past_due','suspended','pending_removal')
         for update`,
@@ -303,7 +321,7 @@ export async function createAccessRequest(user, {
         limit 1`,
       [organizationId, dealershipId, user.id]
     );
-    if (open.length) return open[0];
+    if (open.length) return { request: open[0], notification: null };
     const id = crypto.randomUUID();
     const { rows } = await tx.query(
       `insert into organization_access_requests (
@@ -320,7 +338,127 @@ export async function createAccessRequest(user, {
       targetId: id,
       data: { requestedRole }
     }, tx);
-    return rows[0];
+    const { rows: recipients } = await tx.query(
+      `select distinct u.id as user_id,u.email
+         from "member" m
+         join "user" u on u.id=m."userId"
+         left join organization_member_profiles mp on mp.member_id=m.id
+        where m."organizationId"=$1
+          and coalesce(mp.status,'active')='active'
+          and (
+            coalesce(mp.role,case when m.role='owner' then 'owner' else 'salesperson' end)='owner'
+            or ($3='salesperson' and (
+              coalesce(mp.role,case when m.role='owner' then 'owner' else 'salesperson' end)='manager'
+              and (
+                coalesce(mp.all_rooftops,false)=true
+                or exists (
+                  select 1 from member_rooftop_access a
+                   where a.member_id=m.id and a.organization_id=$1
+                     and a.dealership_id=$2 and a.revoked_at is null
+                )
+              )
+            ))
+          )`,
+      [organizationId, dealershipId, requestedRole]
+    );
+    for (const recipient of recipients) {
+      await createOrganizationNotification({
+        userId: recipient.user_id,
+        organizationId,
+        type: 'access_request_received',
+        data: { requestId: id, dealershipId, requestedRole, requesterUserId: user.id }
+      }, tx);
+    }
+    return {
+      request: rows[0],
+      notification: {
+        recipients: recipients.map((row) => row.email).filter(Boolean),
+        organizationName: rooftopRows[0].organization_name,
+        dealershipName: rooftopRows[0].dealership_name
+      }
+    };
+  }, { db, isolation: 'serializable', retries: 2 });
+  if (result.notification) {
+    result.request.delivery = await notifyOrganizationAccessRequest({
+      ...result.notification,
+      requesterName: user.name || user.email,
+      requesterEmail: user.email,
+      requestedRole,
+      storeUrl: process.env.EXTENSION_STORE_URL || ''
+    });
+  }
+  return result.request;
+}
+
+async function releaseAccessRequestProvisioning(request, userId, db) {
+  await db.query(
+    `update seat_reservations set released_at=now()
+      where target_type='access_request' and target_id=$1 and released_at is null`,
+    [request.id]
+  );
+
+  if (request.status !== 'approved_awaiting_capacity') return;
+
+  // An awaiting-capacity request already created a membership and rooftop scope. Withdraw only
+  // that provisional scope; preserve any other rooftop memberships the user legitimately has.
+  const { rows: members } = await db.query(
+    `select id from "member" where "organizationId"=$1 and "userId"=$2 limit 1`,
+    [request.organization_id, userId]
+  );
+  const memberId = members[0] && members[0].id;
+  if (!memberId) return;
+
+  await db.query(
+    `update member_rooftop_access set revoked_at=now()
+      where member_id=$1 and organization_id=$2 and dealership_id=$3 and revoked_at is null`,
+    [memberId, request.organization_id, request.dealership_id]
+  );
+  const { rows: remaining } = await db.query(
+    `select 1 from member_rooftop_access where member_id=$1 and revoked_at is null limit 1`,
+    [memberId]
+  );
+  if (!remaining.length) {
+    await db.query(
+      `update organization_member_profiles set status='removed',removed_at=now(),updated_at=now()
+        where member_id=$1 and role<>'owner'`,
+      [memberId]
+    );
+  }
+}
+
+export async function cancelAccessRequest(userId, requestId, db = pool) {
+  return withTransaction(async (tx) => {
+    const { rows } = await tx.query(
+      `select * from organization_access_requests where id=$1 and user_id=$2 for update`,
+      [requestId, userId]
+    );
+    const request = rows[0];
+    if (!request) throw domainError('access request not found', 404, 'not_found');
+    if (['canceled', 'rejected'].includes(request.status)) return { request, changed: false };
+    if (request.status === 'approved') {
+      throw domainError('team access is already active; leave the team instead', 409, 'membership_active');
+    }
+    if (!['pending', 'approved_awaiting_capacity'].includes(request.status)) {
+      throw domainError('access request cannot be canceled', 409, 'request_not_cancelable');
+    }
+
+    const { rows: canceled } = await tx.query(
+      `update organization_access_requests set status='canceled',updated_at=now()
+        where id=$1 and user_id=$2 returning *`,
+      [requestId, userId]
+    );
+    await releaseAccessRequestProvisioning(request, userId, tx);
+
+    await recordOrganizationAudit({
+      organizationId: request.organization_id,
+      dealershipId: request.dealership_id,
+      actorUserId: userId,
+      action: 'access_request.canceled',
+      targetType: 'access_request',
+      targetId: requestId,
+      reason: 'user chose independent personal access'
+    }, tx);
+    return { request: canceled[0], changed: true };
   }, { db, isolation: 'serializable', retries: 2 });
 }
 
@@ -397,12 +535,16 @@ export async function listAccessRequests(actorUserId, organizationId, db = pool)
 
 export async function decideAccessRequest(actorUserId, organizationId, requestId, {
   approve,
-  reason = null
+  reason = null,
+  role = null
 } = {}, db = pool) {
-  return withTransaction(async (tx) => {
+  const result = await withTransaction(async (tx) => {
     const { rows } = await tx.query(
-      `select * from organization_access_requests
-        where id=$1 and organization_id=$2 for update`,
+      `select r.*,o.name as organization_name,d.name as dealership_name
+         from organization_access_requests r
+         join "organization" o on o.id=r.organization_id
+         join dealerships d on d.id=r.dealership_id
+        where r.id=$1 and r.organization_id=$2 for update of r`,
       [requestId, organizationId]
     );
     const request = rows[0];
@@ -411,8 +553,10 @@ export async function decideAccessRequest(actorUserId, organizationId, requestId
       return { request, changed: false };
     }
     const actor = await requireMembership(actorUserId, organizationId, tx);
-    await requireTeamManagement(actor, request.dealership_id, request.requested_role, tx);
+    const decidedRole = approvalRole(actor.role, request.requested_role, approve ? role : null);
+    await requireTeamManagement(actor, request.dealership_id, decidedRole, tx);
     if (!approve) {
+      await releaseAccessRequestProvisioning(request, request.user_id, tx);
       const { rows: rejected } = await tx.query(
         `update organization_access_requests set status='rejected', reviewed_by=$3,
            reviewed_at=now(), updated_at=now() where id=$1 and organization_id=$2 returning *`,
@@ -433,23 +577,34 @@ export async function decideAccessRequest(actorUserId, organizationId, requestId
         type: 'access_request_rejected',
         data: { dealershipId: request.dealership_id, reason: reason || null }
       }, tx);
-      return { request: rejected[0], changed: true };
+      return {
+        request: rejected[0],
+        changed: true,
+        notification: {
+          email: request.email,
+          organizationName: request.organization_name,
+          dealershipName: request.dealership_name,
+          role: request.requested_role,
+          status: 'rejected',
+          reason
+        }
+      };
     }
 
     const memberId = await ensureMemberForUser({
       organizationId,
       userId: request.user_id,
-      role: request.requested_role
+      role: decidedRole
     }, tx);
     await grantRooftopAccess({
       memberId,
       organizationId,
       dealershipId: request.dealership_id,
-      role: request.requested_role
+      role: decidedRole
     }, tx);
 
     let status = 'approved';
-    if (request.requested_role === 'salesperson') {
+    if (decidedRole === 'salesperson') {
       try {
         await assignSeatLocked({
           organizationId,
@@ -463,9 +618,9 @@ export async function decideAccessRequest(actorUserId, organizationId, requestId
       }
     }
     const { rows: updated } = await tx.query(
-      `update organization_access_requests set status=$3, reviewed_by=$4,
+      `update organization_access_requests set status=$3, reviewed_by=$4,requested_role=$5,
          reviewed_at=now(), updated_at=now() where id=$1 and organization_id=$2 returning *`,
-      [requestId, organizationId, status, actorUserId]
+      [requestId, organizationId, status, actorUserId, decidedRole]
     );
     await recordOrganizationAudit({
       organizationId,
@@ -475,7 +630,7 @@ export async function decideAccessRequest(actorUserId, organizationId, requestId
       targetType: 'access_request',
       targetId: requestId,
       reason,
-      data: { memberId, requestedRole: request.requested_role }
+      data: { memberId, requestedRole: request.requested_role, approvedRole: decidedRole }
     }, tx);
     await createOrganizationNotification({
       userId: request.user_id,
@@ -483,8 +638,27 @@ export async function decideAccessRequest(actorUserId, organizationId, requestId
       type: status === 'approved' ? 'access_request_approved' : 'access_request_waiting',
       data: { dealershipId: request.dealership_id, memberId }
     }, tx);
-    return { request: updated[0], memberId, changed: true };
+    return {
+      request: updated[0],
+      memberId,
+      changed: true,
+      notification: {
+        email: request.email,
+        organizationName: request.organization_name,
+        dealershipName: request.dealership_name,
+        role: decidedRole,
+        status
+      }
+    };
   }, { db, isolation: 'serializable', retries: 2 });
+  if (result.notification) {
+    result.request.delivery = await notifyOrganizationAccessDecision({
+      ...result.notification,
+      storeUrl: process.env.EXTENSION_STORE_URL || ''
+    });
+    delete result.notification;
+  }
+  return result;
 }
 
 export async function activateWaitingRequests(organizationId, dealershipId, db = pool) {
@@ -492,9 +666,11 @@ export async function activateWaitingRequests(organizationId, dealershipId, db =
   for (;;) {
     const result = await withTransaction(async (tx) => {
       const { rows } = await tx.query(
-        `select r.*, m.id as member_id
+        `select r.*,m.id as member_id,o.name as organization_name,d.name as dealership_name
            from organization_access_requests r
            join "member" m on m."organizationId"=r.organization_id and m."userId"=r.user_id
+           join "organization" o on o.id=r.organization_id
+           join dealerships d on d.id=r.dealership_id
           where r.organization_id=$1 and r.dealership_id=$2
             and r.status='approved_awaiting_capacity'
           order by r.reviewed_at nulls last,r.created_at,r.id
@@ -534,9 +710,24 @@ export async function activateWaitingRequests(organizationId, dealershipId, db =
         type: 'access_request_approved',
         data: { dealershipId, memberId: request.member_id }
       }, tx);
-      return { done: false };
+      return {
+        done: false,
+        notification: {
+          email: request.email,
+          organizationName: request.organization_name,
+          dealershipName: request.dealership_name,
+          role: request.requested_role,
+          status: 'approved'
+        }
+      };
     }, { db, isolation: 'serializable', retries: 2 });
     if (result.done) break;
+    if (result.notification) {
+      await notifyOrganizationAccessDecision({
+        ...result.notification,
+        storeUrl: process.env.EXTENSION_STORE_URL || ''
+      });
+    }
     activated += 1;
   }
   return activated;
@@ -848,6 +1039,95 @@ export async function listMembers(actorUserId, organizationId, db = pool) {
     ...row,
     rooftops: rooftopsByMember.get(row.member_id) || []
   }));
+}
+
+export async function updateMemberRole(actorUserId, organizationId, memberId, {
+  role
+} = {}, db = pool) {
+  if (!['manager', 'salesperson'].includes(role)) {
+    throw domainError('invalid role', 400, 'invalid_role');
+  }
+  const result = await withTransaction(async (tx) => {
+    const actor = await requireMembership(actorUserId, organizationId, tx);
+    requireOwner(actor);
+    const target = await getTargetMember(organizationId, memberId, tx, { lock: true });
+    if (!target || target.status !== 'active') {
+      throw domainError('active member not found', 404, 'member_not_found');
+    }
+    if (target.role === 'owner') {
+      throw domainError('transfer ownership instead of changing the owner role', 409, 'owner_transfer_required');
+    }
+    if (target.role === role) return { member: publicMember({ ...target, role }), changed: false, notification: null };
+
+    // all_rooftops is an implicit manager grant. Before removing it, materialize explicit
+    // access for every rooftop where this person currently holds a listing seat. Otherwise a
+    // demotion could leave a paid seat assigned to someone who can no longer select that rooftop.
+    if (role === 'salesperson' && target.all_rooftops) {
+      await tx.query(
+        `insert into member_rooftop_access (
+           member_id,organization_id,dealership_id,role,revoked_at
+         )
+         select $1,$2,s.dealership_id,'salesperson',null
+           from seat_assignments s
+          where s.organization_id=$2 and s.member_id=$1 and s.released_at is null
+         on conflict (member_id,dealership_id) do update set
+           role='salesperson',revoked_at=null,created_at=now()`,
+        [memberId, organizationId]
+      );
+    }
+
+    const { rows: memberRows } = await tx.query(
+      `select u.email,o.name as organization_name
+         from "member" m
+         join "user" u on u.id=m."userId"
+         join "organization" o on o.id=m."organizationId"
+        where m.id=$1 and m."organizationId"=$2`,
+      [memberId, organizationId]
+    );
+    await tx.query(
+      `update organization_member_profiles
+          set role=$2,all_rooftops=case when $2='salesperson' then false else all_rooftops end,
+              updated_at=now()
+        where member_id=$1 and organization_id=$3`,
+      [memberId, role, organizationId]
+    );
+    await tx.query(
+      `update member_rooftop_access set role=$2
+        where member_id=$1 and organization_id=$3 and revoked_at is null`,
+      [memberId, role, organizationId]
+    );
+    await recordOrganizationAudit({
+      organizationId,
+      actorUserId,
+      action: 'member.role_changed',
+      targetType: 'member',
+      targetId: memberId,
+      data: { fromRole: target.role, toRole: role }
+    }, tx);
+    await createOrganizationNotification({
+      userId: target.user_id,
+      organizationId,
+      type: 'member_role_changed',
+      data: { fromRole: target.role, toRole: role }
+    }, tx);
+    return {
+      member: publicMember({ ...target, role, all_rooftops: role === 'salesperson' ? false : target.all_rooftops }),
+      changed: true,
+      notification: {
+        email: memberRows[0] && memberRows[0].email,
+        organizationName: memberRows[0] && memberRows[0].organization_name,
+        role
+      }
+    };
+  }, { db, isolation: 'serializable', retries: 2 });
+  if (result.notification) {
+    result.member.delivery = await notifyOrganizationRoleChanged({
+      ...result.notification,
+      storeUrl: process.env.EXTENSION_STORE_URL || ''
+    });
+    delete result.notification;
+  }
+  return result;
 }
 
 export async function removeMember(actorUserId, organizationId, memberId, {

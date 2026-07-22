@@ -105,6 +105,25 @@ test('formatDistance: miles wording matches the posted description', () => {
   assert.equal(M.formatDistance(146787, 'km'), '236,230 km');
 });
 
+test('vehiclePhotoCandidates supports concrete adapter URLs and DealerOn numbered galleries', () => {
+  assert.deepEqual(M.vehiclePhotoCandidates({
+    photoUrls: [
+      'https://photos.autocorner.com/1024x768/abc123.jpg',
+      'javascript:alert(1)',
+      'https://photos.autocorner.com/1024x768/abc123.jpg'
+    ]
+  }), ['https://photos.autocorner.com/1024x768/abc123.jpg']);
+
+  assert.deepEqual(M.vehiclePhotoCandidates({
+    photoBaseUrl: 'https://cdn.example.com/inventory/VIN/ip/',
+    photoExt: 'webp'
+  }), [
+    'https://cdn.example.com/inventory/VIN/ip/1.webp',
+    'https://cdn.example.com/inventory/VIN/ip/0.webp',
+    'https://cdn.example.com/inventory/VIN/ip/2.webp'
+  ]);
+});
+
 // ---- convertDistances: the mi/km switch rewrites ONLY distance tokens, never the text ----
 test('convertDistances: mi→km converts the template mileage line, all else untouched', () => {
   const out = M.convertDistances('🚗 2012 Chevrolet Tahoe LS\n• Mileage: 146,787 miles\n\nCall us!', 'km');

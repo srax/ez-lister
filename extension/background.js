@@ -1,9 +1,11 @@
 'use strict';
 
-importScripts('lib/runtimeConfig.js', 'lib/lease.js', 'lib/platforms.js', 'lib/inventoryCheck.js', 'lib/workspaceContext.js'); // runtime boundary + lease verifier + platform registry + inventory presence check
+importScripts('lib/runtimeConfig.js', 'lib/lease.js', 'lib/platforms.js', 'lib/inventoryCheck.js', 'lib/workspaceContext.js', 'lib/dealerCandidates.js', 'lib/facebookBridge.js'); // runtime boundary + lease verifier + platform registry + inventory presence check
 
 const { getPlatform } = globalThis.CarxpertPlatforms;
 const WorkspaceContext = globalThis.CarxpertWorkspaceContext;
+const DealerCandidates = globalThis.CarxpertDealerCandidates;
+const FacebookBridge = globalThis.CarxpertFacebookBridge;
 
 const BACKEND_URL = 'http://127.0.0.1:3737';
 // Shared secret for the gated production backend (sent as the x-carxpert-token header).
@@ -17,9 +19,11 @@ const CHECKOUT_SYNC_EVERY_MS = 30 * 1000;
 const WORKSPACE_STORES_KEY = 'ezlistWorkspaceStores';
 const ACTIVE_CONTEXT_KEY = 'ezlistActiveContext';
 const WORKSPACE_SELECTION_KEY = 'ezlistWorkspaceSelection';
+const WORKSPACE_SELECTION_EXPLICIT_KEY = 'ezlistWorkspaceSelectionExplicit';
 let contextSwitching = false;
 let contextPersistTimer = null;
 let contextOperation = Promise.resolve();
+let meRefreshOperation = Promise.resolve();
 
 // The same pinned extension ID is used in local, staging, and production builds. Reconcile the
 // persisted state immediately so a profile switched between builds cannot send a production
@@ -127,6 +131,13 @@ function dispatchMessage(message, sender, sendResponse) {
       fillPlatform(message.platform, message.key).then(sendResponse).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
+    // A description edit after Fill is intentionally narrow: update the stored draft, then ask
+    // matching Facebook create tabs to replace only their Description field. No full refill,
+    // photo upload, navigation, or publish action is involved.
+    case 'EZLIST_UPDATE_DESCRIPTION':
+      updateDescription(message).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
     case 'EZLIST_PREFETCH_IMAGES':
       startFetch(message).catch(() => {}); // warm the cache; result awaited later by FETCH_IMAGES
       sendResponse({ ok: true });
@@ -170,11 +181,11 @@ function dispatchMessage(message, sender, sendResponse) {
       return true;
 
     case 'EZLIST_GET_AUTH':
-      getAuthState({ refresh: message.refresh }).then((auth) => sendResponse({ ok: true, auth })).catch((error) => sendResponse({ ok: false, error: error.message }));
+      getAuthState({ refresh: message.refresh, host: message.host }).then((auth) => sendResponse({ ok: true, auth })).catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
 
     case 'EZLIST_SELECT_CONTEXT':
-      selectWorkspaceContext(message.workspaceId, message.dealershipId)
+      selectWorkspaceContext(message.workspaceId, message.dealershipId, message.explicit !== false)
         .then((auth) => sendResponse({ ok: true, auth }))
         .catch((error) => sendResponse(errorResponse(error)));
       return true;
@@ -187,6 +198,10 @@ function dispatchMessage(message, sender, sendResponse) {
     // instead of the device's last-seen dealer, so a new account can pick its own dealership.
     case 'EZLIST_DETECT_DEALER':
       detectDealer(message.url, { canProbe: !!message.canProbe }).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    case 'EZLIST_DETECT_DEALERS':
+      detectDealerCandidates().then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
       return true;
 
     // Explicit link — only ever called after the user confirms the detected dealership.
@@ -223,6 +238,11 @@ function dispatchMessage(message, sender, sendResponse) {
       postBackend('/api/access-requests', message.payload || {}).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
       return true;
 
+    case 'EZLIST_CANCEL_ACCESS':
+      backendRequest('DELETE', `/api/access-requests/${encodeURIComponent(message.requestId || '')}`)
+        .then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
     case 'EZLIST_ACCEPT_INVITATION':
       postBackend('/api/invitations/accept', { token: message.token || '' }).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
       return true;
@@ -234,6 +254,14 @@ function dispatchMessage(message, sender, sendResponse) {
     case 'EZLIST_ORG_MEMBERS':
       backendRequest('GET', `/api/organizations/${encodeURIComponent(message.organizationId || '')}/members`)
         .then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    case 'EZLIST_ORG_MEMBER_ROLE':
+      backendRequest(
+        'PATCH',
+        `/api/organizations/${encodeURIComponent(message.organizationId || '')}/members/${encodeURIComponent(message.memberId || '')}`,
+        { role: message.role }
+      ).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
       return true;
 
     case 'EZLIST_ORG_ACCESS_REQUESTS':
@@ -281,6 +309,11 @@ function dispatchMessage(message, sender, sendResponse) {
       postBackend(`/api/organizations/${encodeURIComponent(message.organizationId || '')}/ownership-transfer`, {
         targetMemberId: message.targetMemberId || ''
       }).then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
+      return true;
+
+    case 'EZLIST_PERSONAL_CANCEL_PORTAL':
+      billingUrl('/api/billing/personal-cancel', { target: 'personal' })
+        .then(sendResponse).catch((error) => sendResponse(errorResponse(error)));
       return true;
 
     case 'EZLIST_ACCEPT_OWNERSHIP':
@@ -376,6 +409,50 @@ async function fillPlatform(platformId, key) {
   try { await chrome.tabs.sendMessage(res.tabId, { type: 'EZLIST_FILL', key, contextKey }); }
   catch { /* tab still loading — it will auto-fill once the content script boots */ }
   return { ok: true, tabId: res.tabId, reused: res.reused };
+}
+
+function draftKey(draft) {
+  if (!draft) return '';
+  return (draft.vin || '').toUpperCase() || draft.stock || draft.sourceUrl || '';
+}
+
+async function updateDescription(message) {
+  const key = String(message.key || '');
+  if (!key) return { ok: false, updated: false, reason: 'missing_vehicle_key' };
+  const description = String(message.description == null ? '' : message.description).slice(0, 1000);
+  const stored = await chrome.storage.local.get('ezlistDraft');
+  const draft = stored.ezlistDraft;
+  if (!draft || draftKey(draft) !== key) {
+    return { ok: true, updated: false, reason: 'draft_changed' };
+  }
+  const previousDescription = String(draft.description == null ? '' : draft.description).slice(0, 1000);
+
+  await chrome.storage.local.set({ ezlistDraft: { ...draft, description } });
+  await persistActiveWorkspaceShadow();
+
+  if ((message.platform || 'fb') !== 'fb') {
+    return { ok: true, updated: false, reason: 'live_update_not_supported' };
+  }
+  const tabs = await chrome.tabs.query({
+    url: [
+      'https://www.facebook.com/marketplace/create/vehicle*',
+      'https://web.facebook.com/marketplace/create/vehicle*'
+    ]
+  }).catch(() => []);
+  const results = await Promise.all((tabs || []).map(async (tab) => {
+    if (tab.id == null) return null;
+    return FacebookBridge.sendToTab(chrome, tab.id, {
+      type: 'EZLIST_UPDATE_DESCRIPTION',
+      key,
+      description,
+      previousDescription
+    });
+  }));
+  return {
+    ok: true,
+    updated: results.some((result) => result && result.updated),
+    matchedTabs: results.filter((result) => result && result.updated).length
+  };
 }
 
 // ---- image fetching, with a short-lived prefetch cache so downloads overlap the FB page load ----
@@ -488,20 +565,32 @@ function queueContextOperation(operation) {
   return run;
 }
 
-function activateWorkspaceContext(nextValue) {
-  return queueContextOperation(() => activateWorkspaceContextUnlocked(nextValue));
+function activateWorkspaceContext(nextValue, options) {
+  return queueContextOperation(() => activateWorkspaceContextUnlocked(nextValue, options));
 }
 
-async function activateWorkspaceContextUnlocked(nextValue) {
+async function activateWorkspaceContextUnlocked(nextValue, options = {}) {
   const next = WorkspaceContext.normalizeContext(nextValue);
   if (!next) return null;
-  const keys = [...WorkspaceContext.SHADOW_KEYS, WORKSPACE_STORES_KEY, ACTIVE_CONTEXT_KEY];
+  const keys = [
+    ...WorkspaceContext.SHADOW_KEYS,
+    WORKSPACE_STORES_KEY,
+    ACTIVE_CONTEXT_KEY,
+    WORKSPACE_SELECTION_EXPLICIT_KEY
+  ];
   const stored = await chrome.storage.local.get(keys);
+  const explicit = Object.prototype.hasOwnProperty.call(options, 'explicit')
+    ? !!options.explicit
+    : stored[WORKSPACE_SELECTION_EXPLICIT_KEY] === true;
   const previous = WorkspaceContext.normalizeContext(stored[ACTIVE_CONTEXT_KEY]);
   const previousKey = WorkspaceContext.contextKey(previous);
   const nextKey = WorkspaceContext.contextKey(next);
   if (previousKey === nextKey) {
-    await chrome.storage.local.set({ [ACTIVE_CONTEXT_KEY]: next, [WORKSPACE_SELECTION_KEY]: next });
+    await chrome.storage.local.set({
+      [ACTIVE_CONTEXT_KEY]: next,
+      [WORKSPACE_SELECTION_KEY]: next,
+      [WORKSPACE_SELECTION_EXPLICIT_KEY]: explicit
+    });
     return next;
   }
 
@@ -528,7 +617,8 @@ async function activateWorkspaceContextUnlocked(nextValue) {
     const patch = {
       [WORKSPACE_STORES_KEY]: stores,
       [ACTIVE_CONTEXT_KEY]: next,
-      [WORKSPACE_SELECTION_KEY]: next
+      [WORKSPACE_SELECTION_KEY]: next,
+      [WORKSPACE_SELECTION_EXPLICIT_KEY]: explicit
     };
     for (const key of WorkspaceContext.SHADOW_KEYS) {
       if (Object.prototype.hasOwnProperty.call(target, key)) patch[key] = target[key];
@@ -697,9 +787,7 @@ async function getBackendUrl() {
 // ==================== dealership onboarding ====================
 
 async function recentDealerSeen() {
-  const seen = (await chrome.storage.local.get('ezlistDealerSeen')).ezlistDealerSeen;
-  if (seen && seen.host && seen.ts && (Date.now() - Number(seen.ts)) <= DEALER_SEEN_TTL_MS) return seen;
-  return findSupportedDealerTab();
+  return (await recentDealerCandidates())[0] || null;
 }
 
 async function supportedDealerTabPatterns() {
@@ -717,23 +805,40 @@ async function supportedDealerTabPatterns() {
     const scripts = await chrome.scripting.getRegisteredContentScripts({ ids: ['cx-dealer-dynamic'] });
     dynamic = scripts.flatMap((s) => s.matches || []);
   } catch { /* scripting unavailable — static only */ }
-  return [...new Set([...staticPatterns, ...dynamic])];
+  let granted = [];
+  try {
+    const permissions = await chrome.permissions.getAll();
+    granted = (permissions.origins || []).filter((pattern) =>
+      /^https:\/\/[^/]+\/\*/i.test(pattern)
+        && !/facebook\.com/i.test(pattern)
+        && !/craigslist\.org/i.test(pattern)
+        && !/railway\.app/i.test(pattern)
+        && !/localhost|127\.0\.0\.1/i.test(pattern)
+    );
+  } catch { /* optional origins unavailable */ }
+  return [...new Set([...staticPatterns, ...dynamic, ...granted])];
 }
 
-async function findSupportedDealerTab() {
+async function findSupportedDealerTabs() {
   const patterns = await supportedDealerTabPatterns();
+  const seen = [];
   for (const pattern of patterns) {
     let tabs = [];
     try { tabs = await chrome.tabs.query({ url: pattern }); } catch { tabs = []; }
-    const tab = tabs.find((t) => t.active && t.url) || tabs.find((t) => t.url);
-    if (!tab || !tab.url) continue;
-    let host = '';
-    try { host = new URL(tab.url).hostname.toLowerCase(); } catch { continue; }
-    const fallbackSeen = { host, url: tab.url, platform: 'dealeron', ts: Date.now() };
-    await chrome.storage.local.set({ ezlistDealerSeen: fallbackSeen });
-    return fallbackSeen;
+    for (const tab of tabs) {
+      if (!tab || !tab.url) continue;
+      let host = '';
+      try { host = new URL(tab.url).hostname.toLowerCase(); } catch { continue; }
+      seen.push({ host, url: tab.url, platform: null, ts: Date.now(), active: Boolean(tab.active) });
+    }
   }
-  return null;
+  return DealerCandidates.uniqueSeen(seen, { ttlMs: DEALER_SEEN_TTL_MS });
+}
+
+async function recentDealerCandidates() {
+  const stored = (await chrome.storage.local.get('ezlistDealerSeen')).ezlistDealerSeen;
+  const tabs = await findSupportedDealerTabs();
+  return DealerCandidates.uniqueSeen([stored, ...tabs], { ttlMs: DEALER_SEEN_TTL_MS });
 }
 
 // Resolve a dealership WITHOUT linking it. With `urlOverride` (user-entered site) that URL is
@@ -773,6 +878,15 @@ async function probeSiteFingerprints(url, host) {
     // Dealer Inspire (Cars.com): its cards carry data-vehicle JSON and it ships assets from
     // dealerinspire.com / carscommerce.inc.
     const diAssets = !!document.querySelector('[data-vehicle][data-vehicle-vin], img[src*="dealerinspire.com"], img[src*="carscommerce.inc"], script[src*="dealerinspire.com"], link[href*="dealerinspire.com"]');
+    // Carsforsale.com Chassis sites: the inventory module assets and `/Inventory/Details/`
+    // cards are stable across themes. AutoCorner sites expose their vendor asset host plus the
+    // Alpine SRP root / `/vehicles/` cards.
+    const carsForSaleAssets = q('script[src*="Chassis.Modules.Inventory"], link[href*="Chassis.Modules.Inventory"]');
+    const carsForSaleCards = q('.p-veh-card a[href*="/Inventory/Details/"]');
+    const carsForSaleCdn = q('img[src*="carsforsale.com"], source[srcset*="carsforsale.com"]');
+    const autoCornerAssets = q('script[src*="autocorner.com"], link[href*="autocorner.com"]');
+    const autoCornerSrp = q('#vehicle_inventory[x-data*="alpineInventoryHandler"], .srp_div a[href*="/vehicles/"]');
+    const autoCornerPhotos = q('img[src*="photos.autocorner.com"], source[srcset*="photos.autocorner.com"]');
     const siteName = (() => {
       const og = document.querySelector('meta[property="og:site_name"]');
       if (og && og.content && og.content.trim()) return og.content.trim().slice(0, 80);
@@ -796,6 +910,12 @@ async function probeSiteFingerprints(url, host) {
       hasSchemaVehicle,
       hasInventoryLinks,
       diAssets,
+      carsForSaleAssets,
+      carsForSaleCards,
+      carsForSaleCdn,
+      autoCornerAssets,
+      autoCornerSrp,
+      autoCornerPhotos,
       siteName,
       _dbg: { host: location.host, path: location.pathname, hasDdcAssets, hasDdcDom, hasDdcGlobal, schemaDealer: hasSchemaAutoDealer, schemaVehicle: hasSchemaVehicle, title: (document.title || '').slice(0, 60) }
     };
@@ -806,7 +926,10 @@ async function probeSiteFingerprints(url, host) {
       return (results && results[0] && results[0].result) || null;
     } catch (e) { console.warn('[cx] probe executeScript failed:', e && e.message); return null; }
   };
-  const usable = (r) => r && (r.ddcNamespace || r.vehicleInfoVin || r.dotagging || r.hasSchemaAutoDealer || r.hasSchemaVehicle || r.diAssets);
+  const usable = (r) => r && (
+    r.ddcNamespace || r.vehicleInfoVin || r.dotagging || r.hasSchemaAutoDealer || r.hasSchemaVehicle
+    || r.diAssets || r.carsForSaleAssets || r.carsForSaleCards || r.autoCornerAssets || r.autoCornerSrp
+  );
 
   let tab = (await chrome.tabs.query({}).catch(() => [])).find((t) => t.url && onHost(t.url));
   let opened = false;
@@ -858,7 +981,7 @@ async function detectDealer(urlOverride, { canProbe = false } = {}) {
   } else {
     const seen = await recentDealerSeen();
     if (!seen) {
-      const err = new Error('Open your dealership inventory page, then tap Detect again.');
+      const err = new Error('Open the dealership inventory tab, click the CarXprt toolbar icon, then tap Detect — or enter the dealership website.');
       err.reason = 'no_recent_dealer';
       throw err;
     }
@@ -886,6 +1009,32 @@ async function detectDealer(urlOverride, { canProbe = false } = {}) {
     claimed: !!resolved.claimed,
     dealership: resolved.dealership
   };
+}
+
+async function detectDealerCandidates() {
+  const seen = await recentDealerCandidates();
+  if (!seen.length) {
+    const err = new Error('Open the dealership inventory tab, click the CarXprt toolbar icon, then tap Detect — or enter the dealership website.');
+    err.reason = 'no_recent_dealer';
+    throw err;
+  }
+  const resolved = await Promise.all(seen.map(async (candidate) => {
+    try {
+      const result = await detectDealer(candidate.url || `https://${candidate.host}`);
+      return { ...result, sourceUrl: candidate.url || null, sourceHost: candidate.host };
+    } catch {
+      return { ok: false };
+    }
+  }));
+  const candidates = DealerCandidates.uniqueResolved(resolved);
+  if (!candidates.length) {
+    return {
+      ok: false,
+      reason: 'unsupported_dealer',
+      error: 'None of the detected dealership tabs are supported yet. Enter the website you want to connect.'
+    };
+  }
+  return { ok: true, candidates };
 }
 
 async function linkDealer(dealershipId) {
@@ -939,10 +1088,51 @@ async function signIn() {
   return getAuthState();
 }
 
-async function signOut() { await clearAuth(); }
+async function signOut() {
+  const backend = await getBackendUrl();
+  const token = await getToken();
 
-async function clearAuth() {
-  await chrome.storage.local.remove(['ezlistAuthToken', 'ezlistMe', 'ezlistLease']);
+  // Lock the extension immediately. Remote cleanup is best effort so an offline backend can
+  // never trap someone inside the previous account on a shared dealership computer.
+  await clearAuth({ accountSwitch: true });
+
+  const cleanup = [];
+  if (token) {
+    cleanup.push(fetch(`${backend}/api/auth/sign-out`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: '{}'
+    }));
+  }
+  // OAuth creates an HttpOnly browser-cookie session in addition to the bearer session returned
+  // to the extension. A web-auth navigation is required to send and expire that cookie.
+  cleanup.push(chrome.identity.launchWebAuthFlow({
+    url: `${backend}/api/auth/extension/logout`,
+    interactive: false
+  }));
+  await Promise.allSettled(cleanup);
+}
+
+async function clearAuth(options = {}) {
+  const keys = ['ezlistAuthToken', 'ezlistMe', 'ezlistLease'];
+  if (options.accountSwitch) {
+    keys.push(
+      ACTIVE_CONTEXT_KEY,
+      WORKSPACE_SELECTION_KEY,
+      WORKSPACE_SELECTION_EXPLICIT_KEY,
+      'ezlistDealerSeen',
+      'ezlistOnboardingIntent',
+      'ezlistTeamOnboarding',
+      'ezlistAccessRequestPending',
+      'ezlistCheckoutWatch',
+      'ezlistMarketplaceFlows'
+    );
+    chrome.alarms.clear('ezlist-checkout-watch').catch(() => {});
+  }
+  await chrome.storage.local.remove(keys);
 }
 
 async function getToken() {
@@ -969,9 +1159,28 @@ async function fetchMeData(token, options = {}) {
   return { resp, data, usedSelection: selection };
 }
 
-async function refreshMe(options = {}) {
+function refreshMe(options = {}) {
+  // Several dealer tabs and the side panel can wake the worker at once. Serialize /me refreshes so
+  // a stale inferred context cannot finish after a deliberate selection and overwrite it.
+  const run = meRefreshOperation.then(
+    () => refreshMeUnlocked(options),
+    () => refreshMeUnlocked(options)
+  );
+  meRefreshOperation = run.catch(() => {});
+  return run;
+}
+
+async function refreshMeUnlocked(options = {}) {
   const token = await getToken();
   if (!token) { await chrome.storage.local.remove(['ezlistMe', 'ezlistLease']); return null; }
+  const selectionState = await chrome.storage.local.get([
+    WORKSPACE_SELECTION_KEY,
+    WORKSPACE_SELECTION_EXPLICIT_KEY
+  ]);
+  const hasExplicitOverride = Object.prototype.hasOwnProperty.call(options, 'explicitSelection');
+  let selectionExplicit = hasExplicitOverride
+    ? !!options.explicitSelection
+    : (!options.selection && selectionState[WORKSPACE_SELECTION_EXPLICIT_KEY] === true);
   let result;
   try {
     result = await fetchMeData(token, options);
@@ -987,8 +1196,34 @@ async function refreshMe(options = {}) {
   if (!data.activeWorkspace && result.usedSelection && !options.ignoreSelection) {
     result = await fetchMeData(token, { host: options.host, ignoreSelection: true });
     ({ resp, data } = result);
+    selectionExplicit = false;
     if (resp.status === 401) { await clearAuth(); return null; }
     if (!resp.ok) throw new Error(data.error || `me ${resp.status}`);
+  }
+
+  // The backend always creates Personal, so an old/default selection can strand a newly approved
+  // owner or invited member in personal onboarding even though an established team is ready.
+  // Repair inferred defaults before caching /me; deliberate choices remain sticky.
+  const automaticContext = WorkspaceContext.recommendAutomaticContext(data, {
+    selectionExplicit,
+    host: options.host || ''
+  });
+  if (automaticContext) {
+    try {
+      const automatic = await fetchMeData(token, {
+        selection: automaticContext,
+        host: options.host
+      });
+      if (automatic.resp.status === 401) { await clearAuth(); return null; }
+      if (automatic.resp.ok && automatic.data.activeWorkspace) {
+        result = automatic;
+        ({ resp, data } = result);
+        selectionExplicit = false;
+      }
+    } catch {
+      // The first /me response is still valid. Keep it rather than turning a transient second
+      // request failure into a sign-out/unknown gate; the next refresh can retry the repair.
+    }
   }
   const me = {
     user: data.user || null,
@@ -1006,6 +1241,9 @@ async function refreshMe(options = {}) {
     entitled: !!data.entitled,
     reason: data.reason || null,
     subscription: data.subscription || null,
+    personalBilling: data.personalBilling || null,
+    billingTransition: data.billingTransition || null,
+    selectionExplicit,
     fetchedAt: Date.now()
   };
   // Local listing history is account-scoped. On a shared dealership computer, a different
@@ -1014,6 +1252,10 @@ async function refreshMe(options = {}) {
   if (me.user && me.user.id) {
     const prevOwner = (await chrome.storage.local.get('ezlistOwnerId')).ezlistOwnerId;
     if (prevOwner && prevOwner !== me.user.id) {
+      // A workspace choice is user intent, not device intent. Even when both people belong to the
+      // same team, the next account must make (or infer) its own choice.
+      selectionExplicit = false;
+      me.selectionExplicit = false;
       // Everything car- or account-scoped goes: history AND the current selection. Leaving
       // ezlistDraft behind handed a new sign-up the previous user's selected vehicle (from a
       // different dealership); a stale ezlistAutoFill could even auto-fill it on the next
@@ -1024,13 +1266,14 @@ async function refreshMe(options = {}) {
         'ezlistDraft', 'ezlistAutoFill', 'ezlistLastExtractedAt',
         'ezlistInFlight', 'ezlistClPendingPhotos', 'ezlistDealerSeen',
         WORKSPACE_STORES_KEY, ACTIVE_CONTEXT_KEY, WORKSPACE_SELECTION_KEY,
+        WORKSPACE_SELECTION_EXPLICIT_KEY,
         'ezlistOnboardingIntent', 'ezlistAccessRequestPending', 'ezlistMarketplaceFlows'
       ]);
     }
     if (prevOwner !== me.user.id) await chrome.storage.local.set({ ezlistOwnerId: me.user.id });
   }
   const selectedContext = WorkspaceContext.contextFromMe(me);
-  if (selectedContext) await activateWorkspaceContext(selectedContext);
+  if (selectedContext) await activateWorkspaceContext(selectedContext, { explicit: selectionExplicit });
   // Best-effort: repopulate green-button state from the server (no-op unless local is empty).
   if (me.entitled || (me.workspaceAccess && me.workspaceAccess.paid)) restoreListedFromServer().catch(() => {});
   const patch = { ezlistMe: me };
@@ -1045,10 +1288,11 @@ async function refreshMe(options = {}) {
   return me;
 }
 
-async function selectWorkspaceContext(workspaceId, dealershipId) {
+async function selectWorkspaceContext(workspaceId, dealershipId, explicitSelection = true) {
   if (!workspaceId) throw new Error('Choose a workspace.');
   const me = await refreshMe({
-    selection: { workspaceId, dealershipId: dealershipId || null }
+    selection: { workspaceId, dealershipId: dealershipId || null },
+    explicitSelection
   });
   if (!me || !me.activeWorkspace || me.activeWorkspace.id !== workspaceId) {
     const err = new Error('That workspace is no longer available.');
@@ -1099,7 +1343,7 @@ async function ensureDealerScripts(me) {
   const script = {
     id: DEALER_SCRIPT_ID,
     matches: granted,
-    js: ['lib/mappers.core.js', 'lib/inventoryCheck.js', 'lib/extractors/schemaorg.js', 'lib/extractors/dealeron.js', 'lib/extractors/dealercom.js', 'lib/extractors/dealerinspire.js', 'lib/extractors/generic.js', 'dealerContent.js'],
+    js: ['lib/mappers.core.js', 'lib/inventoryCheck.js', 'lib/extractors/schemaorg.js', 'lib/extractors/dealeron.js', 'lib/extractors/dealercom.js', 'lib/extractors/dealerinspire.js', 'lib/extractors/carsforsale.js', 'lib/extractors/autocorner.js', 'lib/extractors/generic.js', 'dealerContent.js'],
     runAt: 'document_idle',
     persistAcrossSessions: true
   };
@@ -1146,10 +1390,27 @@ async function verifyCachedLease() {
 async function getAuthState(opts) {
   const opt = opts || {};
   const token = await getToken();
-  if (token && (opt.refresh || await meIsStale())) {
-    try { await refreshMe(); } catch { /* keep cache */ }
+  const cachedContext = await chrome.storage.local.get([
+    'ezlistMe',
+    WORKSPACE_SELECTION_EXPLICIT_KEY
+  ]);
+  const needsContextRepair = !!WorkspaceContext.recommendAutomaticContext(
+    cachedContext.ezlistMe,
+    {
+      selectionExplicit: cachedContext[WORKSPACE_SELECTION_EXPLICIT_KEY] === true,
+      host: opt.host || ''
+    }
+  );
+  if (token && (opt.refresh || needsContextRepair || await meIsStale())) {
+    try { await refreshMe({ host: opt.host }); } catch { /* keep cache */ }
   }
-  const store = await chrome.storage.local.get(['ezlistAuthToken', 'ezlistMe', 'ezlistLease', ACTIVE_CONTEXT_KEY]);
+  const store = await chrome.storage.local.get([
+    'ezlistAuthToken',
+    'ezlistMe',
+    'ezlistLease',
+    ACTIVE_CONTEXT_KEY,
+    WORKSPACE_SELECTION_EXPLICIT_KEY
+  ]);
   const signedIn = !!store.ezlistAuthToken;
   const me = store.ezlistMe || null;
   let leaseValid = false;
@@ -1175,10 +1436,13 @@ async function getAuthState(opts) {
     requestPending: me ? me.requestPending : null,
     accessRequests: me ? me.accessRequests : [],
     subscription: me ? me.subscription : null,
+    personalBilling: me ? me.personalBilling : null,
+    billingTransition: me ? me.billingTransition : null,
     workspaces: me ? me.workspaces : [],
     activeWorkspace: me ? me.activeWorkspace : null,
     activeRooftop: me ? me.activeRooftop : null,
     workspaceAccess: access || null,
+    selectionExplicit: store[WORKSPACE_SELECTION_EXPLICIT_KEY] === true,
     context: WorkspaceContext.normalizeContext(store[ACTIVE_CONTEXT_KEY]),
     capabilities: access && Array.isArray(access.capabilities) ? access.capabilities : [],
     leaseValid,

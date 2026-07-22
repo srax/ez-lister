@@ -122,7 +122,7 @@ organization contract is `0.3.0`; backend rollout remains independently feature-
 
 ## 4. User Journeys
 
-### Individual on an unclaimed supported rooftop
+### Individual on a supported rooftop
 
 1. Sign in with Google.
 2. Choose `Use CarXprt myself`.
@@ -131,14 +131,15 @@ organization contract is `0.3.0`; backend rollout remains independently feature-
 5. Complete individual Checkout immediately.
 6. Stripe webhook activates the personal workspace and rooftop-bound lease.
 
-This does not claim the rooftop or create an organization. Once a rooftop is claimed, new
-individual subscriptions for it are blocked and users are routed to `Request access`.
-Existing individual subscriptions are grandfathered.
+This does not claim the rooftop or create an organization. Organization ownership never blocks an
+explicitly independent salesperson: claimed rooftops may also have self-paid personal workspaces,
+with separate billing, permissions, statistics, and no organization seat. Users who want their
+dealership to cover access choose `Join an existing team` instead.
 
 ### Individual rooftop change
 
 - Allow one self-service replacement per billing cycle.
-- The destination must be supported and unclaimed.
+- The destination must be supported. Organization claim state does not control personal access.
 - Switching revokes the old lease and unfinished old-rooftop drafts.
 - Historical personal data remains attached to the old rooftop.
 - Additional changes in the same cycle require support approval.
@@ -174,6 +175,9 @@ or document upload is exceptional, not the default.
 - Existing personal history remains private. Joining does not automatically cancel a
   personal subscription; offer cancellation at period end after the organization seat is
   active.
+- Active personal subscribers can enter team onboarding later from Account without losing
+  personal access. Once a paid, usable team listing seat is active, Account offers a focused
+  Stripe Portal cancellation flow for the personal plan; Stripe confirms the end date.
 
 ### Multi-rooftop owner or manager
 
@@ -184,8 +188,20 @@ or document upload is exceptional, not the default.
   increase.
 - Owners see all current and future rooftops. Managers see only selected rooftops unless
   explicitly assigned `all rooftops`.
+- Only the organization owner may promote or demote an existing member. A demotion from an
+  all-rooftop manager materializes explicit access for every currently assigned listing seat
+  before removing the implicit all-rooftop grant.
 - Separate invoices require separate organizations. Cross-organization portfolio reporting
   is deferred.
+
+### Dealership detection privacy boundary
+
+- Open-tab suggestions include supported dealership origins already present in static or
+  user-granted host permissions. If several resolve successfully, the user chooses one and
+  confirms it before any link is created.
+- Chrome does not expose arbitrary tab URLs without broader permissions. Unknown or
+  ungranted dealership sites use the manual URL path, which requests access only for that
+  specific origin; CarXprt does not request global tab-history access.
 
 ### Owner who also lists
 
@@ -399,14 +415,21 @@ Present intent, not unverifiable titles:
 - `Set up a dealership`
 - `Join an existing team`
 
-Individual users on supported, unclaimed rooftops go directly to individual Checkout.
-Unsupported rooftops create a support request and are not charged. Claimed rooftops route to
-access requests.
+Individual users on supported rooftops go directly to individual Checkout, whether or not a team
+has claimed the rooftop. Unsupported rooftops create a support request and are not charged. Only
+the explicit `Join an existing team` path creates an access request; `Set up a dealership` routes
+an already-claimed rooftop to team access or an ownership-dispute path.
+
+Self-service team requests default to `salesperson`; users cannot grant themselves manager access.
+Owners may approve or invite a `salesperson` or `manager`. Scoped managers may approve and invite
+salespeople only. A pending team request can be withdrawn before personal Checkout so approval and
+self-payment cannot race into an unexpected double entitlement.
 
 ### Workspace safety
 
 - Show the selected organization and rooftop near List.
-- Default to a matching organization seat over a grandfathered personal workspace.
+- Default to a matching organization seat over an independent personal workspace, but never
+  override an explicit personal selection.
 - Ask only when multiple valid workspaces match.
 - Scope local storage keys, drafts, queues, and restored listings by workspace.
 - Never fill a draft whose stamped workspace/rooftop does not match its lease.
@@ -513,7 +536,7 @@ available`, never zero.
 - Implement the three onboarding intents and all claim/access/capacity states.
 - Scope local storage and queues by workspace.
 - Add visible workspace/rooftop context and immutable draft stamping.
-- Acceptance: personal, owner, manager, salesperson, grandfathered-personal, multi-org, and
+- Acceptance: personal, owner, manager, salesperson, independent-personal-plus-team, multi-org, and
   multi-device test matrices pass without stale data crossing workspaces.
 - Persist the owner's post-activation `list vehicles` versus `dashboard only` choice per owner
   member. Choosing listing access assigns one included seat at each active paid rooftop;

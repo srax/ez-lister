@@ -11,6 +11,7 @@ import {
   organizationCheckoutTarget,
   syncOrganizationSubscription
 } from '../billing-lifecycle.js';
+import { personalToTeamBillingState } from '../entitlement/index.js';
 import {
   stripe,
   stripeConfigured,
@@ -244,6 +245,44 @@ router.post('/api/billing/portal', requireUser, async (req, res, next) => {
       }
     });
     res.json({ ok: true, url: result.url, target });
+  } catch (err) { next(err); }
+});
+
+// A personal subscriber can move billing to a dealership only after an actually paid,
+// operational organization seat exists. Better Auth creates a focused Stripe Billing Portal
+// cancellation flow; Stripe remains the lifecycle source of truth and schedules the end date.
+router.post('/api/billing/personal-cancel', requireUser, async (req, res, next) => {
+  try {
+    if (!ensureStripe(res, 'personal')) return;
+    const transition = await personalToTeamBillingState(req.user.id);
+    if (!transition.personal.active) {
+      res.status(409).json({ ok: false, error: 'No active personal subscription.', reason: 'no_personal_subscription' });
+      return;
+    }
+    if (!transition.teamSeat.active) {
+      res.status(409).json({ ok: false, error: 'An active dealership listing seat is required first.', reason: 'team_seat_required' });
+      return;
+    }
+    if (transition.personal.cancelAtPeriodEnd) {
+      res.json({
+        ok: true,
+        completed: true,
+        cancelAtPeriodEnd: true,
+        periodEnd: transition.personal.periodEnd
+      });
+      return;
+    }
+    const result = await auth.api.cancelSubscription({
+      headers: fromNodeHeaders(req.headers),
+      body: {
+        referenceId: req.user.id,
+        subscriptionId: transition.personal.stripeSubscriptionId,
+        customerType: 'user',
+        returnUrl: `${baseUrl(req)}/billing/success`,
+        disableRedirect: true
+      }
+    });
+    res.json({ ok: true, url: result.url, target: 'personal', transition: 'team' });
   } catch (err) { next(err); }
 });
 

@@ -39,6 +39,8 @@
   <div id="account-menu" class="account-menu" hidden>
     <div class="account-email" id="account-email"></div>
     <div class="account-plan" id="account-plan"></div>
+    <button id="acct-team" class="menu-item">Join or set up a team</button>
+    <button id="acct-personal-cancel" class="menu-item" hidden>End personal plan at renewal</button>
     <button id="acct-billing" class="menu-item">Manage billing</button>
     <button id="acct-signout" class="menu-item danger">Sign out</button>
   </div>
@@ -141,40 +143,30 @@
 
     <div class="divider"></div>
 
-    <!-- Description -->
+    <!-- AI description instructions -->
     <div class="desc-head">
-      <label class="section-label">Listing description</label>
-      <span id="charcount" class="charcount">0 / 1000</span>
+      <label class="section-label" for="ai-instructions">AI description instructions</label>
     </div>
-    <textarea id="desc" class="vsl-in" maxlength="1000" placeholder="Write your listing description, or pick a car to auto-generate it…"></textarea>
-
+    <textarea id="ai-instructions" class="vsl-in" maxlength="800" placeholder="Example: Make it more formal and simple. Use short paragraphs and include the CARFAX link."></textarea>
+    <div class="field-help">SEO friendly</div>
     <button id="ai-draft" class="ghost-btn">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.6L18.5 9 14 11l-2 4.6L10 11 5.5 9 10 7.6 12 3z"/></svg>
-      Draft with A.I.
+      Improve Facebook description
     </button>
 
     <!-- Translate -->
-    <div class="translate-row">
-      <div class="select-wrap grow">
-        <svg class="globe" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9a9caa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z"/></svg>
-        <select id="lang" class="vsl-sel has-icon">
-          <option value="en">English</option>
-          <option value="es">Español (Spanish)</option>
-          <option value="fa">فارسی (Farsi)</option>
-          <option value="ur">اردو (Urdu)</option>
-        </select>
-        <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9a9caa" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+    <div class="translate-block">
+      <div id="lang" class="lang-options" role="radiogroup" aria-label="Translation language">
+        <button class="lang-btn on" type="button" role="radio" aria-checked="true" data-lang="en">English</button>
+        <button class="lang-btn" type="button" role="radio" aria-checked="false" data-lang="es" lang="es">Español</button>
+        <button class="lang-btn" type="button" role="radio" aria-checked="false" aria-label="Farsi" data-lang="fa" lang="fa" dir="rtl">فارسی</button>
+        <button class="lang-btn" type="button" role="radio" aria-checked="false" aria-label="Urdu" data-lang="ur" lang="ur" dir="rtl">اردو</button>
       </div>
-      <button id="translate" class="accent-btn sm">Translate</button>
+      <button id="translate" class="accent-btn translate-btn">Translate</button>
     </div>
 
-    <!-- Toggles -->
+    <!-- Listing options -->
     <div class="toggles">
-      <button class="toggle" id="t-ai">
-        <span class="track"><span class="knob"></span></span>
-        <span class="toggle-label">Auto A.I. description <span class="toggle-hint">drafts on every car pick</span></span>
-      </button>
-      <div class="hairline"></div>
       <button class="toggle" id="t-mileage">
         <span class="track"><span class="knob"></span></span>
         <span class="toggle-label">Add mileage</span>
@@ -191,7 +183,6 @@
     <div id="status" class="status" role="status">Pick a car to get started.</div>
     <div class="foot-actions">
       <button id="fill" class="accent-btn primary" disabled>Fill listing</button>
-      <button id="openfb" class="ghost-btn compact">Open FB form</button>
     </div>
   </footer>
   </div><!-- /#view-lister -->
@@ -407,6 +398,7 @@
         <button type="button" data-intent="organization"><b>Set up a dealership</b><span>Team seats, rooftops, and reporting</span></button>
         <button type="button" data-intent="join"><b>Join an existing team</b><span>Request access from your manager</span></button>
       </div>
+      <div class="gate-workspaces" id="gate-workspaces" hidden></div>
       <div class="gate-benefits" id="gate-benefits" hidden>
         <div class="gate-benefit">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="#1c1e12" aria-hidden="true"><path d="M13 2L4.5 13.5H11l-1 8.5L19.5 10H13l0-8z"/></svg>
@@ -430,6 +422,7 @@
       <button class="ghost-btn compact gate-secondary" id="gate-secondary" hidden></button>
       <div class="dealer-connect" id="dealer-connect" hidden>
         <div class="dealer-pending" id="dealer-pending" hidden></div>
+        <div class="dealer-candidates" id="dealer-candidates" hidden></div>
         <form class="dealer-request join-invite" id="join-invite-form" hidden>
           <label>
             <span>Invitation code</span>
@@ -484,6 +477,9 @@
 
   <script src="lib/mappers.core.js"></script>
   <script src="lib/dealerOutcome.js"></script>
+  <script src="lib/workspaceContext.js"></script>
+  <script src="lib/onboarding.js"></script>
+  <script src="lib/dealerCandidates.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

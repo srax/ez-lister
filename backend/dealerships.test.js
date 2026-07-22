@@ -68,18 +68,19 @@ test('live subscription with no periodEnd also locks', async () => {
   await assert.rejects(() => linkDealer('u1', 'd-new', db), (e) => e.reason === 'dealership_locked');
 });
 
-test('new personal links and switches cannot enter a claimed dealership', async () => {
-  for (const existingDealerId of [null, 'd-old']) {
-    const db = fakeDb({ existingDealerId, claimed: true });
-    await assert.rejects(
-      () => linkDealer('u1', 'd-new', db, { enforceClaims: true }),
-      (err) => err.status === 409 && err.reason === 'dealership_claimed'
-    );
-    assert.deepEqual(db.writes, []);
-  }
+test('personal links remain independent when an organization has claimed the dealership', async () => {
+  const fresh = fakeDb({ claimed: true });
+  const linked = await linkDealer('u1', 'd-new', fresh, { enforceClaims: true });
+  assert.equal(linked.linked, true);
+  assert.deepEqual(fresh.writes, ['insert']);
+
+  const switching = fakeDb({ existingDealerId: 'd-old', claimed: true });
+  const switched = await linkDealer('u1', 'd-new', switching, { enforceClaims: true });
+  assert.equal(switched.switched, true);
+  assert.deepEqual(switching.writes, ['update']);
 });
 
-test('an existing same-dealership personal link stays grandfathered after a team claim', async () => {
+test('an existing same-dealership personal link remains valid after a team claim', async () => {
   const db = fakeDb({ existingDealerId: 'd-new', claimed: true });
   const result = await linkDealer('u1', 'd-new', db, { enforceClaims: true });
   assert.deepEqual(result, { linked: true, dealershipId: 'd-new' });

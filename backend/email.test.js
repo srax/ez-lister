@@ -2,7 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildDealerRequestEmail,
+  buildOrganizationAccessDecisionEmail,
+  buildOrganizationAccessRequestEmail,
   buildOrganizationInvitationEmail,
+  buildOrganizationRoleChangedEmail,
   buildOwnershipTransferEmail,
   emailConfigured,
   notifyDealerRequest,
@@ -72,6 +75,64 @@ test('buildOrganizationInvitationEmail: includes scope, one-time code, expiry, a
   assert.match(html, /invite-secret/);
   assert.match(text, /expires in seven days/);
   assert.match(text, /chromewebstore\.google\.com/);
+});
+
+test('buildOrganizationAccessRequestEmail directs authorized managers to the team inbox', () => {
+  const { subject, html, text } = buildOrganizationAccessRequestEmail({
+    organizationName: 'Alexandria <Toyota>',
+    dealershipName: 'Alexandria Toyota',
+    requesterName: 'Hasnat Five',
+    requesterEmail: 'hasnat5@example.com',
+    requestedRole: 'salesperson',
+    storeUrl: 'https://chromewebstore.google.com/detail/carxpert/example'
+  });
+  assert.match(subject, /Hasnat Five requested access/);
+  assert.match(html, /Alexandria &lt;Toyota&gt;/);
+  assert.match(html, /hasnat5@example\.com/);
+  assert.match(text, /Team.*Access requests/i);
+  assert.doesNotMatch(html, /approve.*token/i);
+});
+
+test('buildOrganizationAccessDecisionEmail covers approval, capacity wait, and rejection', () => {
+  const base = {
+    organizationName: 'Alexandria Motors',
+    dealershipName: 'Alexandria <Toyota>',
+    role: 'salesperson',
+    storeUrl: 'https://chromewebstore.google.com/detail/carxprt/example'
+  };
+  const approved = buildOrganizationAccessDecisionEmail({ ...base, status: 'approved' });
+  assert.match(approved.subject, /approved/i);
+  assert.match(approved.html, /Alexandria &lt;Toyota&gt;/);
+  assert.match(approved.text, /salesperson access/i);
+
+  const waiting = buildOrganizationAccessDecisionEmail({ ...base, status: 'approved_awaiting_capacity' });
+  assert.match(waiting.subject, /waiting for a seat/i);
+  assert.match(waiting.text, /unlock automatically/i);
+
+  const rejected = buildOrganizationAccessDecisionEmail({
+    ...base, status: 'rejected', reason: 'Wrong rooftop <selected>'
+  });
+  assert.match(rejected.subject, /update/i);
+  assert.match(rejected.html, /Wrong rooftop &lt;selected&gt;/);
+  assert.doesNotMatch(rejected.html, /Wrong rooftop <selected>/);
+});
+
+test('buildOrganizationRoleChangedEmail explains manager and salesperson access safely', () => {
+  const manager = buildOrganizationRoleChangedEmail({
+    organizationName: 'Stevens <Auto>',
+    role: 'manager',
+    storeUrl: 'https://chromewebstore.google.com/detail/carxprt/example'
+  });
+  assert.match(manager.subject, /Manager/);
+  assert.match(manager.text, /manage salespeople/i);
+  assert.match(manager.html, /Stevens &lt;Auto&gt;/);
+
+  const salesperson = buildOrganizationRoleChangedEmail({
+    organizationName: 'Stevens Auto',
+    role: 'salesperson'
+  });
+  assert.match(salesperson.subject, /Salesperson/);
+  assert.match(salesperson.text, /seats assigned/i);
 });
 
 test('buildOwnershipTransferEmail names the authority change, code, and expiry', () => {

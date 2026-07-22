@@ -97,15 +97,141 @@
     return contextKey(draft._carxpertContext) === contextKey(value);
   }
 
+  function normalizeHost(value) {
+    const raw = String(value || '').trim().toLowerCase();
+    if (!raw) return '';
+    try {
+      return new URL(raw.includes('://') ? raw : `https://${raw}`).hostname
+        .replace(/^www\./, '');
+    } catch {
+      return raw.split('/')[0].replace(/^www\./, '').replace(/:\d+$/, '');
+    }
+  }
+
+  function hostMatchesDomains(host, domains) {
+    const cleanHost = normalizeHost(host);
+    return !!cleanHost && (domains || []).some((value) => {
+      const domain = normalizeHost(value);
+      return !!domain && (cleanHost === domain || cleanHost.endsWith(`.${domain}`));
+    });
+  }
+
+  // Provisional workspaces still belong to the claim-before-checkout flow. Established teams
+  // remain selectable while active, in a payment grace period, or suspended for renewal.
+  function eligibleOrganizationWorkspaces(me) {
+    const eligibleStatuses = new Set(['active', 'past_due', 'suspended']);
+    return ((me && me.workspaces) || []).filter((workspace) =>
+      workspace
+      && workspace.type === 'organization'
+      && eligibleStatuses.has(workspace.status)
+      && workspace.member
+      && workspace.member.status === 'active'
+    );
+  }
+
+  function defaultRooftop(workspace, host = '') {
+    const rooftops = (workspace && workspace.rooftops || [])
+      .filter((item) => item && item.dealership && item.status !== 'archived');
+    if (!rooftops.length) return null;
+
+    if (host) {
+      const matches = rooftops.filter((item) =>
+        hostMatchesDomains(host, item.dealership.domains || [])
+      );
+      if (matches.length) return matches.find((item) => item.hasSeat) || matches[0];
+    }
+
+    const operational = rooftops.filter((item) =>
+      !item.status || ['active', 'past_due', 'pending_removal'].includes(item.status)
+    );
+    const pool = operational.length ? operational : rooftops;
+    return pool.find((item) => item.hasSeat) || pool[0];
+  }
+
+  function contextForOrganizationWorkspace(workspace, { host = '' } = {}) {
+    if (!workspace || workspace.type !== 'organization') return null;
+    const rooftop = defaultRooftop(workspace, host);
+    const organizationId = workspace.organization && workspace.organization.id
+      ? String(workspace.organization.id)
+      : String(workspace.id || '').replace(/^organization:/, '');
+    return normalizeContext({
+      workspaceId: workspace.id,
+      dealershipId: rooftop && rooftop.dealership && rooftop.dealership.id,
+      workspaceType: 'organization',
+      organizationId
+    });
+  }
+
+  function uniqueHostContext(workspaces, host) {
+    if (!normalizeHost(host)) return null;
+    const matching = (workspaces || []).map((workspace) => {
+      const rooftops = (workspace.rooftops || []).filter((item) =>
+        item && item.dealership
+        && item.status !== 'archived'
+        && hostMatchesDomains(host, item.dealership.domains || [])
+      );
+      if (!rooftops.length) return null;
+      const rooftop = rooftops.find((item) => item.hasSeat) || rooftops[0];
+      return {
+        context: contextForOrganizationWorkspace({ ...workspace, rooftops: [rooftop] }, { host }),
+        hasSeat: Boolean(rooftop.hasSeat)
+      };
+    }).filter(Boolean);
+    const seated = matching.filter((item) => item.hasSeat);
+    const pool = seated.length ? seated : matching;
+    return pool.length === 1 ? pool[0].context : null;
+  }
+
+  function personalContextNeedsReplacement(me) {
+    const active = me && me.activeWorkspace;
+    if (!active) return true;
+    if (active.type !== 'personal') return false;
+    const access = me.workspaceAccess || {};
+    return !access.paid && !access.canList;
+  }
+
+  // Repair only inferred defaults. Once a person deliberately chooses Personal or a team, that
+  // choice is sticky. A dealer host can disambiguate team/rooftop membership; without one, a
+  // single established team wins only when Personal has no usable access.
+  function recommendAutomaticContext(me, { selectionExplicit = false, host = '' } = {}) {
+    if (selectionExplicit) return null;
+    const organizations = eligibleOrganizationWorkspaces(me);
+    if (!organizations.length) return null;
+
+    // Auto-repair exists to rescue a user stranded in the unusable Personal default. Once any
+    // usable Personal or organization context is active, dealer tabs must not silently switch the
+    // global workspace behind each other. Multi-team users choose explicitly in the panel.
+    if (!personalContextNeedsReplacement(me)) return null;
+
+    const hostContext = uniqueHostContext(organizations, host);
+    const current = contextFromMe(me);
+    if (hostContext && !sameContext(hostContext, current)) return hostContext;
+    if (organizations.length !== 1) return null;
+
+    const recommendation = contextForOrganizationWorkspace(organizations[0], { host });
+    return recommendation && !sameContext(recommendation, current) ? recommendation : null;
+  }
+
+  function needsOrganizationChoice(me, { selectionExplicit = false, host = '' } = {}) {
+    if (selectionExplicit || !personalContextNeedsReplacement(me)) return false;
+    const organizations = eligibleOrganizationWorkspaces(me);
+    if (organizations.length < 2) return false;
+    return !uniqueHostContext(organizations, host);
+  }
+
   const api = {
     SHADOW_KEYS,
     normalizeContext,
     contextFromMe,
     contextKey,
     contextFromKey,
+    contextForOrganizationWorkspace,
     sameContext,
     shadowBucket,
     hasShadowData,
+    eligibleOrganizationWorkspaces,
+    needsOrganizationChoice,
+    recommendAutomaticContext,
     stampDraft,
     draftMatchesContext
   };

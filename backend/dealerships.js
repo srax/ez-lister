@@ -173,14 +173,15 @@ async function autoOnboardDealer({ inputHost, hosts, siteInfo, platform, clientS
   }
 }
 
-// link: only supported dealerships; one per user (user_dealerships PK enforces it).
+// Personal link: only supported dealerships; one per user (user_dealerships PK enforces it).
+// Organization ownership is a separate workspace boundary, not an exclusive lock on independent
+// salespeople. A claimed rooftop may therefore have both an organization and self-paid personal
+// users without sharing billing, seats, permissions, or statistics.
 // Switching to a DIFFERENT dealership is allowed only while the account has NO live paid
 // subscription (active/trialing) — once the user has paid, the dealership the subscription
 // was sold for is locked; changing it is a support/admin action (/api/admin/link|unlink).
 // Expired/canceled subscriptions may switch (they pay again on renewal).
-export async function linkDealer(userId, dealershipId, db = pool, {
-  enforceClaims = organizationsEnabled()
-} = {}) {
+export async function linkDealer(userId, dealershipId, db = pool, _options = {}) {
   const { rows } = await db.query('select id, status from dealerships where id = $1', [dealershipId]);
   if (!rows.length) { const e = new Error('unknown dealership'); e.status = 404; throw e; }
   if (rows[0].status !== 'supported') { const e = new Error('dealership not supported'); e.status = 400; throw e; }
@@ -188,12 +189,6 @@ export async function linkDealer(userId, dealershipId, db = pool, {
   const existing = await db.query('select dealership_id from user_dealerships where user_id = $1', [userId]);
   if (existing.rows.length) {
     if (existing.rows[0].dealership_id === dealershipId) return { linked: true, dealershipId };
-    if (enforceClaims && (await dealershipClaimState(dealershipId, db)).claimed) {
-      const e = new Error('This dealership is managed by a Carxpert team. Request access from the dealership.');
-      e.status = 409;
-      e.reason = 'dealership_claimed';
-      throw e;
-    }
     const sub = await activeSubscription(userId, db);
     if (sub.active) {
       const e = new Error('Your subscription is tied to your connected dealership. Contact support to change it.');
@@ -208,12 +203,6 @@ export async function linkDealer(userId, dealershipId, db = pool, {
     return { linked: true, dealershipId, switched: true };
   }
 
-  if (enforceClaims && (await dealershipClaimState(dealershipId, db)).claimed) {
-    const e = new Error('This dealership is managed by a Carxpert team. Request access from the dealership.');
-    e.status = 409;
-    e.reason = 'dealership_claimed';
-    throw e;
-  }
   await db.query('insert into user_dealerships (user_id, dealership_id) values ($1, $2)', [userId, dealershipId]);
   return { linked: true, dealershipId };
 }

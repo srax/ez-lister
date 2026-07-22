@@ -21,11 +21,23 @@ const DEALERCOM_HTML = `<html><head><title>Chevy of Attleboro</title></head><bod
 <div class="ddc-content"></div>
 </body></html>`;
 
+const CARSFORSALE_HTML = `<html><head><title>V &amp; L Auto Sales</title>
+<script src="/_content/Chassis.Modules.Inventory/app/InventoryDetails.min.js"></script></head><body>
+<a href="/Inventory/Details/529a34e5-ed99-4496-b143-246af6ad8799">Vehicle</a>
+<footer>Powered by Carsforsale.com</footer></body></html>`;
+
+const AUTOCORNER_HTML = `<html><head><title>Keith's Auto Sales</title>
+<script src="https://js-include.autocorner.com/javascript/srp.js"></script></head><body>
+<div x-data="alpineInventoryHandler()"></div>
+<script>fetch('/cgi-bin/srp_vehicles.cgi')</script><footer>stockNum Systems</footer></body></html>`;
+
 test('evidenceFromHtml: DealerOn markers all detected (Dealer.com markers stay off)', () => {
   const e = evidenceFromHtml(DEALERON_HTML);
   assert.deepEqual(e, {
     mentionsDealerOn: true, hasSitemapAspx: true, hasSearchNew: true, hasSearchUsed: true, hasInventoryPhotos: true,
-    mentionsDealerDotCom: false, serverDdcInventoryPath: false, mentionsDealerInspire: false
+    mentionsDealerDotCom: false, serverDdcInventoryPath: false, mentionsDealerInspire: false,
+    mentionsCarsForSale: false, hasChassisInventory: false,
+    mentionsAutoCorner: false, hasAutoCornerSrpEndpoint: false
   });
 });
 
@@ -39,6 +51,18 @@ test('evidenceFromHtml: Dealer.com markers detected (when not Akamai-walled)', (
 test('evidenceFromHtml: unknown-platform site scores nothing', () => {
   const e = evidenceFromHtml(OTHER_HTML);
   assert.equal(Object.values(e).some(Boolean), false);
+});
+
+test('evidenceFromHtml: Carsforsale Chassis and AutoCorner markers stay isolated', () => {
+  const cars = evidenceFromHtml(CARSFORSALE_HTML);
+  assert.equal(cars.mentionsCarsForSale, true);
+  assert.equal(cars.hasChassisInventory, true);
+  assert.equal(cars.mentionsAutoCorner, false);
+
+  const corner = evidenceFromHtml(AUTOCORNER_HTML);
+  assert.equal(corner.mentionsAutoCorner, true);
+  assert.equal(corner.hasAutoCornerSrpEndpoint, true);
+  assert.equal(corner.mentionsCarsForSale, false);
 });
 
 test('siteNameFromHtml: og:site_name beats title; title is fallback; fallback of last resort', () => {

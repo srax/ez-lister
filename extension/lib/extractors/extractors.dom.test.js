@@ -25,6 +25,8 @@ require('./schemaorg.js');
 require('./dealeron.js');
 require('./dealercom.js');
 require('./dealerinspire.js');
+require('./carsforsale.js');
+require('./autocorner.js');
 require('./generic.js');
 const EX = globalThis.CarxpertExtractors;
 
@@ -44,7 +46,14 @@ async function onPage(html, url, fn) {
 
 // The dispatcher's provider pick, mirrored (dealerContent.js): specific providers first, the
 // schema.org `generic` fallback next, DealerOn as the final default.
-const pick = () => [EX.dealercom, EX.dealeron, EX.dealerinspire, EX.generic].find((p) => p && p.detect()) || EX.dealeron;
+const pick = () => [
+  EX.carsforsale,
+  EX.autocorner,
+  EX.dealercom,
+  EX.dealeron,
+  EX.dealerinspire,
+  EX.generic
+].find((p) => p && p.detect()) || EX.dealeron;
 
 // ---------------------------------------------------------------- DealerOn
 maybe('DealerOn: detect() claims the page, Dealer.com does NOT (isolation)', async () => {
@@ -220,6 +229,74 @@ maybe('Dealer Inspire: extractVehicle reads the data-vehicle JSON + fills mileag
     assert.ok(v.photoUrls.every((u) => !/chrome|og-|stock-images/.test(u)), 'no stock/asset images');
     // The card's hit-link is http:// — must be upgraded to https so the VDP fetch isn't mixed-content blocked.
     assert.ok(v.sourceUrl.startsWith('https://'), 'http VDP link upgraded to https');
+  });
+});
+
+// ---- Carsforsale.com Chassis: per-card Car JSON-LD + VDP ImageGallery.
+maybe('Carsforsale: claims the Chassis SRP and exposes one real card', async () => {
+  await onPage(fixture('carsforsale-srp-card.html'), 'https://www.vlautosales.com/cars-for-sale', () => {
+    assert.equal(EX.carsforsale.detect(), true);
+    assert.equal(EX.autocorner.detect(), false);
+    assert.equal(pick().id, 'carsforsale');
+    assert.equal(EX.carsforsale.findCards().length, 1);
+    assert.equal(EX.carsforsale.cardKey(EX.carsforsale.findCards()[0]), '3VWCA7AU4FM507314');
+  });
+});
+
+maybe('Carsforsale: SRP card is enriched with stock and full signed gallery from the VDP', async () => {
+  await onPage(fixture('carsforsale-srp-card.html'), 'https://www.vlautosales.com/cars-for-sale', async () => {
+    global.fetch = async () => ({ ok: true, async text() { return fixture('carsforsale-vdp.html'); } });
+    const card = EX.carsforsale.findCards()[0];
+    const vehicle = await EX.carsforsale.extractVehicle(card, null, { location: 'Harrisonburg, VA' });
+    assert.equal(vehicle.vin, '3VWCA7AU4FM507314');
+    assert.equal(vehicle.stock, '7140');
+    assert.equal(vehicle.year, '2015');
+    assert.equal(vehicle.make, 'Volkswagen');
+    assert.equal(vehicle.model, 'Golf SportWagen TDI S');
+    assert.equal(vehicle.price, 9950);
+    assert.equal(vehicle.mileage, 122805);
+    assert.equal(vehicle.exteriorColor, 'Tornado Red');
+    assert.equal(vehicle.transmission, '6-Speed Double Clutch');
+    assert.equal(vehicle.bodyType, 'Wagon');
+    assert.equal(vehicle.drivetrain, 'FWD');
+    assert.equal(vehicle.fuelEconomy, '31 city / 42 highway MPG · 554 mi range');
+    assert.equal(vehicle.photoUrls.length, 3);
+    assert.equal(vehicle.location, 'Harrisonburg, VA');
+  });
+});
+
+// ---- AutoCorner: duplicated grid/list Alpine cards + a server-rendered VDP.
+maybe('AutoCorner: claims its SRP, drops sold/hidden duplicates, and keeps the active card', async () => {
+  await onPage(fixture('autocorner-srp-card.html'), 'https://www.keithsautosales.com/docs/vehicle_search.html', () => {
+    assert.equal(EX.autocorner.detect(), true);
+    assert.equal(EX.carsforsale.detect(), false);
+    assert.equal(pick().id, 'autocorner');
+    const cards = EX.autocorner.findCards();
+    assert.equal(cards.length, 1);
+    assert.equal(EX.autocorner.cardKey(cards[0]), '1FT8W3DT8SED24911');
+  });
+});
+
+maybe('AutoCorner: card is enriched from VDP details and full photo IDs', async () => {
+  await onPage(fixture('autocorner-srp-card.html'), 'https://www.keithsautosales.com/docs/vehicle_search.html', async () => {
+    global.fetch = async () => ({ ok: true, async text() { return fixture('autocorner-vdp.html'); } });
+    const card = EX.autocorner.findCards()[0];
+    const vehicle = await EX.autocorner.extractVehicle(card, null, { location: 'Penn Laird, VA' });
+    assert.equal(vehicle.vin, '1FT8W3DT8SED24911');
+    assert.equal(vehicle.stock, '291662');
+    assert.equal(vehicle.year, '2025');
+    assert.equal(vehicle.make, 'Ford');
+    assert.equal(vehicle.model, 'F350 XLT DRW DIESEL 8 ft');
+    assert.equal(vehicle.price, 64900);
+    assert.equal(vehicle.mileage, 28711);
+    assert.equal(vehicle.bodyType, 'Pickup');
+    assert.equal(vehicle.drivetrain, '4WD');
+    assert.equal(vehicle.fuelType, 'Diesel');
+    assert.match(vehicle.historyReportUrl, /^https:\/\/www\.carfax\.com\/VehicleHistory\//);
+    assert.equal(vehicle.exteriorColor, 'Gray');
+    assert.match(vehicle.transmission, /10-Spd/);
+    assert.equal(vehicle.photoUrls.length, 3);
+    assert.ok(vehicle.photoUrls.every((url) => /photos\.autocorner\.com\/1024x768\/.+\.jpg/.test(url)));
   });
 });
 
