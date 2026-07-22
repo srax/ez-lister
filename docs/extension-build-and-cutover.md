@@ -1,7 +1,7 @@
 # Extension — build, load & launch cutover
 
-Operational runbook for the Carxpert extension (agent-c-extension branch). Pairs with the
-plan in `docs/plans/04-agent-extension.md`.
+Operational runbook for the Carxpert extension. Pairs with the plan in
+`docs/plans/04-agent-extension.md`.
 
 ## Pinned extension ID
 
@@ -12,9 +12,9 @@ across dev (unpacked), staging, and prod:
 ID: nfpnkiknibofeiicekdehonjmpnonaeh
 ```
 
-The **private** signing key is kept out of the repo at
-`~/.config/carxpert/extension-signing-key.pem` (mode 600). **Back it up** — it's required to
-publish/republish under this ID. Regenerating it changes the ID and breaks the redirect chain.
+The **private** signing key used to pin unpacked builds is kept out of the repo at
+`~/.config/carxpert/extension-signing-key.pem` (mode 600). **Back it up.** Normal updates to the
+existing Chrome Web Store item use the keyless store ZIP; never include `key.pem` in an update.
 
 The backend derives everything else from this ID via the `EXTENSION_ID` env var
 (CORS allowlist, Better Auth `trustedOrigins`, and the `/api/auth/extension/finish`
@@ -26,16 +26,15 @@ deployment must set `EXTENSION_ID` to the pinned ID above.**
 EXTENSION_ID=nfpnkiknibofeiicekdehonjmpnonaeh
 ```
 
-(The `ejagngoidhjkjoadbbijjkpdgelklael` string still hardcoded as the default in
-`backend/{auth,server,routes/auth}.js` is a stale placeholder — harmless once `EXTENSION_ID`
-is set per env, but worth reconciling to the pinned ID in a future backend commit.)
+The same pinned ID is also the backend default, but every deployed environment still sets
+`EXTENSION_ID` explicitly so configuration drift is visible.
 
 ## Builds
 
 ```
 npm run build:ext:staging          # → dist/staging/ (unpacked), backend = staging Railway
 npm run build:ext:prod             # → dist/prod/ + zip, requires PROD_BACKEND_URL
-PROD_BACKEND_URL=https://api.carxpert… npm run build:ext:prod
+PROD_BACKEND_URL=https://carxpert-tools-backend-production.up.railway.app npm run build:ext:prod
 ```
 
 Each build swaps `host_permissions` (drops localhost + other Railway hosts, adds the target

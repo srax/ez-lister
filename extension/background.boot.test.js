@@ -110,6 +110,12 @@ test('background refresh activates the single eligible dealership workspace', as
     workspaceType: 'personal',
     organizationId: null
   };
+  const organizationContext = {
+    workspaceId: organizationId,
+    dealershipId: 'alexandria-toyota',
+    workspaceType: 'organization',
+    organizationId: 'org-1'
+  };
   const store = {
     ezlistBackendUrl: 'http://127.0.0.1:3737',
     ezlistAuthToken: 'test-token',
@@ -216,6 +222,22 @@ test('background refresh activates the single eligible dealership workspace', as
   assert.equal(store.ezlistWorkspaceSelectionExplicit, false);
   assert.equal(store.ezlistMe.reason, 'ok');
   assert.equal(store.ezlistMe.entitled, true);
+
+  // Choosing the independent path is explicit intent even before a workspace dropdown click.
+  // A newly approved team must not silently replace it on the next background refresh.
+  store.ezlistWorkspaceSelection = personalContext;
+  store.ezlistActiveContext = personalContext;
+  store.ezlistWorkspaceSelectionExplicit = false;
+  store.ezlistOnboardingIntent = 'personal';
+  store.ezlistMe = { ...personalMe, fetchedAt: Date.now() };
+  await vm.runInContext("refreshMe({ host: 'www.alexandriatoyota.com' })", sandbox);
+  assert.equal(meRequests.at(-1), personalId);
+  assert.equal(store.ezlistWorkspaceSelection.workspaceId, personalId);
+  assert.equal(store.ezlistMe.selectionExplicit, true);
+  delete store.ezlistOnboardingIntent;
+  store.ezlistWorkspaceSelection = organizationContext;
+  store.ezlistActiveContext = organizationContext;
+  store.ezlistMe = { ...organizationMe, fetchedAt: Date.now() };
 
   // A second person on the same shared dealership computer may also belong to this organization.
   // Their valid membership must not inherit the previous person's deliberate workspace choice.

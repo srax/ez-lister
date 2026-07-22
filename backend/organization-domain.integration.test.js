@@ -331,6 +331,48 @@ test('claim, activation, scoped team access, and serialized seat capacity lifecy
     (err) => err.reason === 'wrong_rooftop'
   );
 
+  // An owner removing one rooftop must not silently eject the member from the entire
+  // organization. The remaining rooftop scope and active profile stay intact.
+  const scopedUser = {
+    id: 'org-test-scoped-removal',
+    name: 'Scoped Removal User',
+    email: 'scoped-removal@example.com',
+    emailVerified: true
+  };
+  await seedUser(scopedUser);
+  const scopedMemberId = crypto.randomUUID();
+  await pool.query(
+    `insert into "member" (id,"organizationId","userId",role,"createdAt") values ($1,$2,$3,'member',now())`,
+    [scopedMemberId, organizationId, scopedUser.id]
+  );
+  await pool.query(
+    `insert into organization_member_profiles
+     (member_id,organization_id,user_id,role,status) values ($1,$2,$3,'salesperson','active')`,
+    [scopedMemberId, organizationId, scopedUser.id]
+  );
+  await pool.query(
+    `insert into member_rooftop_access
+     (member_id,organization_id,dealership_id,role) values
+     ($1,$2,'org-test-d1','salesperson'),($1,$2,'org-test-d2','salesperson')`,
+    [scopedMemberId, organizationId]
+  );
+  await removeMember(users.owner.id, organizationId, scopedMemberId, {
+    dealershipId: 'org-test-d1',
+    reason: 'scoped removal test'
+  });
+  const scopedAccess = await pool.query(
+    `select dealership_id,revoked_at from member_rooftop_access
+      where member_id=$1 order by dealership_id`,
+    [scopedMemberId]
+  );
+  assert.ok(scopedAccess.rows.find((row) => row.dealership_id === 'org-test-d1').revoked_at);
+  assert.equal(scopedAccess.rows.find((row) => row.dealership_id === 'org-test-d2').revoked_at, null);
+  assert.equal((await pool.query(
+    'select status from organization_member_profiles where member_id=$1',
+    [scopedMemberId]
+  )).rows[0].status, 'active');
+  await removeMember(users.owner.id, organizationId, scopedMemberId, { reason: 'scoped test cleanup' });
+
   const candidateIds = [];
   for (let i = 0; i < 10; i += 1) {
     const user = {
@@ -370,6 +412,39 @@ test('claim, activation, scoped team access, and serialized seat capacity lifecy
   const finalCapacity = await getCapacity(organizationId, 'org-test-d1');
   assert.equal(finalCapacity.assigned, 10);
   assert.equal(finalCapacity.available, 0);
+
+  // A request can remain awaiting-capacity while an owner manually gives its provisional
+  // member a newly freed seat. Canceling that request must release the paid seat as well as
+  // its rooftop scope, then make the capacity reusable.
+  const cancelWaitingUser = {
+    id: 'org-test-cancel-waiting',
+    name: 'Cancel Waiting Salesperson',
+    email: 'cancel-waiting@example.com',
+    emailVerified: true
+  };
+  await seedUser(cancelWaitingUser);
+  const cancelWaitingRequest = await createAccessRequest(cancelWaitingUser, { dealershipId: 'org-test-d1' });
+  const cancelWaitingDecision = await decideAccessRequest(
+    users.owner.id,
+    organizationId,
+    cancelWaitingRequest.id,
+    { approve: true }
+  );
+  assert.equal(cancelWaitingDecision.request.status, 'approved_awaiting_capacity');
+  await pool.query(
+    `update seat_assignments set released_at=now(),released_by=$2
+      where organization_id=$1 and dealership_id='org-test-d1' and member_id=$3 and released_at is null`,
+    [organizationId, users.owner.id, candidateIds[0]]
+  );
+  await assignSeat(users.owner.id, organizationId, 'org-test-d1', cancelWaitingDecision.memberId);
+  await cancelAccessRequest(cancelWaitingUser.id, cancelWaitingRequest.id);
+  assert.equal((await pool.query(
+    `select count(*)::int as count from seat_assignments
+      where organization_id=$1 and dealership_id='org-test-d1' and member_id=$2 and released_at is null`,
+    [organizationId, cancelWaitingDecision.memberId]
+  )).rows[0].count, 0);
+  await assignSeat(users.owner.id, organizationId, 'org-test-d1', candidateIds[0]);
+  assert.equal((await getCapacity(organizationId, 'org-test-d1')).assigned, 10);
 
   const waitingUser = {
     id: 'org-test-waiting',

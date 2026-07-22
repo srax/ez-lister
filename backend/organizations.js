@@ -33,7 +33,9 @@ function hashToken(value) {
 }
 
 export function approvalRole(actorRole, requestedRole, selectedRole = null) {
-  const role = selectedRole || requestedRole || 'salesperson';
+  // A requester's desired role is context for the owner, never an authorization decision.
+  // An approval with no explicit owner choice always creates the least-privileged role.
+  const role = selectedRole || 'salesperson';
   if (!['manager', 'salesperson'].includes(role)) {
     throw domainError('invalid approved role', 400, 'invalid_role');
   }
@@ -397,7 +399,7 @@ async function releaseAccessRequestProvisioning(request, userId, db) {
     [request.id]
   );
 
-  if (request.status !== 'approved_awaiting_capacity') return;
+  if (request.status !== 'approved_awaiting_capacity') return { releasedCapacity: false };
 
   // An awaiting-capacity request already created a membership and rooftop scope. Withdraw only
   // that provisional scope; preserve any other rooftop memberships the user legitimately has.
@@ -406,7 +408,13 @@ async function releaseAccessRequestProvisioning(request, userId, db) {
     [request.organization_id, userId]
   );
   const memberId = members[0] && members[0].id;
-  if (!memberId) return;
+  if (!memberId) return { releasedCapacity: false };
+
+  const released = await db.query(
+    `update seat_assignments set released_at=now(),released_by=$4
+      where member_id=$1 and organization_id=$2 and dealership_id=$3 and released_at is null`,
+    [memberId, request.organization_id, request.dealership_id, userId]
+  );
 
   await db.query(
     `update member_rooftop_access set revoked_at=now()
@@ -424,10 +432,11 @@ async function releaseAccessRequestProvisioning(request, userId, db) {
       [memberId]
     );
   }
+  return { releasedCapacity: released.rowCount > 0 };
 }
 
 export async function cancelAccessRequest(userId, requestId, db = pool) {
-  return withTransaction(async (tx) => {
+  const result = await withTransaction(async (tx) => {
     const { rows } = await tx.query(
       `select * from organization_access_requests where id=$1 and user_id=$2 for update`,
       [requestId, userId]
@@ -447,7 +456,7 @@ export async function cancelAccessRequest(userId, requestId, db = pool) {
         where id=$1 and user_id=$2 returning *`,
       [requestId, userId]
     );
-    await releaseAccessRequestProvisioning(request, userId, tx);
+    const provisioning = await releaseAccessRequestProvisioning(request, userId, tx);
 
     await recordOrganizationAudit({
       organizationId: request.organization_id,
@@ -458,8 +467,18 @@ export async function cancelAccessRequest(userId, requestId, db = pool) {
       targetId: requestId,
       reason: 'user chose independent personal access'
     }, tx);
-    return { request: canceled[0], changed: true };
+    return {
+      request: canceled[0],
+      changed: true,
+      releasedCapacity: Boolean(provisioning && provisioning.releasedCapacity),
+      dealershipId: request.dealership_id,
+      organizationId: request.organization_id
+    };
   }, { db, isolation: 'serializable', retries: 2 });
+  if (result.releasedCapacity) {
+    await activateWaitingRequests(result.organizationId, result.dealershipId, db);
+  }
+  return { request: result.request, changed: result.changed };
 }
 
 export async function listUserAccessRequests(userId, db = pool) {
@@ -553,7 +572,9 @@ export async function decideAccessRequest(actorUserId, organizationId, requestId
       return { request, changed: false };
     }
     const actor = await requireMembership(actorUserId, organizationId, tx);
-    const decidedRole = approvalRole(actor.role, request.requested_role, approve ? role : null);
+    const decidedRole = approve
+      ? approvalRole(actor.role, request.requested_role, role)
+      : 'salesperson';
     await requireTeamManagement(actor, request.dealership_id, decidedRole, tx);
     if (!approve) {
       await releaseAccessRequestProvisioning(request, request.user_id, tx);
@@ -1141,10 +1162,33 @@ export async function removeMember(actorUserId, organizationId, memberId, {
     if (target.role === 'owner') throw domainError('transfer ownership before removing the owner', 409, 'owner_transfer_required');
     let releasedRooftops = [];
 
-    if (actor.role !== 'owner') {
-      if (!dealershipId) throw domainError('manager removal must name a rooftop', 400, 'rooftop_required');
+    if (dealershipId) {
       await requireTeamManagement(actor, dealershipId, target.role, tx);
-      if (target.role !== 'salesperson') throw domainError('only owners can remove managers', 403, 'owner_required');
+      if (actor.role !== 'owner' && target.role !== 'salesperson') {
+        throw domainError('only owners can remove managers', 403, 'owner_required');
+      }
+      // all_rooftops cannot express a single-rooftop exclusion. Materialize manager access to
+      // every other operational rooftop before narrowing the profile-level grant.
+      if (target.all_rooftops) {
+        requireOwner(actor);
+        await tx.query(
+          `insert into member_rooftop_access (
+             member_id,organization_id,dealership_id,role,revoked_at
+           )
+           select $1,$2,r.dealership_id,'manager',null
+             from organization_rooftops r
+            where r.organization_id=$2 and r.dealership_id<>$3
+              and r.status in ('reserved','active','past_due','suspended','pending_removal')
+           on conflict (member_id,dealership_id) do update set
+             role='manager',revoked_at=null,created_at=now()`,
+          [memberId, organizationId, dealershipId]
+        );
+        await tx.query(
+          `update organization_member_profiles set all_rooftops=false,updated_at=now()
+            where member_id=$1 and organization_id=$2`,
+          [memberId, organizationId]
+        );
+      }
       await tx.query(
         `update member_rooftop_access set revoked_at=now()
           where member_id=$1 and organization_id=$2 and dealership_id=$3 and revoked_at is null`,
@@ -1169,6 +1213,7 @@ export async function removeMember(actorUserId, organizationId, memberId, {
         );
       }
     } else {
+      requireOwner(actor);
       const released = await tx.query(
         `update seat_assignments set released_at=now(), released_by=$3
           where member_id=$1 and organization_id=$2 and released_at is null

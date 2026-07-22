@@ -8,7 +8,7 @@ import {
   normalizeEmail
 } from './organizations.js';
 
-function transactionDb(request, { remainingScope = false } = {}) {
+function transactionDb(request, { remainingScope = false, seatReleased = false } = {}) {
   const writes = [];
   const client = {
     async query(sql) {
@@ -23,6 +23,10 @@ function transactionDb(request, { remainingScope = false } = {}) {
       }
       if (q.startsWith('update seat_reservations')) { writes.push('reservations:released'); return { rows: [] }; }
       if (q.startsWith('select id from "member"')) return { rows: [{ id: 'member-1' }] };
+      if (q.startsWith('update seat_assignments')) {
+        if (seatReleased) writes.push('seat:released');
+        return { rows: [], rowCount: seatReleased ? 1 : 0 };
+      }
       if (q.startsWith('update member_rooftop_access')) { writes.push('scope:revoked'); return { rows: [] }; }
       if (q.startsWith('select 1 from member_rooftop_access')) {
         return { rows: remainingScope ? [{ '?column?': 1 }] : [] };
@@ -51,6 +55,7 @@ test('access approval role is owner-controlled while managers remain salesperson
   assert.equal(approvalRole('owner', 'salesperson', 'manager'), 'manager');
   assert.equal(approvalRole('owner', 'manager', 'salesperson'), 'salesperson');
   assert.equal(approvalRole('manager', 'salesperson', null), 'salesperson');
+  assert.equal(approvalRole('owner', 'manager', null), 'salesperson');
   assert.throws(
     () => approvalRole('manager', 'salesperson', 'manager'),
     (err) => err.reason === 'owner_required'

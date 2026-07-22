@@ -51,6 +51,25 @@ test('plausiblePrice: bounds', () => {
   assert.equal(M.plausiblePrice('7495'), false); // must be a number
 });
 
+test('firstNumber never concatenates mileage and an annual estimate', () => {
+  assert.equal(M.firstNumber('123,456 mi. (Est. 12,000/yr)'), 123456);
+  assert.equal(M.firstNumber('28,711 miles'), 28711);
+  assert.equal(M.firstNumber('not available'), undefined);
+});
+
+test('priceFromText chooses the advertised price from multi-price dealer copy', () => {
+  assert.equal(M.priceFromText('$64,900 $62,900'), 62900);
+  assert.equal(M.priceFromText('Was $64,900 · Now $62,900'), 62900);
+  assert.equal(M.priceFromText('Sale $62,900 · MSRP $64,900'), 62900);
+  assert.equal(M.priceFromText('MSRP $64,900 · Internet Price $61,750'), 61750);
+});
+
+test('priceFromText fails closed on implausible or unrelated values', () => {
+  assert.equal(M.priceFromText('$999'), undefined);
+  assert.equal(M.priceFromText('$649,001'), undefined);
+  assert.equal(M.priceFromText('Call for price'), undefined);
+});
+
 // ---- composeDescription: the ONE template (panel preview ≡ auto-fill output, details ALWAYS in) ----
 const EQUINOX = {
   year: 2027, make: 'Chevrolet', model: 'Equinox AWD LT', mileage: 2,

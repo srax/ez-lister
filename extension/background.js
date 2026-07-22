@@ -1098,14 +1098,26 @@ async function signOut() {
 
   const cleanup = [];
   if (token) {
-    cleanup.push(fetch(`${backend}/api/auth/sign-out`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`
-      },
-      body: '{}'
-    }));
+    cleanup.push((async () => {
+      let lastError = null;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const response = await fetch(`${backend}/api/auth/sign-out`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`
+            },
+            body: '{}'
+          });
+          if (response.ok) return;
+          lastError = new Error(`session revoke returned ${response.status}`);
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      throw lastError || new Error('session revoke failed');
+    })());
   }
   // OAuth creates an HttpOnly browser-cookie session in addition to the bearer session returned
   // to the extension. A web-auth navigation is required to send and expire that cookie.
@@ -1113,7 +1125,11 @@ async function signOut() {
     url: `${backend}/api/auth/extension/logout`,
     interactive: false
   }));
-  await Promise.allSettled(cleanup);
+  const results = await Promise.allSettled(cleanup);
+  const failed = results.filter((result) => result.status === 'rejected');
+  if (failed.length) {
+    throw new Error('Signed out on this browser, but remote session cleanup did not fully complete.');
+  }
 }
 
 async function clearAuth(options = {}) {
@@ -1175,12 +1191,17 @@ async function refreshMeUnlocked(options = {}) {
   if (!token) { await chrome.storage.local.remove(['ezlistMe', 'ezlistLease']); return null; }
   const selectionState = await chrome.storage.local.get([
     WORKSPACE_SELECTION_KEY,
-    WORKSPACE_SELECTION_EXPLICIT_KEY
+    WORKSPACE_SELECTION_EXPLICIT_KEY,
+    'ezlistOnboardingIntent'
   ]);
+  const explicitPersonalIntent = selectionState.ezlistOnboardingIntent === 'personal';
   const hasExplicitOverride = Object.prototype.hasOwnProperty.call(options, 'explicitSelection');
   let selectionExplicit = hasExplicitOverride
     ? !!options.explicitSelection
-    : (!options.selection && selectionState[WORKSPACE_SELECTION_EXPLICIT_KEY] === true);
+    : (!options.selection && (
+        selectionState[WORKSPACE_SELECTION_EXPLICIT_KEY] === true
+        || explicitPersonalIntent
+      ));
   let result;
   try {
     result = await fetchMeData(token, options);

@@ -25,9 +25,13 @@
   }
 
   function money(value) {
-    const raw = squish(value).replace(/[^\d.]/g, '');
-    const n = Number(raw);
-    return Number.isFinite(n) && n > 0 ? Math.round(n) : undefined;
+    const core = root.CarxpertCore;
+    return core && core.priceFromText ? core.priceFromText(value) : undefined;
+  }
+
+  function count(value) {
+    const core = root.CarxpertCore;
+    return core && core.firstNumber ? core.firstNumber(value) : undefined;
   }
 
   function urlKey(value) {
@@ -169,7 +173,7 @@
       year: ld.year || titleYear,
       trim,
       price: ld.price || money(text(card.querySelector('.srp-ftc-headline .value, .price-value, [class*="price"]'))),
-      mileage: ld.mileage != null ? ld.mileage : money(pairs.mileage),
+      mileage: ld.mileage != null ? ld.mileage : count(pairs.mileage),
       engine: pairs.engine || ld.engine || '',
       exteriorColor: pairs['ext. color'] || pairs['exterior color'] || ld.exteriorColor || '',
       transmission: pairs.transmission || ld.transmission || '',
@@ -310,7 +314,7 @@
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
-      decodeHtml, money, urlKey, vehicleNodeForUrl, galleryPhotos, stockFromHtml,
+      decodeHtml, money, count, urlKey, vehicleNodeForUrl, galleryPhotos, stockFromHtml,
       friendlyDrivetrain, fuelEconomyFromHtml, vehicleDataFromNodes
     };
   }

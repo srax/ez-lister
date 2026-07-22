@@ -19,6 +19,54 @@
   // ---- price ----
   const plausiblePrice = (n) => typeof n === 'number' && n >= 1000 && n <= 500000;
 
+  // Read one human-formatted number without ever concatenating separate values. Dealer cards
+  // routinely render strings such as "123,456 mi. (Est. 12,000/yr)"; stripping every
+  // non-digit character turns that into 12,345,612,000. The first displayed value is the
+  // vehicle's mileage in that shape.
+  function firstNumber(value) {
+    if (typeof value === 'number') return Number.isFinite(value) ? Math.round(value) : undefined;
+    const match = String(value == null ? '' : value).match(/\d[\d,]*(?:\.\d+)?/);
+    if (!match) return undefined;
+    const number = Number(match[0].replace(/,/g, ''));
+    return Number.isFinite(number) ? Math.round(number) : undefined;
+  }
+
+  // Price blocks on independent-dealer sites often contain both reference and advertised
+  // prices ("Was $64,900 · Now $62,900" or "Sale $62,900 · MSRP $64,900"). Parse each amount
+  // independently, prefer an explicitly advertised/current label, discard reference-price
+  // labels, and otherwise choose the lowest plausible amount. This fails closed instead of
+  // ever emitting an 11-digit concatenation into a live Marketplace form.
+  function priceFromText(value) {
+    if (typeof value === 'number') {
+      const number = Math.round(value);
+      return plausiblePrice(number) ? number : undefined;
+    }
+    const raw = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+    if (!raw) return undefined;
+    const candidates = [];
+    const amountRe = /(?:\$|USD\s*)?(\d{1,3}(?:,\d{3})+|\d{4,6})(?:\.\d{1,2})?/gi;
+    let match;
+    while ((match = amountRe.exec(raw))) {
+      const number = Math.round(Number(match[1].replace(/,/g, '')));
+      if (!plausiblePrice(number)) continue;
+      const before = raw.slice(Math.max(0, match.index - 32), match.index).toLowerCase();
+      const after = raw.slice(amountRe.lastIndex, amountRe.lastIndex + 20).toLowerCase();
+      candidates.push({
+        number,
+        current: /(?:sale|selling|internet|our|today(?:'s)?|now|special)\s*(?:price)?\s*[:\-]?\s*$/.test(before)
+          || /^\s*(?:sale|selling|internet|our|today(?:'s)?|now|special)\b/.test(after),
+        reference: /(?:msrp|retail|list|original|before|was)\s*(?:price)?\s*[:\-]?\s*$/.test(before)
+          || /^\s*(?:msrp|retail|list|original|before|was)\b/.test(after)
+      });
+    }
+    if (!candidates.length) return undefined;
+    const current = candidates.filter((candidate) => candidate.current && !candidate.reference);
+    if (current.length) return current[current.length - 1].number;
+    const advertised = candidates.filter((candidate) => !candidate.reference);
+    const pool = advertised.length ? advertised : candidates;
+    return Math.min(...pool.map((candidate) => candidate.number));
+  }
+
   // data-pricelib decodes (base64) to a labelled list: "Internet Price:7495.0;Selling
   // Price:7495.0;reff_Flat Low Price:7495.0;calc_INTERNET PRICE:8490.0". The advertised
   // price is the Selling/Internet entry — NEVER the max: calc_* rows fold in doc fees
@@ -107,7 +155,7 @@
   }
 
   const api = {
-    norm, cleanAttr, plausiblePrice, decodePriceLib, formatDistance, vehiclePhotoCandidates,
+    norm, cleanAttr, plausiblePrice, firstNumber, priceFromText, decodePriceLib, formatDistance, vehiclePhotoCandidates,
     composeDescription, convertDistances
   };
   root.CarxpertCore = api;

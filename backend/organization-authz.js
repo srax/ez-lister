@@ -75,7 +75,24 @@ export async function requireTeamManagement(member, dealershipId, requestedRole,
   if (requestedRole && requestedRole !== 'salesperson') {
     throw new OrganizationAccessError('only owners can manage managers', 403, 'owner_required');
   }
-  await requireRooftopAccess(member, dealershipId, db);
+  if (member.all_rooftops) {
+    await requireRooftopAccess(member, dealershipId, db);
+    return;
+  }
+  // A profile-level manager role does not grant management at every rooftop. The scoped
+  // access row is the authority for this location and must itself carry manager privileges.
+  const { rows } = await db.query(
+    `select 1 from member_rooftop_access a
+       join organization_rooftops r
+         on r.organization_id=a.organization_id and r.dealership_id=a.dealership_id
+      where a.member_id=$1 and a.organization_id=$2 and a.dealership_id=$3
+        and a.role='manager' and a.revoked_at is null
+        and r.status in ('reserved','active','past_due','suspended','pending_removal')`,
+    [member.member_id, member.organization_id, dealershipId]
+  );
+  if (!rows.length) {
+    throw new OrganizationAccessError('rooftop management access required', 403, 'wrong_rooftop');
+  }
 }
 
 export async function hasActiveSeat(memberId, organizationId, dealershipId, db = pool) {

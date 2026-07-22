@@ -889,8 +889,8 @@ function renderTeamData() {
     const pending = ['pending', 'approved_awaiting_capacity'].includes(request.status);
     const roleControl = pending && dashboard.role === 'owner'
       ? `<select class="team-role-select" data-request-role="${esc(request.id)}" aria-label="Approved role">`
-        + `<option value="salesperson"${request.requested_role === 'salesperson' ? ' selected' : ''}>Salesperson</option>`
-        + `<option value="manager"${request.requested_role === 'manager' ? ' selected' : ''}>Manager</option></select>`
+        + '<option value="salesperson" selected>Salesperson</option>'
+        + '<option value="manager">Manager</option></select>'
       : '';
     const actions = pending
       ? `<div class="team-actions">${roleControl}<button class="team-action approve" data-request="${esc(request.id)}" data-decision="approve">Approve</button>`
@@ -1780,7 +1780,9 @@ function wireEvents() {
   ui.dealerCandidates.addEventListener('click', (event) => {
     const button = event.target.closest('[data-dealer-candidate]');
     if (!button) return;
-    const candidate = state.detectedCandidates[Number(button.dataset.dealerCandidate)];
+    const candidate = state.detectedCandidates.find((item) =>
+      item.dealership && item.dealership.id === button.dataset.dealerCandidate
+    );
     if (!candidate) return;
     state.detectedDealer = candidate.dealership;
     state.detectedClaimed = Boolean(candidate.claimed);
@@ -1797,12 +1799,17 @@ function wireEvents() {
     state.claimDealers = [];
     state.detectedDealer = null;
     state.detectedClaimed = false;
-    chrome.storage.local.set({ ezlistOnboardingIntent: state.intent });
+    await chrome.storage.local.set({ ezlistOnboardingIntent: state.intent });
     state.autoDealerConnectTried = false;
-    renderGate();
     if (state.intent === 'personal' && state.accessRequested) {
-      await withdrawPendingAccessRequest();
+      // Keep the intent chooser in place until the backend confirms withdrawal. Rendering the
+      // subscription screen first briefly exposed checkout while a team approval could race it.
+      button.disabled = true;
+      const withdrawn = await withdrawPendingAccessRequest({ refresh: false });
+      button.disabled = false;
+      if (!withdrawn || !withdrawn.ok) return;
     }
+    renderGate();
   });
   ui.gateWorkspaces.addEventListener('click', async (event) => {
     const button = event.target.closest('[data-workspace-id]');
@@ -2190,7 +2197,7 @@ function gateStateKey(auth) {
   if (auth.canList) return null;
   if (auth.paid && hasCapability('stats:team')) return null; // manager/owner dashboard, seat optional
   if (auth.paid && auth.activeWorkspace && auth.activeWorkspace.type === 'organization') return 'no_seat';
-  if (WorkspaceContext.needsOrganizationChoice(auth, {
+  if (state.intent !== 'personal' && WorkspaceContext.needsOrganizationChoice(auth, {
     selectionExplicit: auth.selectionExplicit
   })) return 'choose_workspace';
   if (state.accessRequested
@@ -2353,7 +2360,7 @@ function renderGate() {
   }
   renderDealerConnect(screen, auth);
   if (state.teamOnboarding && !state.accessRequested
-      && ['no_dealership', 'claim_pending', 'claim_approved'].includes(screen)) {
+      && ['choose_intent', 'no_dealership', 'claim_pending', 'claim_approved'].includes(screen)) {
     ui.gateSecondary.hidden = false;
     ui.gateSecondary.textContent = 'Back to CarXprt';
     ui.gateSecondary.dataset.action = 'cancelTeamOnboarding';
@@ -2476,12 +2483,12 @@ function renderDealerConnect(key, auth) {
 
   const candidates = state.detectedDealer ? [] : state.detectedCandidates;
   ui.dealerCandidates.hidden = !candidates.length;
-  ui.dealerCandidates.innerHTML = candidates.map((candidate, index) => {
+  ui.dealerCandidates.innerHTML = candidates.map((candidate) => {
     const dealership = candidate.dealership || {};
     const domain = (Array.isArray(dealership.domains) && dealership.domains[0])
       || candidate.sourceHost || '';
     const status = candidate.claimed ? 'CarXprt team available' : 'Supported dealership';
-    return `<button type="button" class="dealer-candidate" data-dealer-candidate="${index}">`
+    return `<button type="button" class="dealer-candidate" data-dealer-candidate="${esc(dealership.id || '')}">`
       + `<b>${esc(dealership.name || domain || 'Dealership')}</b><small>${esc(domain)}${domain ? ' · ' : ''}${status}</small></button>`;
   }).join('');
   if (candidates.length) {
@@ -2620,8 +2627,10 @@ async function gateAction(action, btnEl) {
     state.intent = 'personal';
     await chrome.storage.local.set({ ezlistOnboardingIntent: 'personal' });
     await chrome.storage.local.remove('ezlistTeamOnboarding');
+    // Do not reveal the personal checkout until any open team request is conclusively gone.
+    const withdrawn = await withdrawPendingAccessRequest({ refresh: false });
+    if (!withdrawn || !withdrawn.ok) return;
     renderGate();
-    await withdrawPendingAccessRequest();
     return;
   }
   if (action === 'detectDealer') { detectDealership(); return; }   // manages its own button state
@@ -2915,6 +2924,14 @@ async function withdrawPendingAccessRequest({ refresh = true } = {}) {
     requestId: pending.requestId
   }).catch(() => null);
   if (!res || !res.ok) {
+    if (res && res.reason === 'membership_active') {
+      // Approval won the race. Preserve the explicit personal choice; the active team remains
+      // available from the workspace switcher without hijacking the user's checkout path.
+      state.accessRequested = null;
+      await chrome.storage.local.remove('ezlistAccessRequestPending');
+      if (refresh) await refreshAuth({ refresh: true });
+      return { ok: true, membershipActive: true };
+    }
     // Stay on the pending screen until withdrawal succeeds so a manager cannot unexpectedly
     // approve a request while the user proceeds through an independent checkout.
     state.intent = null;
@@ -3041,7 +3058,7 @@ async function submitDealerRequest(e) {
 }
 
 async function doSignOut() {
-  await chrome.runtime.sendMessage({ type: 'EZLIST_SIGN_OUT' }).catch(() => {});
+  const result = await chrome.runtime.sendMessage({ type: 'EZLIST_SIGN_OUT' }).catch(() => null);
   ui.accountMenu.hidden = true;
   state.claims = [];
   state.claimsLoaded = false;
@@ -3053,6 +3070,9 @@ async function doSignOut() {
   state.detectedDealer = null;
   state.detectedCandidates = [];
   await refreshAuth();
+  if (result && !result.ok) {
+    setStatus(result.error || 'Signed out here, but remote session cleanup may still be pending.', true);
+  }
 }
 
 async function startTeamOnboarding() {

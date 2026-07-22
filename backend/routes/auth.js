@@ -1,4 +1,5 @@
 import express, { Router } from 'express';
+import crypto from 'node:crypto';
 import { fromNodeHeaders } from 'better-auth/node';
 import { auth, googleConfigured } from '../auth.js';
 import { createAuthCode, consumeAuthCode } from '../auth-codes.js';
@@ -8,6 +9,8 @@ import { createAuthCode, consumeAuthCode } from '../auth-codes.js';
 // registered BEFORE the Better Auth `/api/auth/*` catch-all so they win the route match.
 
 const EXTENSION_ID = process.env.EXTENSION_ID || 'nfpnkiknibofeiicekdehonjmpnonaeh';
+const AUTH_ATTEMPT_COOKIE = 'carxpert_extension_auth_attempt';
+const AUTH_ATTEMPT_MAX_AGE_SECONDS = 10 * 60;
 
 function baseUrl(req) {
   return process.env.BETTER_AUTH_URL || `${req.protocol}://${req.get('host')}`;
@@ -24,6 +27,34 @@ function preventAuthCaching(res) {
   res.setHeader('Referrer-Policy', 'no-referrer');
 }
 
+function requestCookie(req, name) {
+  const prefix = `${name}=`;
+  for (const part of String(req.headers.cookie || '').split(';')) {
+    const value = part.trim();
+    if (value.startsWith(prefix)) return decodeURIComponent(value.slice(prefix.length));
+  }
+  return '';
+}
+
+function authAttemptCookie(req, value, maxAge = AUTH_ATTEMPT_MAX_AGE_SECONDS) {
+  const secure = /^https:/i.test(baseUrl(req)) || req.secure;
+  return [
+    `${AUTH_ATTEMPT_COOKIE}=${encodeURIComponent(value)}`,
+    'Path=/api/auth/extension',
+    'HttpOnly',
+    'SameSite=Lax',
+    secure ? 'Secure' : '',
+    `Max-Age=${maxAge}`
+  ].filter(Boolean).join('; ');
+}
+
+function sameAttempt(expected, actual) {
+  if (!expected || !actual) return false;
+  const left = Buffer.from(String(expected));
+  const right = Buffer.from(String(actual));
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
 export function createExtensionAuthRouter({
   authInstance = auth,
   isGoogleConfigured = googleConfigured,
@@ -33,10 +64,10 @@ export function createExtensionAuthRouter({
 } = {}) {
   const router = Router();
 
-  // 1) Begin the journey. Delete any ambient Better Auth cookie first: /finish must only be
-  // able to observe the session created by this OAuth attempt, never a previous account's
-  // surviving cookie on a shared computer. Then forward both the deletion and OAuth-state
-  // cookies while redirecting to Google.
+  // 1) Begin the journey. Bind /finish to this exact OAuth attempt with a short-lived HttpOnly
+  // cookie plus a nonce carried inside Better Auth's callback URL. This prevents /finish from
+  // minting a bearer code from an ambient older browser session without turning this safe GET
+  // endpoint into a cross-site logout primitive.
   router.get('/api/auth/extension/start', async (req, res, next) => {
     try {
       preventAuthCaching(res);
@@ -45,21 +76,23 @@ export function createExtensionAuthRouter({
         return;
       }
       const headers = fromNodeHeaders(req.headers);
-      const signedOut = await authInstance.api.signOut({ headers, asResponse: true });
+      const attempt = crypto.randomBytes(32).toString('base64url');
+      const callback = new URL(`${baseUrl(req)}/api/auth/extension/finish`);
+      callback.searchParams.set('attempt', attempt);
       const r = await authInstance.api.signInSocial({
         // Better Auth's rate limiter resolves the client IP from these forwarded headers.
         // Omitting them collapses every OAuth start into one shared fallback bucket on Railway.
         headers,
-        body: { provider: 'google', callbackURL: `${baseUrl(req)}/api/auth/extension/finish` },
+        body: { provider: 'google', callbackURL: callback.toString() },
         asResponse: true
       });
-      const cookies = [...responseCookies(signedOut), ...responseCookies(r)];
-      if (cookies.length) res.setHeader('Set-Cookie', cookies);
       const data = await r.json().catch(() => ({}));
       if (!data.url) {
         res.status(502).json({ ok: false, error: 'no auth url from provider' });
         return;
       }
+      const cookies = [authAttemptCookie(req, attempt), ...responseCookies(r)];
+      res.setHeader('Set-Cookie', cookies);
       res.redirect(data.url);
     } catch (err) {
       next(err);
@@ -88,6 +121,13 @@ export function createExtensionAuthRouter({
   router.get('/api/auth/extension/finish', async (req, res, next) => {
     try {
       preventAuthCaching(res);
+      const expectedAttempt = requestCookie(req, AUTH_ATTEMPT_COOKIE);
+      const actualAttempt = typeof req.query.attempt === 'string' ? req.query.attempt : '';
+      res.setHeader('Set-Cookie', authAttemptCookie(req, '', 0));
+      if (!sameAttempt(expectedAttempt, actualAttempt)) {
+        res.status(401).type('html').send('<p>Sign-in attempt expired. Start again from CarXprt.</p>');
+        return;
+      }
       const session = await authInstance.api.getSession({ headers: fromNodeHeaders(req.headers) });
       if (!session || !session.user) {
         res.status(401).type('html').send('<p>Sign-in failed. You can close this window.</p>');

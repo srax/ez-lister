@@ -291,13 +291,17 @@ async function previousSuccessfulCount(db, dealershipId) {
 // Dealerships with ≥1 tracked valid-VIN listing that a scan could still change: 'listed'
 // cars (miss clock) AND scanner-sold cars (revival) — otherwise a dealership whose tracked
 // cars are all scan-sold drops out of the cycle and reappearances are never noticed.
-async function dealershipsToScan(db) {
+export async function dealershipsToScan(db, adapters = ADAPTERS) {
+  const platforms = Object.keys(adapters || {});
+  if (!platforms.length) return [];
   const { rows } = await db.query(
     `select distinct d.* from dealerships d
      join listings l on l.dealership_id = d.id
      where d.status = 'supported'
+       and d.platform = any($1::text[])
        and l.vin is not null
-       and (l.status = 'listed' or (l.status = 'sold' and l.sold_source = 'scan'))`
+       and (l.status = 'listed' or (l.status = 'sold' and l.sold_source = 'scan'))`,
+    [platforms]
   );
   return rows;
 }
@@ -326,7 +330,7 @@ export async function runScanCycle({
   await applyScheduledCapacityReductions(db).catch(() => {});
   await applyScheduledRooftopRemovals(db, new Date(now)).catch(() => {});
 
-  const dealerships = scanInventory ? await dealershipsToScan(db) : [];
+  const dealerships = scanInventory ? await dealershipsToScan(db, adapters) : [];
   const results = [];
   for (const d of dealerships) {
     results.push({ dealership: d.id, ...(await scanDealership(d, { db, now, condStates, adapters, isEntitledFn })) });

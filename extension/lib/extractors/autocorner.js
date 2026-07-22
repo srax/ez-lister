@@ -24,9 +24,13 @@
   }
 
   function money(value) {
-    const digits = squish(value).replace(/[^\d.]/g, '');
-    const n = Number(digits);
-    return Number.isFinite(n) && n > 0 ? Math.round(n) : undefined;
+    const core = root.CarxpertCore;
+    return core && core.priceFromText ? core.priceFromText(value) : undefined;
+  }
+
+  function count(value) {
+    const core = root.CarxpertCore;
+    return core && core.firstNumber ? core.firstNumber(value) : undefined;
   }
 
   function vinFrom(value) {
@@ -93,7 +97,7 @@
       make: fields.make || '',
       model: fields.model || '',
       price: money(fields.price || fields['today\'s price']),
-      mileage: money(fields.odometer || fields.miles || fields.mileage),
+      mileage: count(fields.odometer || fields.miles || fields.mileage),
       exteriorColor: fields['exterior color'] || '',
       interiorColor: fields['interior color'] || '',
       engine: fields.engine || '',
@@ -149,7 +153,7 @@
       stock,
       caption,
       price: money(pairs.price),
-      mileage: money(pairs.miles || pairs.mileage || pairs.odometer),
+      mileage: count(pairs.miles || pairs.mileage || pairs.odometer),
       bodyType: pairs.body || '',
       engine: pairs.engine || '',
       transmission: pairs.transmission || '',
@@ -329,7 +333,7 @@
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
-      decodeHtml, money, vinFrom, detailsFromHtml, captionFromHtml,
+      decodeHtml, money, count, vinFrom, detailsFromHtml, captionFromHtml,
       photoIdsFromHtml, photoUrlsFromHtml, historyReportUrlFromHtml, parseVdpHtml, trimFromCaption
     };
   }
