@@ -254,9 +254,6 @@ body{
 .stat-hero-mid{ display:flex; align-items:flex-end; gap:9px; margin-top:8px; }
 .stat-hero-big{ font-size:44px; font-weight:800; color:var(--ink); line-height:0.9; letter-spacing:-1.5px; }
 .stat-hero-unit{ font-size:13px; font-weight:700; color:#5c6018; margin-bottom:5px; }
-.stat-hero-foot{ display:flex; align-items:center; gap:6px; margin-top:11px; padding-top:11px; border-top:1px solid rgba(28,30,18,0.14); }
-.stat-hero-gross{ font-size:13.5px; font-weight:800; color:var(--ink); }
-.stat-hero-grosslabel{ font-size:12px; font-weight:700; color:#5c6018; }
 
 /* 2x2 tiles */
 .stat-grid{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:12px; }
@@ -284,7 +281,7 @@ body{
 .platform-bar{ height:8px; background:var(--line); border-radius:999px; overflow:hidden; }
 .platform-fill{ height:100%; background:var(--accent); border-radius:999px; }
 
-/* listing activity trend — grey = listed, lime = sold, per month */
+/* listing activity trend — grey = listed, lime = sold at dealership, per month */
 .stat-trend-head{ display:flex; align-items:baseline; justify-content:space-between; margin:0 2px 14px; }
 .section-label.nomargin{ margin:0; }
 .trend-legend{ display:flex; align-items:center; gap:5px; font-size:10.5px; font-weight:700; color:#8a8d9b; }
@@ -299,7 +296,7 @@ body{
 .trend-bar.sold{ background:var(--accent); }
 .trend-label{ font-size:10.5px; font-weight:700; color:#a4a6b2; }
 
-/* your listings + mark-sold */
+/* tracked listings */
 .platform-row.is-soon{ opacity:.45; }
 .listing-list{ display:flex; flex-direction:column; gap:8px; }
 .listing-empty{ font-size:12px; font-weight:600; color:#a4a6b2; background:var(--input-bg); border:1px solid var(--input-border);
@@ -307,22 +304,23 @@ body{
 .listing-row{ display:flex; align-items:center; gap:10px; padding:10px 12px; background:var(--input-bg); border:1px solid #eceef2; border-radius:12px; }
 .listing-main{ flex:1; min-width:0; }
 .listing-title{ font-size:13px; font-weight:700; color:#23263a; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.listing-sub{ display:flex; align-items:center; gap:6px; margin-top:3px; font-size:11.5px; font-weight:600; color:#8a8d9b; }
-.lst-pill{ font-size:10px; font-weight:800; padding:1px 7px; border-radius:999px; }
+.listing-sub{ display:flex; flex-wrap:wrap; align-items:center; gap:5px 6px; margin-top:3px; font-size:11.5px; font-weight:600; color:#8a8d9b; }
+.lst-pill{ font-size:10px; font-weight:800; padding:1px 7px; border-radius:999px; white-space:nowrap; }
 .lst-pill.live{ color:#178a3f; background:#e6f6ec; }
-.lst-pill.sold{ color:#8a8d9b; background:#eceef2; }
+.lst-pill.sold{ color:#8a6d0b; background:#fff1b8; }
+.lst-pill.pending{ color:#8a5a1f; background:#fff0df; }
+.lst-pill.removed{ color:#6f7280; background:#eceef2; }
 .lst-days{ color:#aeb0bd; font-weight:600; white-space:nowrap; }
 .listing-badges{ display:flex; align-items:center; gap:4px; margin-top:5px; }
 .lst-badge{ font-size:9.5px; font-weight:800; letter-spacing:.2px; color:#fff; padding:2px 6px; border-radius:5px; line-height:1.4; }
 .listing-vin{ font-size:11px; font-weight:600; color:#8a8d9b; margin-top:2px; }
 .vin-label{ font-weight:800; color:#6b7280; }
 .listing-actions{ display:flex; flex-direction:column; gap:6px; flex-shrink:0; }
-.lst-sold-btn, .lst-view-btn{ font-size:11.5px; font-weight:700; color:#5d6070; background:#fff; border:1px solid var(--input-border);
+.lst-view-btn{ font-size:11.5px; font-weight:700; color:#5d6070; background:#fff; border:1px solid var(--input-border);
   border-radius:9px; padding:7px 11px; cursor:pointer; font-family:inherit; white-space:nowrap; text-align:center;
   transition:transform .14s cubic-bezier(0.23,1,0.32,1), border-color .14s ease, color .14s ease; }
-.lst-sold-btn:hover, .lst-view-btn:hover{ border-color:var(--ink); color:var(--ink); }
-.lst-sold-btn:active:not(:disabled), .lst-view-btn:active:not(:disabled){ transform:scale(0.96); }
-.lst-sold-btn.undo{ color:#a4a6b2; }
+.lst-view-btn:hover{ border-color:var(--ink); color:var(--ink); }
+.lst-view-btn:active:not(:disabled){ transform:scale(0.96); }
 .lst-view-btn[disabled]{ opacity:.45; cursor:default; }
 .lst-view-btn[disabled]:hover{ border-color:var(--input-border); color:#5d6070; }
 .lst-menu{ position:fixed; z-index:200; min-width:160px; background:#fff; border:1px solid var(--input-border);
@@ -330,60 +328,6 @@ body{
 .lst-menu-item{ display:block; width:100%; text-align:left; font-size:12.5px; font-weight:600; color:var(--text);
   background:none; border:0; border-radius:7px; padding:8px 10px; cursor:pointer; font-family:inherit; }
 .lst-menu-item:hover{ background:var(--line); }
-
-/* ---- Part 2: dealership inventory outcomes ---- */
-/* Red-orange attention dot on the Stats button */
-.stats-dot{ width:8px; height:8px; border-radius:50%; background:#ff5a1f; box-shadow:0 0 0 2px #fff, 0 0 5px rgba(255,90,31,.7);
-  margin-left:1px; flex-shrink:0; animation:cxpulse 1.8s ease-in-out infinite; }
-@keyframes cxpulse{ 0%,100%{ opacity:1; } 50%{ opacity:.45; } }
-
-/* "Sold by dealership" card — same filled/rounded hero treatment as "Vehicles sold" (it reuses
-   .stat-hero), in a gold fill so it reads as a sibling card rather than a duplicate of the accent. */
-.dealer-card{ background:linear-gradient(180deg,#f7d64e,#f0c62f); margin-bottom:12px; }
-.info-ico{ display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; padding:0; border:0; border-radius:50%;
-  background:none; color:#a5851f; cursor:help; flex-shrink:0; }
-.info-ico:hover{ color:#7a5c12; }
-.dealer-card .stat-hero-label{ color:#6a5310; }
-.dealer-card .info-ico{ color:#6a5310; }
-.dealer-card .info-ico:hover{ color:#4a390a; }
-.dealer-cols{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-top:10px; }
-.dealer-col{ display:flex; flex-direction:column; }
-.dealer-num{ font-size:30px; font-weight:800; color:var(--ink); line-height:.9; letter-spacing:-1px; }
-.dealer-lbl{ font-size:11px; font-weight:700; color:#6a5310; margin-top:6px; }
-
-/* "Needs action" pill on a removed-from-dealership row */
-.needs-pill{ font-size:10px; font-weight:800; padding:2px 9px; border-radius:999px; color:#fff; background:#ff5a1f; border:0;
-  cursor:pointer; font-family:inherit; white-space:nowrap; animation:cxpulse 1.8s ease-in-out infinite; }
-.needs-pill:hover{ background:#e64d15; }
-.needs-pill:active{ transform:scale(.96); }
-.listing-row.needs{ border-color:#f4b98a; background:#fff6f0; }
-
-/* Outcome badges on a classified row */
-.lst-badge.dealer{ background:#7a5c12; }
-.lst-badge.delisted{ background:#8a8d9b; }
-
-/* Select-then-Submit popup (modal) */
-.inv-modal-back{ position:fixed; inset:0; z-index:400; background:rgba(20,22,30,.42); display:flex; align-items:center; justify-content:center; padding:18px; animation:cselIn .12s ease; }
-.inv-modal{ width:100%; max-width:320px; background:#fff; border-radius:16px; box-shadow:0 18px 48px rgba(20,24,55,.28); padding:16px 16px 14px; }
-.inv-modal-title{ font-size:14px; font-weight:800; color:var(--ink); }
-.inv-modal-sub{ font-size:12px; font-weight:600; color:#8a8d9b; margin-top:5px; line-height:1.45; }
-.inv-opts{ display:flex; flex-direction:column; gap:7px; margin:13px 0 4px; }
-.inv-opt{ display:flex; align-items:center; gap:9px; padding:10px 12px; border:1.5px solid var(--input-border); border-radius:11px;
-  background:var(--input-bg); cursor:pointer; font-family:inherit; text-align:left; transition:border-color .13s ease, background .13s ease; }
-.inv-opt:hover{ border-color:#c9cbd6; }
-.inv-opt.sel{ border-color:var(--ink); background:#fff; box-shadow:0 0 0 3px rgba(28,30,18,.08); }
-.inv-opt-radio{ width:15px; height:15px; border-radius:50%; border:2px solid #c3c5d0; flex-shrink:0; position:relative; }
-.inv-opt.sel .inv-opt-radio{ border-color:var(--ink); }
-.inv-opt.sel .inv-opt-radio::after{ content:''; position:absolute; inset:2.5px; border-radius:50%; background:var(--ink); }
-.inv-opt-label{ font-size:13px; font-weight:700; color:var(--text); }
-.inv-opt .info-ico{ margin-left:auto; color:#b3b5c0; }
-.inv-opt .info-ico:hover{ color:#6b7280; }
-.inv-modal-actions{ display:flex; gap:8px; margin-top:12px; }
-.inv-btn{ flex:1; font-size:13px; font-weight:800; border-radius:11px; padding:10px; cursor:pointer; font-family:inherit; border:1px solid var(--input-border); background:#fff; color:#5d6070; }
-.inv-btn:hover{ border-color:var(--ink); color:var(--ink); }
-.inv-btn.primary{ background:var(--accent); border-color:var(--accent); color:var(--ink); }
-.inv-btn.primary:disabled{ background:#eceef2; border-color:#eceef2; color:#b3b5c0; cursor:default; }
-.inv-btn.primary:not(:disabled):hover{ box-shadow:0 4px 12px -5px var(--accent-shadow); }
 
 /* Footer mirrors the header with the same nearly invisible depth cue. */
 .foot{ position:relative; z-index:2; flex-shrink:0; padding:12px 16px 14px; background:#fff;
@@ -587,8 +531,8 @@ button:focus-visible,
   .view, .veh-listed, .csel-menu, .lst-menu{ animation:none; }
   .knob, .csel-menu.closing{ transition:none; }
   .accent-btn, .ghost-btn, .seg-btn, .stats-btn, .icon-btn,
-  .lst-sold-btn, .lst-view-btn, .csel-trigger, .csel-chev{ transition:none; }
+  .lst-view-btn, .csel-trigger, .csel-chev{ transition:none; }
   .accent-btn:active:not(:disabled), .ghost-btn:active:not(:disabled), .seg-btn:active,
   .stats-btn:active, .icon-btn:active:not(:disabled),
-  .lst-sold-btn:active:not(:disabled), .lst-view-btn:active:not(:disabled){ transform:none; }
+  .lst-view-btn:active:not(:disabled){ transform:none; }
 }

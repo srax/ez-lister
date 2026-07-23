@@ -21,10 +21,9 @@
         <span>Lightning-fast lister</span>
       </div>
     </div>
-    <button id="stats-btn" class="stats-btn" title="Sales stats">
+    <button id="stats-btn" class="stats-btn" title="Listing and dealership stats">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#1c1e12" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="20" x2="6" y2="13"/><line x1="12" y1="20" x2="12" y2="8"/><line x1="18" y1="20" x2="18" y2="4"/></svg>
       Stats
-      <span id="stats-dot" class="stats-dot" hidden title="Some listings need your attention"></span>
     </button>
     <button id="team-btn" class="stats-btn" title="Team dashboard" hidden>
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
@@ -187,14 +186,14 @@
   </footer>
   </div><!-- /#view-lister -->
 
-  <!-- Stats view (Sales overview) — back face of the design's flip card -->
+  <!-- Listing activity and dealership inventory outcomes. -->
   <div id="view-stats" class="view" hidden>
     <header class="head stats-head">
       <button id="stats-back" class="icon-btn back-btn" title="Back to lister">
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
       </button>
       <div class="brand">
-        <div class="brand-name">Sales overview</div>
+        <div class="brand-name">Dealership activity</div>
         <div class="stats-sub" id="stats-range-label">Last 30 days</div>
       </div>
       <div class="select-wrap stats-range-wrap">
@@ -210,38 +209,16 @@
 
     <main class="body vsl-scroll stats-body">
 
-      <!-- Sold by dealership: cars that left the dealership's own inventory (sold by someone other
-           than this user, or delisted). Separate from the user's personal sales below. Hidden until
-           there's at least one. -->
-      <div class="stat-hero dealer-card" id="st-dealer-card" hidden>
-        <div class="stat-hero-top">
-          <span class="stat-hero-label">Sold by dealership</span>
-          <button type="button" class="info-ico" id="dealer-card-info" aria-label="What is this?"
-            title="Cars that left your dealership's inventory — sold by the dealership (not by you), or delisted. Tracked separately from your own sales.">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-          </button>
-        </div>
-        <div class="dealer-cols">
-          <div class="dealer-col"><span class="dealer-num" id="st-dealer-fb">0</span><span class="dealer-lbl">Sold at FB</span></div>
-          <div class="dealer-col"><span class="dealer-num" id="st-dealer-cl">0</span><span class="dealer-lbl">Sold at Craigslist</span></div>
-          <div class="dealer-col"><span class="dealer-num" id="st-dealer-de">0</span><span class="dealer-lbl">Delisted</span></div>
-        </div>
-      </div>
-
-      <!-- Hero: vehicles sold (live) -->
+      <!-- Dealership-level inventory outcome. The scanner can confirm that a VIN left the
+           dealership; it cannot attribute the sale to a person or marketplace. -->
       <div class="stat-hero">
         <div class="stat-hero-top">
-          <span class="stat-hero-label">Vehicles sold</span>
+          <span class="stat-hero-label">Vehicles sold at dealership</span>
           <span class="stat-delta" id="st-delta" hidden></span>
         </div>
         <div class="stat-hero-mid">
           <span class="stat-hero-big" id="st-sold">0</span>
           <span class="stat-hero-unit" id="st-hero-range">last 30 days</span>
-        </div>
-        <div class="stat-hero-foot">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1c1e12" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-          <span class="stat-hero-gross" id="st-gross">$0</span>
-          <span class="stat-hero-grosslabel">gross sales</span>
         </div>
       </div>
 
@@ -266,10 +243,10 @@
         <div class="stat-tile">
           <div class="stat-tile-head">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>
-            <span>Avg days to sell</span>
+            <span>Avg days on market</span>
           </div>
           <div class="stat-tile-num" id="st-days">—</div>
-          <div class="stat-tile-sub">listed → sold</div>
+          <div class="stat-tile-sub">listed → dealership sale</div>
         </div>
         <div class="stat-tile">
           <div class="stat-tile-head">
@@ -300,13 +277,13 @@
       <!-- Listing activity trend -->
       <div class="stat-trend-head">
         <span class="section-label nomargin">Listing activity</span>
-        <span class="trend-legend"><i class="sw listed"></i>listed<i class="sw sold"></i>sold</span>
+        <span class="trend-legend"><i class="sw listed"></i>listed<i class="sw sold"></i>sold at dealership</span>
       </div>
       <div class="stat-trend" id="st-trend"></div>
 
       <div class="divider"></div>
 
-      <!-- Your listings (tracked + mark-sold) -->
+      <!-- Listings tracked from the dealership and marketplace flows. -->
       <div class="section-label">Your listings</div>
       <div class="listing-list" id="st-listings"></div>
 
@@ -337,7 +314,7 @@
       <div class="stat-grid team-metrics">
         <div class="stat-tile"><div class="stat-tile-head"><span>Listing actions</span></div><div class="stat-tile-num" id="team-listed">0</div><div class="stat-tile-sub">last 30 days</div></div>
         <div class="stat-tile"><div class="stat-tile-head"><span>Currently listed</span></div><div class="stat-tile-num" id="team-active">0</div><div class="stat-tile-sub">live inventory</div></div>
-        <div class="stat-tile"><div class="stat-tile-head"><span>Sold at dealership</span></div><div class="stat-tile-num" id="team-sold">0</div><div class="stat-tile-sub">inventory outcome</div></div>
+        <div class="stat-tile"><div class="stat-tile-head"><span>Vehicles sold at dealership</span></div><div class="stat-tile-num" id="team-sold">0</div><div class="stat-tile-sub">unique inventory VINs</div></div>
         <div class="stat-tile"><div class="stat-tile-head"><span>Observed views</span></div><div class="stat-tile-num" id="team-views">—</div><div class="stat-tile-sub" id="team-views-sub">Not available</div></div>
       </div>
       <div class="divider"></div>
@@ -476,7 +453,7 @@
   </div>
 
   <script src="lib/mappers.core.js"></script>
-  <script src="lib/dealerOutcome.js"></script>
+  <script src="lib/dealershipStats.js"></script>
   <script src="lib/workspaceContext.js"></script>
   <script src="lib/onboarding.js"></script>
   <script src="lib/dealerCandidates.js"></script>

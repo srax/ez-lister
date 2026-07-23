@@ -149,9 +149,6 @@ export async function getOrganizationDashboard(userId, organizationId, filters =
             count(distinct coalesce(l.vin,l.client_key)) filter (
               where coalesce(l.listed_at,l.created_at) between $3 and $4
             )::int as unique_vehicles,
-            count(distinct coalesce(l.vin,l.client_key)) filter (
-              where l.status='sold' and l.sold_source='scan' and l.sold_at between $3 and $4
-            )::int as sold_at_dealership,
             sum(l.views_count) filter (
               where l.views_count is not null
                 and coalesce(l.listed_at,l.created_at) between $3 and $4
@@ -257,7 +254,6 @@ export async function getOrganizationDashboard(userId, organizationId, filters =
       role: row.role,
       listingActions: number(row.listing_actions),
       uniqueVehicles: number(row.unique_vehicles),
-      soldAtDealership: number(row.sold_at_dealership),
       observedViews: row.observed_views == null ? null : number(row.observed_views),
       viewsPerListing: row.observed_views == null || !number(row.listing_actions)
         ? null

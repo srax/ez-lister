@@ -295,6 +295,7 @@ test('claim, activation, scoped team access, and serialized seat capacity lifecy
   assert.equal(managerDashboard.metrics.listingActions, 1);
   assert.equal(managerDashboard.metrics.currentlyListed, 2);
   assert.equal(managerDashboard.metrics.soldAtDealership, 1);
+  assert.ok(managerDashboard.members.every((member) => !Object.hasOwn(member, 'soldAtDealership')));
   assert.equal(managerDashboard.metrics.observedViews, 50);
   assert.equal(managerDashboard.metrics.viewsPerListing, 50);
 

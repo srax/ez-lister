@@ -2031,8 +2031,8 @@ async function enqueueEvent(event) {
   });
 }
 
-// Auto-sync when tracked listings or the event queue change (publish detection, mark sold,
-// enqueued events) — debounced, best-effort, only when signed in.
+// Auto-sync when tracked listings or the event queue change. Legacy manual-sale and
+// dealer-outcome events remain supported while older extension versions age out.
 let syncTimer = null;
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;

@@ -6,12 +6,12 @@ Companion to `docs/store-listing.md` (privacy disclosures) and `npm run ops`.
 
 ## Principles (the floor we never dig below)
 
-- **Product events only.** We record what the user did with Carxpert (fill, publish,
-  mark sold) — never browsing history, page content beyond the selected vehicle, or
+- **Product events only.** We record what the user did with Carxpert (fill and publish)
+  plus scanner-confirmed inventory outcomes — never browsing history, page content beyond the selected vehicle, or
   anything from Facebook other than "our fill completed / a publish happened".
 - **Events are disposable, listings are business records.** `usage_events` is pruned at
-  90 days (wired into the hourly worker via `pruneUsageEvents`); `listings` rows live
-  forever — they ARE the salesperson's stats.
+  90 days (wired into the hourly worker via `pruneUsageEvents`); `listings` rows preserve
+  listing history. Scanner-confirmed sales are dealership outcomes, not salesperson credit.
 - **Idempotent by construction.** Every event carries a client-generated UUID
   (`usage_events.id`), so offline retries and double-syncs can never double-count.
 - **Per-user scoping.** All analytics join through `owner_id`/`user_id`; nothing is
@@ -24,22 +24,25 @@ Companion to `docs/store-listing.md` (privacy disclosures) and `npm run ops`.
 | Table | What it captures | Analytical value |
 |---|---|---|
 | `usage_events` | One row per product action: `id` (uuid, dedupe), `user_id`, `type`, `client_key`, `data` jsonb, `occurred_at` (client), `received_at` (server) | The funnel + eval raw material. 90-day retention. |
-| `listings` | Full listing lifecycle per (owner, vehicle): status listed/sold/removed, `sold_source` manual/scan, `listed_at`/`sold_at`/`sold_price`, `last_seen_in_inventory_at`, `first_missed_at`, FB url/id, `views_count` | Days-to-sale, active inventory value, sold attribution. Permanent. |
+| `listings` | Full listing lifecycle per (workspace, actor, vehicle): status listed/sold/removed, `sold_source` manual/scan, `listed_at`/`sold_at`, inventory evidence, marketplace URLs, and `views_count` | Days on market, active inventory value, and dealership outcomes. Permanent. |
 | `listing_view_snapshots` | Append-only (listing, views, observed_at) history | **Dormant** — waiting on views/leads sync (V1.1+). |
 | `dealer_inventory_scans` | One row per sold-scan cycle: ok, vin_count, source, error | Scan health/SLO; never stores dealer inventory itself. |
 | `ai_usage` | Per-user per-day describe/translate counters | AI adoption + cost ceiling enforcement. |
 | `user_dealerships`, `comp_grants`, `subscription` (Better Auth), `user` (Better Auth) | Who's linked, who's comped, who pays | Joins for activation/conversion. |
 
-### Event catalog — declared vs actually emitted
+### Core listing-lifecycle events
 
-The schema comment declares six types; **only four are emitted today**:
+The current extension emits fill/publish events; the backend worker records dealership outcomes.
+Manual-sale types remain accepted only for backward compatibility:
 
 | Type | Emitted from | Payload | Status |
 |---|---|---|---|
 | `fill_completed` | facebookContent.js after a form fill | `data.fields = [{name, ok, msg}]` per field | ✅ live — powers `/api/admin/fill-accuracy` |
 | `publish_detected` | facebookContent.js on real publish (URL transition) | `clientKey` | ✅ live |
-| `marked_sold` | sidepanel stats view | `data.soldPrice` | ✅ live |
-| `marked_sold_undo` | sidepanel stats view | — | ✅ live |
+| `marked_sold` | older sidepanel versions | `data.soldPrice` | Legacy input accepted; not emitted or counted by the current UI |
+| `marked_sold_undo` | older sidepanel versions | — | Legacy input accepted; not emitted by the current UI |
+| `scan_marked_sold` | backend inventory worker | VIN + dealership ID | Live — scanner-confirmed dealership outcome |
+| `scan_revived` | backend inventory worker | VIN + dealership ID | Live — correction when inventory reappears |
 | `list_clicked` | **nowhere** | — | ❌ declared, never emitted |
 | `views_observed` | **nowhere** | — | ❌ waiting on views sync |
 
@@ -67,17 +70,16 @@ from "user" u join listings l on l.owner_id = u.id group by u.email, u."createdA
 select date_trunc('week', listed_at) wk, owner_id, count(*) 
 from listings group by 1,2 order by 1;
 
--- Days-to-sale + manual vs scan attribution
-select sold_source, count(*), avg(sold_at - listed_at) avg_days
-from listings where status='sold' group by sold_source;
+-- Dealership outcomes + average days on market (never salesperson attribution)
+select count(distinct coalesce(vin,client_key)), avg(sold_at - listed_at) avg_days
+from listings where status='sold' and sold_source='scan';
 
 -- Publish-per-fill ratio (funnel health: fills that turned into real listings)
 select (select count(*) from usage_events where type='publish_detected' and occurred_at > now()-interval '30 days')::float
      / nullif((select count(*) from usage_events where type='fill_completed' and occurred_at > now()-interval '30 days'),0);
 
--- Scan false-positive signal: undo shortly after a scan-sold
-select count(*) from usage_events e join listings l on l.client_key = e.client_key and l.owner_id = e.user_id
-where e.type='marked_sold_undo' and l.sold_source='scan';
+-- Scan correction signal: a scanner-sold VIN later reappeared in inventory
+select count(*) from usage_events where type='scan_revived';
 ```
 
 ## The gaps (honest list)
